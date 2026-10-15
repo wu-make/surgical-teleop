@@ -42,7 +42,7 @@ export class SurgicalScene{
   }
   async loadRobot(){
     const loader=new GLTFLoader();const [gltf,res]=await Promise.all([loader.loadAsync(BASE+'assets/g1.glb'),fetch(BASE+'assets/g1-kinematics.json')]);const meta=await res.json();this.robot.add(gltf.scene);this.robot.updateMatrixWorld(true);
-    gltf.scene.traverse(m=>{if(m.isMesh){m.castShadow=true;m.receiveShadow=true;if(m.material){m.material.roughness=.4;m.material.metalness=.35;}}});
+    gltf.scene.traverse(m=>{if(m.isMesh){m.castShadow=true;m.receiveShadow=true;if(m.material){m.material.roughness=.46;m.material.metalness=.16;if(m.material.name==='dark'){m.material.color.set('#20272b');m.material.roughness=.52;m.material.metalness=.10;}else if(m.material.name==='white')m.material.color.set('#b7b9bc');}}});
     this.robotModel=gltf.scene;this.robotMetadata=meta;
     for(const j of meta.joints){const node=gltf.scene.getObjectByName(j.name);if(!node||j.type==='fixed')continue;node.userData.rest=node.quaternion.clone();node.userData.angle=0;node.userData.axis=new THREE.Vector3(...j.axis);node.userData.limit=j.limit||j.limits||{lower:-Math.PI,upper:Math.PI};this.joints.push(node);}
     // Nominal stable posture. The original manufacturer's mesh and joint frames are retained.
