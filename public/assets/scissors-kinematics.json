@@ -1,0 +1,237 @@
+{
+  "rootNode": "Instrument",
+  "units": "meters",
+  "baseLink": "adaptor_link",
+  "joints": [
+    {
+      "name": "roll",
+      "parent": "adaptor_link",
+      "child": "roll_link",
+      "type": "revolute",
+      "origin": {
+        "xyz": [
+          0.0,
+          0.0,
+          0.4162
+        ],
+        "rpy": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "limit": {
+        "lower": -4.53786,
+        "upper": 4.53786,
+        "velocity": 0.4,
+        "effort": 1000.0
+      },
+      "mimic": null
+    },
+    {
+      "name": "wrist_pitch",
+      "parent": "roll_link",
+      "child": "wrist_pitch_link",
+      "type": "revolute",
+      "origin": {
+        "xyz": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rpy": [
+          -1.5707963267948966,
+          -1.5707963267948966,
+          0.0
+        ]
+      },
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "limit": {
+        "lower": -1.39626,
+        "upper": 1.39626,
+        "velocity": 0.4,
+        "effort": 1000.0
+      },
+      "mimic": null
+    },
+    {
+      "name": "wrist_yaw",
+      "parent": "wrist_pitch_link",
+      "child": "wrist_yaw_link",
+      "type": "revolute",
+      "origin": {
+        "xyz": [
+          0.0091,
+          0.0,
+          0.0
+        ],
+        "rpy": [
+          -1.5707963267948966,
+          -1.5707963267948966,
+          0.0
+        ]
+      },
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "limit": {
+        "lower": -1.39626,
+        "upper": 1.39626,
+        "velocity": 0.4,
+        "effort": 1000.0
+      },
+      "mimic": null
+    },
+    {
+      "name": "jaw",
+      "parent": "wrist_yaw_link",
+      "child": "jaw_link",
+      "type": "revolute",
+      "origin": {
+        "xyz": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rpy": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "limit": {
+        "lower": -0.349066,
+        "upper": 1.39626,
+        "velocity": 0.4,
+        "effort": 1000.0
+      },
+      "mimic": null
+    },
+    {
+      "name": "jaw_1",
+      "parent": "wrist_yaw_link",
+      "child": "jaw_1_link",
+      "type": "revolute",
+      "origin": {
+        "xyz": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rpy": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "limit": {
+        "lower": -1.5707,
+        "upper": 1.5707,
+        "velocity": 0.4,
+        "effort": 1000.0
+      },
+      "mimic": {
+        "joint": "jaw",
+        "multiplier": "0.5"
+      }
+    },
+    {
+      "name": "jaw_2",
+      "parent": "wrist_yaw_link",
+      "child": "jaw_2_link",
+      "type": "revolute",
+      "origin": {
+        "xyz": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rpy": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "limit": {
+        "lower": -1.5707,
+        "upper": 1.5707,
+        "velocity": 0.4,
+        "effort": 1000.0
+      },
+      "mimic": {
+        "joint": "jaw",
+        "multiplier": "-0.5"
+      }
+    },
+    {
+      "name": "tool_tip",
+      "parent": "wrist_yaw_link",
+      "child": "tool_tip_link",
+      "type": "fixed",
+      "origin": {
+        "xyz": [
+          0.0,
+          0.0155,
+          -0.0016
+        ],
+        "rpy": [
+          0.0,
+          1.5707963267948966,
+          1.5707963267948966
+        ]
+      },
+      "axis": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "limit": null,
+      "mimic": null
+    }
+  ],
+  "boundsAtZero": [
+    [
+      -0.004372500000000036,
+      -0.0043726,
+      -0.14039209999999996
+    ],
+    [
+      0.004372399999999998,
+      0.0043724,
+      0.438349886
+    ]
+  ],
+  "triangles": 46946,
+  "jointApplication": "Save origin quaternion; node quaternion = origin * axisAngle(axis, angle). Mimic joints apply multiplier to jaw angle.",
+  "tipPositionAtZero": [
+    -0.0015999999999999977,
+    -1.047073013270987e-18,
+    0.4408
+  ]
+}

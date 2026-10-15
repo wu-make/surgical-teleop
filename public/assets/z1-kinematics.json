@@ -1,0 +1,226 @@
+{
+  "rootNode": "UnitreeZ1",
+  "units": "meters",
+  "baseLink": "world",
+  "joints": [
+    {
+      "name": "base_static_joint",
+      "parent": "world",
+      "child": "link00",
+      "type": "fixed",
+      "origin": {
+        "xyz": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rpy": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "axis": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "limit": null,
+      "mimic": null
+    },
+    {
+      "name": "joint1",
+      "parent": "link00",
+      "child": "link01",
+      "type": "revolute",
+      "origin": {
+        "xyz": [
+          0.0,
+          0.0,
+          0.0585
+        ],
+        "rpy": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "limit": {
+        "effort": 30.0,
+        "lower": -2.6179938779914944,
+        "upper": 2.6179938779914944,
+        "velocity": 3.1415
+      },
+      "mimic": null
+    },
+    {
+      "name": "joint2",
+      "parent": "link01",
+      "child": "link02",
+      "type": "revolute",
+      "origin": {
+        "xyz": [
+          0.0,
+          0.0,
+          0.045
+        ],
+        "rpy": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "axis": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "limit": {
+        "effort": 60.0,
+        "lower": 0.0,
+        "upper": 2.9670597283903604,
+        "velocity": 3.1415
+      },
+      "mimic": null
+    },
+    {
+      "name": "joint3",
+      "parent": "link02",
+      "child": "link03",
+      "type": "revolute",
+      "origin": {
+        "xyz": [
+          -0.35,
+          0.0,
+          0.0
+        ],
+        "rpy": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "axis": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "limit": {
+        "effort": 30.0,
+        "lower": -2.8797932657906435,
+        "upper": 0.0,
+        "velocity": 3.1415
+      },
+      "mimic": null
+    },
+    {
+      "name": "joint4",
+      "parent": "link03",
+      "child": "link04",
+      "type": "revolute",
+      "origin": {
+        "xyz": [
+          0.218,
+          0.0,
+          0.057
+        ],
+        "rpy": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "axis": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "limit": {
+        "effort": 30.0,
+        "lower": -1.5184364492350666,
+        "upper": 1.5184364492350666,
+        "velocity": 3.1415
+      },
+      "mimic": null
+    },
+    {
+      "name": "joint5",
+      "parent": "link04",
+      "child": "link05",
+      "type": "revolute",
+      "origin": {
+        "xyz": [
+          0.07,
+          0.0,
+          0.0
+        ],
+        "rpy": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "limit": {
+        "effort": 30.0,
+        "lower": -1.3439035240356338,
+        "upper": 1.3439035240356338,
+        "velocity": 3.1415
+      },
+      "mimic": null
+    },
+    {
+      "name": "joint6",
+      "parent": "link05",
+      "child": "link06",
+      "type": "revolute",
+      "origin": {
+        "xyz": [
+          0.0492,
+          0.0,
+          0.0
+        ],
+        "rpy": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "axis": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "limit": {
+        "effort": 30.0,
+        "lower": -2.792526803190927,
+        "upper": 2.792526803190927,
+        "velocity": 3.1415
+      },
+      "mimic": null
+    }
+  ],
+  "boundsAtZero": [
+    [
+      -0.3824999928474426,
+      -3.260619130023218e-18,
+      -0.06596755236387253
+    ],
+    [
+      0.05324995145201683,
+      0.19799996051192284,
+      0.06596755236387253
+    ]
+  ],
+  "triangles": 177936,
+  "jointApplication": "Save origin quaternion; node quaternion = origin * axisAngle(axis, angle). Mimic joints apply multiplier to jaw angle."
+}

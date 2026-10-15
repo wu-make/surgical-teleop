@@ -1,0 +1,101 @@
+{
+  "name": "BodyParts3D FMA7197 liver",
+  "dtype": "float32",
+  "endianness": "little",
+  "order": "x-fastest",
+  "indexFormula": "x + nx * (y + ny * z)",
+  "dims": [
+    139,
+    123,
+    107
+  ],
+  "origin": [
+    -0.10350000000000001,
+    -0.09150000000000001,
+    -0.0795
+  ],
+  "spacing": [
+    0.0015,
+    0.0015,
+    0.0015
+  ],
+  "sign": "negative-inside",
+  "units": "meters",
+  "bounds": [
+    [
+      -0.09950015258789063,
+      -0.08697503662109374,
+      -0.07499974822998048
+    ],
+    [
+      0.09950015258789062,
+      0.08697503662109374,
+      0.07499974822998048
+    ]
+  ],
+  "anatomicalUp": "+Y (superior)",
+  "anatomicalFront": "+Z (anterior)",
+  "sourceMesh": "BodyParts3D v3 FMA7197.stl",
+  "sourceMeshTriangles": 19416,
+  "sourceMeshWatertight": true,
+  "sourceBoundsMillimeters": [
+    [
+      -117.96600341796875,
+      -192.4239959716797,
+      1030.3599853515625
+    ],
+    [
+      81.0343017578125,
+      -42.42449951171875,
+      1204.31005859375
+    ]
+  ],
+  "sourceToLocalMatrixRowMajor": [
+    [
+      0.001,
+      0.0,
+      0.0,
+      0.018465850830078127
+    ],
+    [
+      0.0,
+      6.123233995736766e-20,
+      0.001,
+      -1.1173350219726563
+    ],
+    [
+      0.0,
+      -0.001,
+      6.123233995736766e-20,
+      -0.1174242477416993
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "volumeMl": 1652.6683430229687,
+  "voxelizedVolumeMl": 1654.522875,
+  "volumeEstimation": "Sum of clamp(0.5 - signedDistance / voxelSpacing, 0, 1), multiplied by voxel volume; consistent with runtime resection accounting.",
+  "smoothing": {
+    "method": "scipy.ndimage.gaussian_filter",
+    "sigmaVoxels": 0.8,
+    "sigmaMillimeters": 1.2000000000000002,
+    "mode": "nearest",
+    "truncate": 4.0,
+    "input": "Signed Euclidean distance of the filled 1.5 mm source-mesh voxelization",
+    "purpose": "Suppress voxel stair steps in the display/resection field; source liver.glb geometry is unchanged.",
+    "preSmoothingVolumeMl": 1654.522875,
+    "postSmoothingVolumeMl": 1652.6683430229687,
+    "volumeChangePercent": -0.11208862718392609,
+    "validation": {
+      "watertight": true,
+      "connectedComponents": 1,
+      "eulerCharacteristic": 2,
+      "surfaceTriangles": 112888
+    }
+  },
+  "notes": "Anatomical reference surface from one adult male; sampled at 1.5 mm and Gaussian-regularized at sigma 0.8 voxels. Smoothing does not increase source resolution. Does not encode histology, vessels, patient-specific imaging, or validated tissue mechanics."
+}

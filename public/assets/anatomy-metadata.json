@@ -1,0 +1,46 @@
+{
+  "source": "BodyParts3D v3",
+  "skinFma": "FMA7163",
+  "liverFma": "FMA7197",
+  "coordinates": "All anatomy shares the same local origin at liver bounding-box center. +Y superior, +Z anterior, meters.",
+  "skinOriginalTriangles": 1586498,
+  "skinOutputTriangles": 49998,
+  "skinBounds": [
+    [
+      -0.3112261705028386,
+      -1.130792305686152,
+      -0.16535090390454232
+    ],
+    [
+      0.3472318662712002,
+      0.524735432870567,
+      0.12284361697525716
+    ]
+  ],
+  "sourceToLocalMatrixRowMajor": [
+    [
+      0.001,
+      0.0,
+      0.0,
+      0.018465850830078127
+    ],
+    [
+      0.0,
+      6.123233995736766e-20,
+      0.001,
+      -1.1173350219726563
+    ],
+    [
+      0.0,
+      -0.001,
+      6.123233995736766e-20,
+      -0.1174242477416993
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ]
+}

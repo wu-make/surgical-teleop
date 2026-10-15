@@ -1,0 +1,9 @@
+node_modules/
+dist/
+research/
+.qa/
+*.log
+.env*
+scripts/github-local.mjs
+.asset-sources/
+.pages/
