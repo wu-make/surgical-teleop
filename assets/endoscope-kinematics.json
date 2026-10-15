@@ -1,0 +1,76 @@
+{
+  "rootNode": "Endoscope",
+  "units": "meters",
+  "baseLink": "adaptor_link",
+  "joints": [
+    {
+      "name": "endoscope",
+      "parent": "adaptor_link",
+      "child": "endoscope_link",
+      "type": "fixed",
+      "origin": {
+        "xyz": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rpy": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "axis": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "limit": null,
+      "mimic": null
+    },
+    {
+      "name": "tip",
+      "parent": "endoscope_link",
+      "child": "tip_link",
+      "type": "fixed",
+      "origin": {
+        "xyz": [
+          0.0,
+          0.0,
+          0.37364
+        ],
+        "rpy": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "axis": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "limit": null,
+      "mimic": null
+    }
+  ],
+  "boundsAtZero": [
+    [
+      -0.035000015050172806,
+      -0.04029250144958496,
+      -0.2190000319480896
+    ],
+    [
+      0.03500000759959221,
+      0.03870750218629837,
+      0.3836485540866852
+    ]
+  ],
+  "triangles": 686,
+  "jointApplication": "Save origin quaternion; node quaternion = origin * axisAngle(axis, angle). Mimic joints apply multiplier to jaw angle.",
+  "tipPositionAtZero": [
+    0.0,
+    0.0,
+    0.37364
+  ]
+}

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="theme-color" content="#101819"/>
+  <meta name="description" content="MIRA 微创遥操作实验室：宇树 G1 双臂、RCM 内窥镜与三维肝脏交互演示。"/>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23101819'/%3E%3Cpath d='M14 43V21l18 16 18-16v22' fill='none' stroke='%238ce2c2' stroke-width='5'/%3E%3C/svg%3E"/>
+  <title>MIRA · 微创遥操作实验室</title>
+  <script type="module" crossorigin src="./assets/index-DUL4T4hk.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-CGAigVR7.css">
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <a class="brand" href="./" aria-label="MIRA 首页"><svg viewBox="0 0 36 36" aria-hidden="true"><path d="M5 27V9l13 12L31 9v18"/></svg><strong>MIRA</strong><span>微创遥操作实验室<small>SURGICAL ROBOTICS LAB</small></span></a>
+    <div class="session-tag"><span class="status-dot"></span>浏览器本地仿真 <i>/</i> G1 · 双臂协同</div>
+    <nav><button id="help" class="quiet" title="查看完整按键与操作说明">操作指南 <kbd>?</kbd></button><button id="export" class="quiet">导出记录 ↗</button><a href="https://github.com/wu-make/surgical-teleop" target="_blank" rel="noopener" class="github" aria-label="GitHub 源码">GitHub ↗</a></nav>
+  </header>
+  <main class="workspace">
+    <section class="operating-area">
+      <div class="workspace-heading"><div><div class="eyebrow">TELEOPERATION WORKSPACE <span>01</span></div><h1>肝脏精细操作<span>交互演示</span></h1></div><div class="session-id">SESSION <b id="session-time">00:00</b><span id="run-status">● 运行中</span></div></div>
+      <section id="stage" class="stage" tabindex="0" aria-label="三维手术仿真，按1选择左器械，2选择右器械，3选择内窥镜">
+        <canvas id="scene" aria-label="实时三维手术场景"></canvas>
+        <div class="viewbar"><div class="viewtabs"><button id="view-endo" class="active">内窥镜画面 <span>LIVE</span></button><button id="view-overview">系统总览</button></div><div class="viewtools"><button id="view-home" title="恢复观察视角">视角复位</button><button id="fullscreen" title="全屏">⛶</button></div></div>
+        <div id="endo-overlay" class="endo-overlay"><span class="lens-label">LAPAROSCOPE · 60° FOV</span><div class="crosshair" aria-hidden="true"><i></i><i></i></div><div class="reticle-bracket tl"></div><div class="reticle-bracket br"></div><span class="lens-scale" id="lens-scale">|<span>10 mm @ TCP</span>|</span></div>
+        <div class="stage-status"><span class="status-dot"></span><span id="view-status">内窥镜 · 自动跟随器械</span><span class="stage-divider"></span><span id="selected-badge">R 右手 · 分离剪</span></div>
+        <div id="mini-view" class="mini-view" aria-label="辅助观察窗口"><div><span id="mini-title">系统总览</span><button id="swap-view" title="交换主辅视图">↗</button></div><span class="mini-caption" id="mini-caption">UNITREE G1 + 胸部持镜概念集成</span></div>
+        <div class="viewport-footer"><span id="interaction-hint">WASD 平移 · Q/E 升降 · Shift 精细 · Space 离合</span><span id="fps">— FPS</span></div>
+        <div id="loading" class="loading"><div class="loader-mark">M</div><strong>正在准备手术工作空间</strong><span id="loading-detail">加载官方机器人与解剖资产…</span><div class="loading-line"></div></div>
+        <div id="pause-overlay" class="pause-overlay" hidden><span>Ⅱ</span><strong>仿真已暂停</strong><p>按 P 或点击继续</p><button id="resume" class="accent">继续操作</button></div>
+      </section>
+      <div class="instrument-strip">
+        <button class="instrument-card" data-select="left"><span class="instrument-icon cyan">L</span><span><small>LEFT INSTRUMENT</small><strong>左手 · 持针钳 / 牵拉</strong><em id="left-summary">待命 · 钳口打开</em></span><kbd>1</kbd></button>
+        <button class="instrument-card selected" data-select="right"><span class="instrument-icon amber">R</span><span><small>RIGHT INSTRUMENT</small><strong>右手 · 精细分离剪</strong><em id="right-summary">已选择 · 剪口打开</em></span><kbd>2</kbd></button>
+        <button class="instrument-card" data-select="scope"><span class="instrument-icon green">◎</span><span><small>ENDOSCOPE</small><strong>胸部 · 持镜机械臂</strong><em id="scope-summary">RCM 约束 · 自动跟随</em></span><kbd>3</kbd></button>
+      </div>
+      <div class="bottom-bar"><span><i class="tiny-dot"></i>官方 G1 几何 · 体积组织交互 · 本地计算</span><span>研发演示 · 专用器械与胸部持镜臂为概念模型 <button id="about">模型与边界 ↗</button></span></div>
+    </section>
+    <aside class="control-panel">
+      <div class="panel-heading"><span class="eyebrow">CONTROL DESK</span><span class="live-tag">LOCAL</span></div>
+      <section class="control-section"><div class="section-title"><h2>末端控制</h2><span id="active-tool">RIGHT / R</span></div>
+        <div class="segmented" id="precision"><button data-speed="normal" class="active">标准</button><button data-speed="fine">精细 <small>低速</small></button></div>
+        <div class="position-grid"><div><span>X 横向</span><strong id="pos-x">0.0<small>mm</small></strong></div><div><span>Y 高度</span><strong id="pos-y">0.0<small>mm</small></strong></div><div><span>Z 深度</span><strong id="pos-z">0.0<small>mm</small></strong></div></div>
+        <div class="motion-controls"><div class="dpad"><button data-hold="KeyW" title="前进 W">↑<kbd>W</kbd></button><button data-hold="KeyA" title="左移 A">←<kbd>A</kbd></button><span>平移</span><button data-hold="KeyD" title="右移 D">→<kbd>D</kbd></button><button data-hold="KeyS" title="后退 S">↓<kbd>S</kbd></button></div><div class="vertical-pad"><button data-hold="KeyE" title="上升 E">↥ <span>上升</span><kbd>E</kbd></button><button data-hold="KeyQ" title="下降 Q">↧ <span>下降</span><kbd>Q</kbd></button></div></div>
+        <div class="rotation-row"><span>腕部姿态</span><div><button data-hold="ArrowLeft" title="腕部左偏">←</button><button data-hold="ArrowRight" title="腕部右偏">→</button><button data-hold="ArrowUp" title="腕部俯仰">↑</button><button data-hold="ArrowDown" title="腕部俯仰">↓</button></div><div><button data-hold="KeyZ" title="轴向旋转 Z">↶ Z</button><button data-hold="KeyX" title="轴向旋转 X">↷ X</button></div></div>
+        <div class="jaw-row"><span>钳口开合 <b id="jaw-value">100%</b></span><div><button data-hold="KeyC">闭合 <kbd>C</kbd></button><button data-hold="KeyV">张开 <kbd>V</kbd></button></div></div>
+        <div class="clutch-label" id="clutch-indicator"><kbd>Space</kbd><span>按住离合，暂时冻结器械输入</span></div>
+      </section>
+      <section class="control-section"><div class="section-title"><h2>内窥镜导航</h2><span>RCM</span></div><button id="follow" class="toggle-row" role="switch" aria-checked="true"><span><strong>器械尖端自动居中</strong><small>平滑追踪当前器械</small></span><i class="switch on"></i></button><div class="scope-depth"><span>镜头进深 <b id="scope-depth">— mm</b></span><div><button data-hold="BracketLeft" title="内窥镜后退 [">− 后退 <kbd>[</kbd></button><button data-hold="BracketRight" title="内窥镜前进 ]">+ 前进 <kbd>]</kbd></button></div></div></section>
+      <section class="control-section tissue-section"><div class="section-title"><h2>组织交互</h2><span id="tissue-status">完整</span></div><button id="cut-mode" class="toggle-row" role="switch" aria-checked="false"><span><strong>启用剪切</strong><small>右手剪口接触组织并闭合时切除</small></span><i class="switch"></i></button><div class="tissue-readout"><span>已切除体积 <strong id="removed">0.0 <small>mm³</small></strong></span><div class="tissue-progress"><i id="removed-bar"></i></div></div><div class="history-row"><button id="undo" disabled>↶ 撤销 <kbd>Ctrl Z</kbd></button><button id="redo" disabled>↷ 重做</button></div><button id="reset" class="reset-button">↻ 重置场景与完整器官</button></section>
+      <div class="panel-foot"><button id="pause">Ⅱ 暂停仿真 <kbd>P</kbd></button><span><i class="tiny-dot"></i><b id="system-status">系统就绪</b></span></div>
+    </aside>
+  </main>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <dialog id="help-dialog"><div class="dialog-heading"><span class="eyebrow">OPERATOR GUIDE</span><button data-close aria-label="关闭">✕</button></div><h2>每一个动作，都在掌控之中。</h2><p>先选择器械，再使用键盘或控制台。点击场景后即可开始操作。</p><div class="help-grid"><div><h3>选择与位移</h3><p><kbd>1 / 2 / 3</kbd> 左钳 / 右剪 / 内窥镜</p><p><kbd>W A S D</kbd> 前后左右</p><p><kbd>Q / E</kbd> 下降 / 上升</p><p><kbd>Shift</kbd> 按住临时精细控制</p><p><kbd>Space</kbd> 离合：按住停止输入</p></div><div><h3>姿态与交互</h3><p><kbd>↑ ↓ ← →</kbd> 腕部俯仰与偏转</p><p><kbd>Z / X</kbd> 沿器械轴旋转</p><p><kbd>C / V</kbd> 闭合 / 张开钳口</p><p><kbd>B</kbd> 启用或关闭剪切</p><p><kbd>[ / ]</kbd> 内窥镜退出 / 插入</p></div><div><h3>视野与恢复</h3><p><kbd>F</kbd> 自动跟随开关</p><p><kbd>Tab</kbd> 交换主辅画面</p><p><kbd>P</kbd> 暂停 / 继续</p><p><kbd>Ctrl Z / Ctrl Y</kbd> 撤销 / 重做</p><p><kbd>R</kbd> 重置器官与场景</p></div></div><div class="help-note">剪切提示：选择右手 → 接近肝表面 → 启用剪切 → 闭合剪口。切除会改变三维组织体积，撤销可恢复。左钳闭合接触组织时产生局部牵拉形变。</div><button data-close class="accent">开始操作 ↗</button></dialog>
+  <dialog id="about-dialog"><div class="dialog-heading"><span class="eyebrow">ASSET PROVENANCE</span><button data-close aria-label="关闭">✕</button></div><h2>模型来源与仿真边界</h2><div id="model-details"></div><p>演示采用运动学约束与局部体积组织切除。组织形变、力反馈及切面材质为计算近似；未进行患者级解剖或临床精度验证。</p><a href="./assets/ATTRIBUTION.md" target="_blank" rel="noopener">查看资产来源与许可 ↗</a></dialog>
+</div>
+</body>
+</html>
