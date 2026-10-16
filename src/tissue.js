@@ -1,7 +1,8 @@
 import * as THREE from 'three';
-import { validateCut, normalizeMetadata, distanceToSegment, nodeIndex, normalizeDeformation, deformPoint, inverseDeformPoint } from './tissue-worker.js';
+import { validateCut, normalizeMetadata, distanceToSegment, nodeIndex, normalizeDeformation, deformationWeight, deformationMinimumScale, LOCAL_TRACTION, deformPoint, inverseDeformPoint } from './tissue-worker.js';
 import { createTissueMaterial } from './tissue-material.js';
 import { TissueFragments } from './tissue-fragments.js';
+import {closestParentSurface} from './tissue-contact.js';
 
 const vectorArray = point => Array.isArray(point) ? [...point] : [point.x, point.y, point.z];
 const copyCuts = cuts => cuts.map(cut => validateCut(cut));
@@ -40,6 +41,8 @@ export class TissueVolume {
     this._separations = [];
     this._excludedValues = new Map();
     this._restoringFragmentPoses = null;
+    this._contactQueryCache=new Map();
+    this._contactHistoryScale=1;this._contactHasDeformedCuts=false;
   }
 
   async load(urlbase = './assets/liver-volume') {
@@ -113,6 +116,62 @@ export class TissueVolume {
     return this._sampleReferenceDistance(inverseDeformPoint(display, this._deformation));
   }
 
+  /** Signed displayed-space contact distance within margin. Far exterior
+   * queries may return Infinity. sampleDistance deliberately retains the
+   * material-level-set semantics required by CSG and volume replay. */
+  contactDistance(point,margin=.006){
+    if(!point)return Infinity;
+    const coordinates=vectorArray(point);
+    if(coordinates.length!==3||!coordinates.every(Number.isFinite)||!Number.isFinite(margin)||margin<=0)return Infinity;
+    const raw=this.sampleDistance(coordinates);
+    if(!this._deformation&&!this._contactHasDeformedCuts)return raw;
+    const result=this._parentContact(coordinates,margin,raw);
+    if(result)return (raw<0?-1:1)*result.distance;
+    return raw<0?raw*this._contactMinimumScale():Infinity;
+  }
+
+  _contactMinimumScale(){
+    // A historical display-space cutter remains a non-metric implicit field
+    // after recoil. Its stretch and trilinear interpolation also belong in the
+    // conservative gate, even when current tissue deformation is null.
+    return deformationMinimumScale(this._deformation)*this._contactHistoryScale/Math.sqrt(3);
+  }
+
+  _parentContact(coordinates,margin,raw=this.sampleDistance(coordinates)){
+    const key=[this._epoch,this._cuts.length,...coordinates,margin].join(',');
+    if(this._contactQueryCache.has(key))return this._contactQueryCache.get(key);
+    const scale=this._contactMinimumScale(),initial=new THREE.Vector3(...coordinates);
+    let result=null;
+    let nearMesh=this._meshes.size===0;
+    for(const mesh of this._meshes.values())if(mesh.geometry.boundingBox.distanceToPoint(initial)<=margin){nearMesh=true;break;}
+    if(nearMesh&&Number.isFinite(raw)&&Math.abs(raw)*scale<=margin){
+      const surface=initial.clone(),gradient=new THREE.Vector3();
+      const epsilon=Math.min(Math.min(...this.metadata.spacing)*.2,.00025);
+      for(let iteration=0;iteration<14;iteration++){
+        const d=this.sampleDistance(surface);if(!Number.isFinite(d))break;
+        for(let axis=0;axis<3;axis++){
+          const low=surface.clone(),high=surface.clone();low.setComponent(axis,low.getComponent(axis)-epsilon);high.setComponent(axis,high.getComponent(axis)+epsilon);
+          gradient.setComponent(axis,(this.sampleDistance(high)-this.sampleDistance(low))/(2*epsilon));
+        }
+        const squared=gradient.lengthSq();if(!Number.isFinite(squared)||squared<1e-12)break;
+        if(Math.abs(d)<1e-7){
+          const distance=surface.distanceTo(initial);
+          if(distance<=margin){surface.normal=gradient.clone().normalize();result={surface,distance};}
+          break;
+        }
+        const step=-d/squared,maxStep=Math.max(.003,margin);
+        surface.addScaledVector(gradient,Math.max(-maxStep/Math.sqrt(squared),Math.min(maxStep/Math.sqrt(squared),step)));
+        if(surface.distanceTo(initial)>margin*2+.003)break;
+      }
+    }
+    if(nearMesh&&!result&&(!Number.isFinite(raw)||Math.abs(raw)*scale<=margin)){
+      const surface=closestParentSurface(this._meshes.values(),initial,margin);
+      if(surface)result={surface,distance:surface.distanceTo(initial)};
+    }
+    if(this._contactQueryCache.size>=64)this._contactQueryCache.clear();
+    this._contactQueryCache.set(key,result);return result;
+  }
+
   _sampleReferenceDistance(p) {
     const meta = this.metadata;
     if (p.some(v => !Number.isFinite(v))) return Infinity;
@@ -145,13 +204,15 @@ export class TissueVolume {
   _ensureCutIndex() {
     if (this._indexedCuts !== this._cuts || this._indexedCutCount > this._cuts.length) {
       this._cutGroups = []; this._cutGroupMap.clear(); this._indexedCuts = this._cuts; this._indexedCutCount = 0;
+      this._contactHistoryScale=1;this._contactHasDeformedCuts=false;this._contactQueryCache.clear();
     }
     while (this._indexedCutCount < this._cuts.length) {
       const cut = this._cuts[this._indexedCutCount++], deformation = cut.deformation;
-      const key = deformation ? [...deformation.local, ...deformation.displacement, deformation.radius].join(',') : 'rest';
+      const key = deformation ? JSON.stringify(deformation) : 'rest';
       let group = this._cutGroupMap.get(key);
       if (!group) {
-        const minimumScale = deformation ? 1 - 2.109375 * Math.hypot(...deformation.displacement) / deformation.radius : 1;
+        const minimumScale = deformationMinimumScale(deformation);
+        this._contactHistoryScale=Math.min(this._contactHistoryScale,minimumScale);this._contactHasDeformedCuts||=!!deformation;
         group = { deformation, minimumScale, entries: [], low: [Infinity, Infinity, Infinity], high: [-Infinity, -Infinity, -Infinity], referenceLow: [Infinity, Infinity, Infinity], referenceHigh: [-Infinity, -Infinity, -Infinity] };
         this._cutGroupMap.set(key, group); this._cutGroups.push(group);
       }
@@ -184,34 +245,18 @@ export class TissueVolume {
   /** Mother-organ surface only: a carried specimen must not redirect the scope. */
   findParentSurfacePoint(point, margin = 0.008) {
     if (!this._baseField || !point || !Number.isFinite(margin) || margin <= 0) return null;
-    const initial = new THREE.Vector3().fromArray(vectorArray(point));
-    const distance = this.sampleDistance(initial);
-    if (!Number.isFinite(distance) || Math.abs(distance) > margin) return null;
-    const surface = initial.clone(), gradient = new THREE.Vector3();
-    const epsilon = Math.min(...this.metadata.spacing) * 0.35;
-    for (let i = 0; i < 12; i++) {
-      const d = this.sampleDistance(surface);
-      for (let axis = 0; axis < 3; axis++) {
-        const low = surface.clone(), high = surface.clone();
-        low.setComponent(axis, low.getComponent(axis) - epsilon); high.setComponent(axis, high.getComponent(axis) + epsilon);
-        gradient.setComponent(axis, (this.sampleDistance(high) - this.sampleDistance(low)) / (2 * epsilon));
-      }
-      const lengthSquared = gradient.lengthSq();
-      if (!Number.isFinite(lengthSquared) || lengthSquared < 1e-9) return null;
-      if (Math.abs(d) < 0.000025) break;
-      surface.addScaledVector(gradient, -d / lengthSquared);
-    }
-    if (!Number.isFinite(this.sampleDistance(surface)) || Math.abs(this.sampleDistance(surface)) > 0.00025 || surface.distanceTo(initial) > margin * 1.8) return null;
-    surface.normal = gradient.normalize();
-    return surface;
+    const coordinates=vectorArray(point);if(coordinates.length!==3||!coordinates.every(Number.isFinite))return null;
+    const result=this._parentContact(coordinates,margin);if(!result)return null;
+    const surface=result.surface.clone();surface.normal=result.surface.normal.clone();return surface;
   }
 
   get graspMetrics() {
     const deformation = this._deformation;
     return { active: !!deformation, displacementMm: deformation ? Math.hypot(...deformation.displacement) * 1000 : 0,
       radiusMm: deformation ? deformation.radius * 1000 : 0, affectedVertices: this._affectedVertices,
+      coreRadiusMm:deformation?.model==='local-flow'?deformation.coreRadius*1000:0,
       local: deformation ? [...deformation.local] : null, displacement: deformation ? [...deformation.displacement] : [0, 0, 0],
-      model: 'Invertible compact geometric displacement; not calibrated tissue mechanics' };
+      model: deformation?.model==='local-flow'?'Local anchored traction with a 2.5 mm grasp core; uncalibrated geometric strain model':'Legacy compact geometric displacement; not calibrated tissue mechanics' };
   }
 
   get deformationMetrics() { return { ...this._deformationStats }; }
@@ -221,18 +266,63 @@ export class TissueVolume {
   setGrasp(point, delta) {
     let next = null;
     try {
-      if (point && delta) next = normalizeDeformation({ local: vectorArray(point), displacement: vectorArray(delta) });
+      if (point && delta) next = normalizeDeformation({model:'local-flow',local: vectorArray(point), displacement: vectorArray(delta) });
       else if (point?.local) next = normalizeDeformation(point);
     } catch { return false; }
-    if (next) {
+    if (next&&next.model!=='local-flow') {
       if (next.radius < 1e6) next.radius = Math.ceil(next.radius * 1000) / 1000;
       if (this._deformation && next.local.every((v, axis) => v === this._deformation.local[axis])) next.radius = Math.max(next.radius, this._deformation.radius);
     }
     if (JSON.stringify(next) === JSON.stringify(this._deformation)) return true;
     this._deformation = next;
+    this._contactQueryCache.clear();
     this._affectedVertices = 0;
     for (const mesh of this._meshes.values()) this._affectedVertices += this._applyDeformation(mesh);
     return true;
+  }
+
+  _applyLocalDeformation(mesh){
+    const geometry=mesh.geometry,rest=geometry.userData.restPositions,restNormals=geometry.userData.restNormals;
+    const positions=geometry.attributes.position.array,normals=geometry.attributes.normal.array,d=this._deformation;
+    const length=Math.hypot(...d.displacement),capacity=d.radius+Math.max(length*1.1,LOCAL_TRACTION.radius*LOCAL_TRACTION.slipStrain);
+    const signature=['local-flow',...d.local,d.radius,d.coreRadius].join(',');
+    let cache=geometry.userData.deformationCache,fullUpdate=false;
+    if(cache?.signature!==signature||cache.capacity<d.radius+length){
+      fullUpdate=!!geometry.userData.deformed;
+      if(fullUpdate){positions.set(rest);normals.set(restNormals);}
+      const indices=[],box=geometry.userData.restBox;
+      const distanceSquared=Math.max(box.min.x-d.local[0],0,d.local[0]-box.max.x)**2+
+        Math.max(box.min.y-d.local[1],0,d.local[1]-box.max.y)**2+Math.max(box.min.z-d.local[2],0,d.local[2]-box.max.z)**2;
+      if(distanceSquared<capacity*capacity)for(let i=0;i<rest.length;i+=3){
+        const x=rest[i]-d.local[0],y=rest[i+1]-d.local[1],z=rest[i+2]-d.local[2];
+        if(x*x+y*y+z*z<capacity*capacity)indices.push(i);
+      }
+      cache={signature,capacity,indices:new Uint32Array(indices),active:new Uint8Array(indices.length)};
+      geometry.userData.deformationCache=cache;this._deformationStats.cacheBuilds++;this._deformationStats.radiusUpdates++;
+    }
+    let active=0,maximumWeight=0,first=Infinity,last=-Infinity;
+    const [dx,dy,dz]=d.displacement;
+    for(let j=0;j<cache.indices.length;j++){
+      const i=cache.indices[j],{weight,gradient:g}=deformationWeight([rest[i],rest[i+1],rest[i+2]],d);
+      if(!weight&&!cache.active[j])continue;
+      cache.active[j]=weight>0?1:0;active+=cache.active[j];maximumWeight=Math.max(maximumWeight,weight);
+      first=Math.min(first,i);last=Math.max(last,i);
+      positions[i]=rest[i]+dx*weight;positions[i+1]=rest[i+1]+dy*weight;positions[i+2]=rest[i+2]+dz*weight;
+      const projection=(restNormals[i]*dx+restNormals[i+1]*dy+restNormals[i+2]*dz)/(1+g[0]*dx+g[1]*dy+g[2]*dz);
+      const nx=restNormals[i]-g[0]*projection,ny=restNormals[i+1]-g[1]*projection,nz=restNormals[i+2]-g[2]*projection,norm=Math.hypot(nx,ny,nz)||1;
+      normals[i]=nx/norm;normals[i+1]=ny/norm;normals[i+2]=nz/norm;
+    }
+    cache.activeCount=active;
+    this._deformationStats.movedVertices+=active;
+    if(last>=first||fullUpdate){
+      for(const attribute of [geometry.attributes.position,geometry.attributes.normal]){
+        attribute.clearUpdateRanges();if(!fullUpdate&&last>=first)attribute.addUpdateRange(first,last-first+3);attribute.needsUpdate=true;
+      }
+    }
+    const extent=length*maximumWeight;
+    geometry.boundingSphere.copy(geometry.userData.restSphere);geometry.boundingSphere.radius+=extent;
+    geometry.boundingBox.copy(geometry.userData.restBox).expandByScalar(extent);geometry.userData.deformed=active>0;
+    return active;
   }
 
   _applyDeformation(mesh) {
@@ -249,6 +339,7 @@ export class TissueVolume {
       }
       return 0;
     }
+    if(deformation.model==='local-flow')return this._applyLocalDeformation(mesh);
     // Anchor distances are invariant while the forceps move. Reserve a larger
     // radial domain once, rather than rebuilding it at every 1 mm radius step.
     const signature = deformation.local.join(',');
@@ -373,6 +464,7 @@ export class TissueVolume {
   }
 
   _replaceChunk(chunk) {
+    this._contactQueryCache.clear();
     const previous = this._meshes.get(chunk.key);
     if (previous?.geometry.userData.deformed) this._affectedVertices -= previous.geometry.userData.deformationCache?.activeCount ?? 0;
     if (previous) { previous.geometry.dispose(); this.group.remove(previous); this._meshes.delete(chunk.key); }

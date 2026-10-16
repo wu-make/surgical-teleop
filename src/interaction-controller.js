@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import {LOCAL_TRACTION} from './tissue-worker.js';
 
 const copy = value => value == null ? null : structuredClone(value);
 const localPoint = (tissue, point) => tissue.group.worldToLocal(new THREE.Vector3(...point));
@@ -19,9 +20,10 @@ export class InteractionController {
     this.contact = { left: false, right: false, rightDepthMm: 0, cutting: false };
     this._generation = 0;
     this._fragmentRebaseId = null;
+    this.requiresReopen=false;
   }
 
-  snapshot() { return { version: 3, tissue: this.tissue.snapshot(), grasp: copy(this.grasp), relaxing: copy(this.relaxing) }; }
+  snapshot() { return { version: 3, tissue: this.tissue.snapshot(), grasp: copy(this.grasp), relaxing: copy(this.relaxing),requiresReopen:this.requiresReopen }; }
 
   async restore(data) {
     const generation = ++this._generation;
@@ -34,16 +36,26 @@ export class InteractionController {
     if(this.grasp){
       this.grasp.kind ??= this.grasp.fragmentId != null ? 'fragment' : 'tissue';
       if(!Object.hasOwn(this.grasp,'reference'))this.grasp.reference=this.grasp.kind==='fragment'?null:[...this.grasp.local];
+      if(this.grasp.kind==='tissue'){
+        this.grasp.deformationModel??=data?.tissue?.deformation?.model??'legacy';
+        if(this.grasp.deformationModel==='legacy')this.grasp.deformationRadius??=data?.tissue?.deformation?.radius??.065;
+      }
     }
     this.relaxing = copy(data?.relaxing);
+    if(this.relaxing){
+      this.relaxing.deformationModel??=data?.tissue?.deformation?.model??'legacy';
+      if(this.relaxing.deformationModel==='legacy')this.relaxing.deformationRadius??=data?.tissue?.deformation?.radius??.065;
+    }
+    this.requiresReopen=Boolean(data?.requiresReopen);
     if(this.grasp?.kind==='fragment')this._fragmentRebaseId=this.grasp.fragmentId;
     // Rigid pose and attachment already belong to the tissue snapshot. The CAD
     // quaternion getter may still describe the pre-undo render; following it
     // here would corrupt an exact restored specimen pose before the next frame.
-    if(this.grasp?.kind!=='fragment')this.applyGrasp();
+    if(this.grasp?.kind!=='fragment')this.applyGrasp({restoring:true});
   }
 
   release(immediate = false) {
+    if(immediate)this.requiresReopen=false;
     this._fragmentRebaseId=null;
     const released=this.grasp;
     if(released?.kind==='fragment')this.tissue.releaseFragment?.(released.fragmentId);
@@ -96,7 +108,12 @@ export class InteractionController {
     return id!=null?this._attachFragment(id,reference,{transition:true}):false;
   }
 
-  applyGrasp() {
+  _setAttachedDeformation(grasp,delta){
+    if(grasp.deformationModel==='legacy')this.tissue.setGrasp({local:[...grasp.local],displacement:delta.toArray(),radius:grasp.deformationRadius??.065});
+    else this.tissue.setGrasp(new THREE.Vector3(...grasp.local),delta);
+  }
+
+  applyGrasp({restoring=false}={}) {
     if (!this.grasp) return;
     if(this.grasp.kind==='fragment'){
       if(!this.tissue.getFragment?.(this.grasp.fragmentId)){
@@ -120,22 +137,29 @@ export class InteractionController {
     }
     const position = localPoint(this.tissue, this.sim.state.tools.left.position);
     const delta = position.sub(new THREE.Vector3(...this.grasp.local));
+    if(!restoring&&delta.length()>LOCAL_TRACTION.radius*LOCAL_TRACTION.slipStrain){
+      this.release();this.requiresReopen=true;this.lastCut=null;
+      this.onEvent('grasp-slip',{strain:delta.length()/LOCAL_TRACTION.radius});
+      this.onMessage('局部组织过度牵拉，已从左钳滑脱并回弹；请张开后重新夹持。此为未标定的几何应变模型');
+      return;
+    }
     this.grasp.displacement = delta.toArray();
-    this.tissue.setGrasp(new THREE.Vector3(...this.grasp.local), delta);
+    this._setAttachedDeformation(this.grasp,delta);
   }
 
   updateGrasp(dt) {
     const left = this.sim.state.tools.left;
+    if(left.jaw>.32)this.requiresReopen=false;
     this._reconcileDetachedGrasp();
     if (left.jaw > .32 && this.grasp) this.release();
-    if (left.jaw < .16 && !this.grasp && !this.relaxing) {
+    if (left.jaw < .16 && !this.grasp && !this.relaxing&&!this.requiresReopen) {
       const p = localPoint(this.tissue, left.position);
       const anchor = this.tissue.findGraspPoint(p, .006);
       if (anchor) {
         if(anchor.fragmentId!=null)this._attachFragment(anchor.fragmentId,anchor.reference?.toArray?.()??null,{surfaceAnchor:anchor});
         else{
           const reference=this.tissue.toReferencePoint?.(anchor)??anchor;
-          this.grasp = { kind:'tissue',fragmentId:null,local: reference.toArray(),reference:reference.toArray(),displacement: [0, 0, 0] };
+          this.grasp = { kind:'tissue',fragmentId:null,deformationModel:'local-flow',local: reference.toArray(),reference:reference.toArray(),displacement: [0, 0, 0] };
           this.onEvent('grasp');
           this.onMessage('左钳已夹住肝包膜：按 E 抬起，组织会随钳尖牵拉；V 松开');
         }
@@ -144,8 +168,7 @@ export class InteractionController {
     if (this.grasp) this.applyGrasp();
     if ((!this.grasp||this.grasp.kind==='fragment')&&this.relaxing) {
       this.relaxing.remaining *= Math.exp(-dt * 11);
-      this.tissue.setGrasp(new THREE.Vector3(...this.relaxing.local),
-        new THREE.Vector3(...this.relaxing.displacement).multiplyScalar(this.relaxing.remaining));
+      this._setAttachedDeformation(this.relaxing,new THREE.Vector3(...this.relaxing.displacement).multiplyScalar(this.relaxing.remaining));
       if (this.relaxing.remaining < .008) { this.relaxing = null; this.tissue.setGrasp(null); }
     } else if(!this.grasp||this.grasp.kind==='fragment')this.tissue.setGrasp(null);
   }
@@ -156,10 +179,10 @@ export class InteractionController {
     this.tissue.updateFragments?.(dt);
     const { left, right } = this.sim.state.tools;
     const leftPoint=localPoint(this.tissue,left.position);
-    const leftDistance = this.tissue.sampleDistance(leftPoint);
+    const leftDistance = this.tissue.contactDistance?.(leftPoint,.006)??this.tissue.sampleDistance(leftPoint);
     const leftFragmentId=this.tissue.findFragmentAt?.(leftPoint,.006)??null;
     const point = localPoint(this.tissue, right.position);
-    const distance = this.tissue.sampleDistance(point);
+    const distance = this.tissue.contactDistance?.(point,.0032)??this.tissue.sampleDistance(point);
     this.contact.left = leftDistance < .006||leftFragmentId!=null;
     this.contact.leftFragmentId=leftFragmentId;
     this.contact.right = distance < .0032;
@@ -176,7 +199,8 @@ export class InteractionController {
     const inverse = this.tissue.group.getWorldQuaternion(new THREE.Quaternion()).invert();
     direction.applyQuaternion(inverse).normalize();
     const bladeBack = point.clone().addScaledVector(direction, -.008);
-    if (distance > .0032 && this.tissue.sampleDistance(bladeBack) > .0032) return;
+    const bladeDistance=this.tissue.contactDistance?.(bladeBack,.0032)??this.tissue.sampleDistance(bladeBack);
+    if (distance > .0032 && bladeDistance > .0032) return;
     this.lastCut = { point: point.clone(), deformation: new THREE.Vector3(...deformation) };
     this.cuttingBusy = true;
     this.contact.cutting = true;

@@ -22,6 +22,8 @@ export function normalizeMetadata(input) {
 export function nodeIndex(meta, x, y, z) { return x + meta.dims[0] * (y + meta.dims[1] * z); }
 export function occupancy(distance, width) { return clamp(0.5 - distance / width, 0, 1); }
 
+export const LOCAL_TRACTION=Object.freeze({radius:.018,coreRadius:.0025,stepFraction:.24,slipStrain:2.2});
+
 /** Compact C2 displacement field. Radius/offset bounds keep its Jacobian
  * positive, allowing contact and cutting to use the same inverse as rendering.
  * This is an interactive geometric model, not a calibrated constitutive law. */
@@ -33,12 +35,41 @@ export function normalizeDeformation(input) {
   if (!Number.isFinite(length) || !Number.isFinite(length * 3.2)) throw new Error('Tissue deformation exceeds the numeric range');
   if (length < 1e-10) return null;
   const delta = [...displacement];
+  if(input.model==='local-flow'){
+    const radius=clamp(Number.isFinite(input.radius)?input.radius:LOCAL_TRACTION.radius,.012,.03);
+    const coreRadius=clamp(Number.isFinite(input.coreRadius)?input.coreRadius:LOCAL_TRACTION.coreRadius,.001,radius*.25);
+    const stepFraction=Math.min(1,(radius-coreRadius)*LOCAL_TRACTION.stepFraction/length);
+    const steps=Math.max(1,Math.ceil(1/stepFraction));
+    if(steps>512)throw new Error('Local traction exceeds supported material strain; the grasp must slip.');
+    return {model:'local-flow',local:[...local],displacement:delta,radius,coreRadius,steps,stepFraction};
+  }
   const radius = Math.max(clamp(Number.isFinite(input.radius) ? input.radius : 0.065, 0.02, 0.2), 3.2 * Math.hypot(...delta));
   return { local: [...local], displacement: delta, radius };
 }
 
 export function deformationWeight(point, deformation) {
   if (!deformation) return { weight: 0, gradient: [0, 0, 0] };
+  if(deformation.model==='local-flow'){
+    const count=deformation.steps,delta=deformation.displacement,local=deformation.local;
+    const px=point[0]-local[0],py=point[1]-local[1],pz=point[2]-local[2],dx=delta[0],dy=delta[1],dz=delta[2];
+    const lengthSquared=dx*dx+dy*dy+dz*dz,along=clamp((px*dx+py*dy+pz*dz)/lengthSquared,0,1);
+    const ex=px-dx*along,ey=py-dy*along,ez=pz-dz*along;
+    if(ex*ex+ey*ey+ez*ez>=deformation.radius*deformation.radius)return {weight:0,gradient:[0,0,0]};
+    let weight=0,gx=0,gy=0,gz=0;
+    for(let i=0;i<count;i++){
+      const start=i*deformation.stepFraction,fraction=Math.min(deformation.stepFraction,1-start);
+      const shift=weight-start,x=px+dx*shift,y=py+dy*shift,z=pz+dz*shift;
+      const length=Math.sqrt(x*x+y*y+z*z),core=deformation.coreRadius,falloff=deformation.radius-core;
+      if(length>=deformation.radius)continue;
+      const r=Math.max(0,(length-core)/falloff),t=1-r,stepWeight=t**4*(4*r+1);
+      const derivative=length>core?-20*r*t**3/(falloff*length):0;
+      const ax=x*derivative,ay=y*derivative,az=z*derivative;
+      const gain=1+(dx*ax+dy*ay+dz*az)*fraction;
+      gx=gx*gain+ax*fraction;gy=gy*gain+ay*fraction;gz=gz*gain+az*fraction;
+      weight+=stepWeight*fraction;
+    }
+    return {weight,gradient:[gx,gy,gz]};
+  }
   const offset = point.map((v, axis) => v - deformation.local[axis]);
   const distance = Math.hypot(...offset), r = distance / deformation.radius;
   if (r >= 1) return { weight: 0, gradient: [0, 0, 0] };
@@ -55,6 +86,27 @@ export function deformPoint(point, deformation) {
 
 export function inverseDeformPoint(point, deformation) {
   if (!deformation) return [...point];
+  if(deformation.model==='local-flow'){
+    let result=[...point];const count=deformation.steps;
+    for(let i=count-1;i>=0;i--){
+      const start=i*deformation.stepFraction,fraction=Math.min(deformation.stepFraction,1-start);
+      const step=deformation.displacement.map(v=>v*fraction),local=deformation.local.map((v,axis)=>v+deformation.displacement[axis]*start);
+      // Each near-identity compact step has a strictly positive Jacobian;
+      // undo its own map before moving to the preceding material frame.
+      const target=[...result];
+      for(let iteration=0;iteration<16;iteration++){
+        const offset=result.map((v,axis)=>v-local[axis]),length=Math.hypot(...offset),core=deformation.coreRadius,falloff=deformation.radius-core;
+        const r=Math.max(0,Math.min(1,(length-core)/falloff)),t=1-r,w=t**4*(4*r+1);
+        const derivative=length>core&&r<1?-20*r*t**3/(falloff*length):0;
+        const gradient=offset.map(v=>v*derivative),error=result.map((v,axis)=>v+step[axis]*w-target[axis]);
+        if(Math.hypot(...error)<1e-11)break;
+        const denominator=1+gradient.reduce((sum,v,axis)=>sum+v*step[axis],0);
+        const projection=gradient.reduce((sum,v,axis)=>sum+v*error[axis],0)/denominator;
+        result=result.map((v,axis)=>v-error[axis]+step[axis]*projection);
+      }
+    }
+    return result;
+  }
   const result = [...point], delta = deformation.displacement;
   for (let i = 0; i < 20; i++) {
     const { weight, gradient } = deformationWeight(result, deformation);
@@ -65,6 +117,17 @@ export function inverseDeformPoint(point, deformation) {
     for (let axis = 0; axis < 3; axis++) result[axis] -= error[axis] - delta[axis] * projection;
   }
   return result;
+}
+
+/** Conservative singular-value bound for broadphase distance comparisons. */
+export function deformationMinimumScale(deformation){
+  if(!deformation)return 1;
+  const length=Math.hypot(...deformation.displacement);
+  if(deformation.model==='local-flow'){
+    const k=2.109375*length/(deformation.radius-deformation.coreRadius),full=deformation.steps-1;
+    return Math.max(1e-12,(1-k*deformation.stepFraction)**full*(1-k*(1-full*deformation.stepFraction)));
+  }
+  return Math.max(1e-12,1-2.109375*length/deformation.radius);
 }
 
 export function deformNormal(normal, gradient, displacement) {
@@ -203,9 +266,10 @@ function nodeGradient(state, x, y, z) {
   return gradient;
 }
 
+function cutSurfaceMask(originalDistance,width){return clamp((-originalDistance-width*.08)/(width*.2),0,1);}
 function surfaceColor(point, originalDistance, width) {
   const noise = 0.93 + 0.045 * Math.sin(point[0] * 492 + Math.sin(point[2] * 341)) + 0.025 * Math.sin(point[1] * 713 - point[2] * 427);
-  const cut = clamp((-originalDistance - width * 0.3) / (width * 1.1), 0, 1);
+  const cut = cutSurfaceMask(originalDistance,width);
   return [(0.19 + 0.14 * cut) * noise, (0.027 + 0.027 * cut) * noise, (0.018 + 0.024 * cut) * noise];
 }
 
@@ -252,7 +316,7 @@ export function polygonizeChunk(state, key) {
         const normal = ga.map((v, axis) => v + (gb[axis] - v) * t), length = Math.hypot(...normal) || 1;
         const original = originals[ia] + (originals[ib] - originals[ia]) * t;
         const nodeA = nodeIndex(meta, ...corners[ia]), nodeB = nodeIndex(meta, ...corners[ib]);
-        intersections.push({ key: nodeA < nodeB ? `${nodeA}:${nodeB}` : `${nodeB}:${nodeA}`, p, n: normal.map(v => v / length), c: surfaceColor(p, original, state.bandWidth), cutMask: clamp((-original - state.bandWidth * 0.3) / (state.bandWidth * 1.1), 0, 1) });
+        intersections.push({ key: nodeA < nodeB ? `${nodeA}:${nodeB}` : `${nodeB}:${nodeA}`, p, n: normal.map(v => v / length), c: surfaceColor(p, original, state.bandWidth), cutMask: cutSurfaceMask(original,state.bandWidth) });
       }
       if (intersections.length === 3) emitTriangle(...intersections);
       else if (intersections.length === 4) {

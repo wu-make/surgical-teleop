@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { createVolumeState, applyCapsuleCut, resetVolume, polygonizeChunk, allChunkKeys, nodeIndex, normalizeDeformation, deformationWeight, deformPoint, inverseDeformPoint, deformNormal } from '../src/tissue-worker.js';
+import { createVolumeState, applyCapsuleCut, resetVolume, polygonizeChunk, allChunkKeys, nodeIndex, normalizeDeformation, deformationWeight, deformPoint, inverseDeformPoint, deformNormal,LOCAL_TRACTION } from '../src/tissue-worker.js';
 import { TissueVolume } from '../src/tissue.js';
 
 function sphereVolume(n = 25, spacing = 0.0015, radius = 0.013) {
@@ -320,5 +320,80 @@ test('continuous radius growth reuses radial caches and keeps exact visible trac
       assert.ok(Math.hypot(...expected.map((v, axis) => v - positions[i + axis])) < 1e-8);
     }
   }
+  tissue.dispose();
+});
+
+test('local traction has a rigid 2.5 mm grasp core, anchored distant material and an invertible narrow support',()=>{
+  const local=[.01,-.015,.02],delta=[.025,.012,.021],d=normalizeDeformation({model:'local-flow',local,displacement:delta});
+  assert.equal(d.radius,.018);assert.equal(d.coreRadius,.0025);
+  const core=local.map((v,i)=>v+(i===1?.001:0)),lifted=deformPoint(core,d);
+  assert.ok(Math.hypot(...lifted.map((v,i)=>v-core[i]-delta[i]))<1e-12);
+  for(let i=0;i<900;i++){
+    const p=local.map((v,axis)=>v+Math.sin(i*(1.13+axis*.47))*.045),moved=deformPoint(p,d),back=inverseDeformPoint(moved,d);
+    assert.ok(Math.hypot(...p.map((v,axis)=>v-back[axis]))<1e-8);
+    const {gradient}=deformationWeight(p,d),determinant=1+gradient.reduce((sum,v,axis)=>sum+v*delta[axis],0);
+    assert.ok(determinant>0,'material mapping never folds or makes a duplicate shell');
+    const normal=deformNormal([0,0,1],gradient,delta),eps=1e-7;
+    const shifted=deformPoint(p.map((v,axis)=>v+(axis===0?eps:0)),d),tangent=shifted.map((v,axis)=>(v-moved[axis])/eps);
+    assert.ok(Math.abs(normal.reduce((sum,v,axis)=>sum+v*tangent[axis],0))<.0002);
+  }
+  const far=local.map((v,i)=>v+(i===0?-.05:0));assert.deepEqual(deformPoint(far,d),far);
+  // Introducing a new final flow segment must be continuous, not reset all
+  // previous substeps and cause a visible jump when the step count changes.
+  const boundary=(d.radius-d.coreRadius)*LOCAL_TRACTION.stepFraction*5,p=local.map((v,i)=>v+(i===0?.007:0));
+  const a=normalizeDeformation({model:'local-flow',local,displacement:[0,0,boundary-1e-9]}),b=normalizeDeformation({model:'local-flow',local,displacement:[0,0,boundary+1e-9]});
+  assert.ok(Math.hypot(...deformPoint(p,a).map((v,i)=>v-deformPoint(p,b)[i]))<1e-7);
+});
+
+test('real liver traction moves a small patch while the mother remains fixed and exact after release',()=>{
+  const metadata=JSON.parse(fs.readFileSync(new URL('../public/assets/liver-volume.json',import.meta.url),'utf8'));
+  const bytes=fs.readFileSync(new URL('../public/assets/liver-volume.bin',import.meta.url)),values=new Float32Array(bytes.buffer,bytes.byteOffset,bytes.byteLength/4);
+  const source=createVolumeState(metadata,values),tissue=new TissueVolume();tissue.metadata=metadata;tissue._baseField=source.base;
+  for(const key of allChunkKeys(source))tissue._replaceChunk(polygonizeChunk(source,key));
+  const anchor=tissue.findParentSurfacePoint([-.025,.015,.075],.008),pristine=[...tissue._meshes.values()].map(m=>m.geometry.attributes.position.array.slice());
+  tissue.setGrasp(anchor,{x:0,y:0,z:.026});
+  assert.equal(tissue.graspMetrics.radiusMm,18);assert.equal(tissue.graspMetrics.coreRadiusMm,2.5);
+  let count=0,moved=0,far=0;
+  for(const mesh of tissue._meshes.values()){
+    const rest=mesh.geometry.userData.restPositions,positions=mesh.geometry.attributes.position.array;
+    for(let i=0;i<rest.length;i+=3){
+      count++;const shift=Math.hypot(...[0,1,2].map(a=>positions[i+a]-rest[i+a]));
+      if(shift>.0001)moved++;
+      if(Math.hypot(rest[i]-anchor.x,rest[i+1]-anchor.y)>.02){far++;assert.ok(shift<1e-8,'distant mother is anchored, not translated');}
+      if(i%27===0){const expected=deformPoint([...rest.slice(i,i+3)],tissue._deformation);assert.ok(Math.hypot(...expected.map((v,a)=>v-positions[i+a]))<1e-8);}
+    }
+  }
+  assert.ok(moved>30&&moved/count<.10,`${moved}/${count} vertices move >0.1mm`);assert.ok(far/count>.8);
+  const point=tissue.deformPoint(anchor);assert.ok(Math.abs(tissue.sampleDistance(point))<.00015);
+  tissue.setGrasp(anchor,{x:0,y:0,z:.008});assert.equal(tissue.graspMetrics.radiusMm,18);
+  tissue.setGrasp(null);[...tissue._meshes.values()].forEach((mesh,i)=>assert.deepEqual(mesh.geometry.attributes.position.array,pristine[i]));tissue.dispose();
+});
+
+test('submillimetre fresh cut walls get parenchyma mask while untouched capsule remains unmarked',()=>{
+  const source=sphereVolume(41,.0015,.024);
+  for(const key of allChunkKeys(source))assert.ok(polygonizeChunk(source,key).cutMasks.every(v=>v===0));
+  applyCapsuleCut(source,{a:[-.012,0,.024],b:[.012,0,.024],radius:.002});
+  let shallowFresh=0,untouched=0;
+  for(const key of allChunkKeys(source)){
+    const mesh=polygonizeChunk(source,key);
+    for(let i=0;i<mesh.positions.length;i+=3){
+      const p=[...mesh.positions.slice(i,i+3)],depth=.024-Math.hypot(...p),mask=mesh.cutMasks[i/3];
+      if(depth>.0005&&depth<.001&&mask>.9)shallowFresh++;
+      if(p[2]<0){untouched++;assert.equal(mask,0);}
+    }
+  }
+  assert.ok(shallowFresh>10,'a shallow real incision already exposes fresh parenchyma');assert.ok(untouched>100);
+});
+
+test('new local-flow cuts, displayed contact and undo replay all reference the same material defect',()=>{
+  const source=sphereVolume(41,.0015,.024),tissue=new TissueVolume();tissue.metadata=source.meta;tissue._baseField=source.base;
+  const d=normalizeDeformation({model:'local-flow',local:[0,0,.024],displacement:[.003,0,.025]});
+  const reference=[.003,0,.022],display=deformPoint(reference,d);
+  const cut={a:display,b:display.map((v,i)=>v+(i===2?.005:0)),radius:.003,deformation:d};
+  const result=applyCapsuleCut(source,cut);assert.ok(result.removedMm3>10);
+  tissue._cuts=source.cuts;tissue.setGrasp(d);assert.equal(tissue.contains(display),false);
+  const expected=source.field.slice(),volume=source.removedVolumeMm3;resetVolume(source,[cut]);
+  assert.deepEqual(source.field,expected);assert.equal(source.removedVolumeMm3,volume);
+  tissue.setGrasp(null);assert.equal(tissue.contains(reference),false,'the real cut stays in the mother material after release');
   tissue.dispose();
 });

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { normalizeDeformation, deformPoint, inverseDeformPoint, deformationWeight, deformNormal } from './tissue-worker.js';
+import { normalizeDeformation, deformPoint, inverseDeformPoint, deformationWeight, deformNormal, deformationMinimumScale } from './tissue-worker.js';
 
 const array = value => Array.isArray(value) || ArrayBuffer.isView(value) ? [...value] : value.toArray();
 const vec = value => new THREE.Vector3().fromArray(array(value));
@@ -121,7 +121,7 @@ export class TissueFragments {
       // The reference SDF is not a metric after the frozen traction. Its
       // minimum singular-value bound keeps compressed surfaces eligible;
       // surfacePoint then verifies the actual displayed projection distance.
-      const minimumScale = piece.deformation ? 1 - 2.109375 * Math.hypot(...piece.deformation.displacement) / piece.deformation.radius : 1;
+      const minimumScale = deformationMinimumScale(piece.deformation);
       const distance = Math.abs(this.distance(piece, p)) * minimumScale;
       if (distance <= margin && distance < bestDistance) { best = piece; bestDistance = distance; }
     }

@@ -598,7 +598,7 @@ test('initial laparoscope working distance frames a local organ patch at 55 degr
   assert.ok(oldVisibleHeight/visibleHeight>1.85,'the local organ patch must gain meaningful magnification');
 });
 
-test('field composition retains the mother organ when a held specimen moves far away', () => {
+test('following a held specimen preserves its selected control target instead of the old mother anchor', () => {
   const s=new Simulation(),context=anatomicalContext();
   context.heldSpecimen.position=[-.19,1.19,-.13];
   context.graspTarget=[...context.heldSpecimen.position];
@@ -606,13 +606,13 @@ test('field composition retains the mother organ when a held specimen moves far 
   hold(s,[],6,.02);
   const camera=s.state.scope;
   nearVector(camera.intentTarget,context.graspTarget);
-  assert.ok(Math.hypot(...sub(camera.target,context.surfaceTarget))<=SCOPE_FRAMING.maximumIntentOffset+1e-12);
-  assert.ok(Math.hypot(...sub(camera.target,context.graspTarget))>.2);
-  near(camera.actualWorkingDistance,.065,1e-8);
-  assert.equal(camera.framingSource,'mother-surface');
-  s.setScopeContext({surfaceTarget:null});hold(s,[],1);
-  assert.equal(camera.framingSource,'retained-operative-field');
-  assert.ok(Math.hypot(...sub(camera.target,context.surfaceTarget))<=.012+1e-12);
+  nearVector(camera.target,context.graspTarget);
+  assert.ok(Math.hypot(...sub(camera.target,context.surfaceTarget))>.2);
+  assert.ok(camera.actualWorkingDistance>=.065);
+  assert.equal(camera.framingSource,'cooperative-target');
+  s.setScopeContext({surfaceTarget:null,graspTarget:context.graspTarget});hold(s,[],1);
+  assert.equal(camera.framingSource,'cooperative-target');
+  nearVector(camera.target,context.graspTarget);
 });
 
 test('anatomical framing preserves active, midpoint and cooperative grasp intentions', () => {
@@ -629,16 +629,16 @@ test('anatomical framing preserves active, midpoint and cooperative grasp intent
   assert.equal(s.state.scope.viewMode,'field');
 });
 
-test('explicit specimen view centres its real bounds and falls back honestly when none is held', () => {
+test('explicit specimen framing fits its real bounds around the selected TCP and keeps that target when absent', () => {
   const s=new Simulation(),context=anatomicalContext();
   s.setScopeContext(context);s.setScopeViewMode('specimen');hold(s,[],6,.02);
-  nearVector(s.state.scope.target,context.heldSpecimen.position);
+  nearVector(s.state.scope.target,s.state.tools[s.state.activeTool].position);
   assert.equal(s.state.scope.framingSource,'specimen');
-  assert.ok(s.state.scope.actualWorkingDistance>=.028&&s.state.scope.actualWorkingDistance<=.065);
+  assert.ok(s.state.scope.actualWorkingDistance>=.028);
   s.setScopeContext({heldSpecimen:null});hold(s,[],3);
   assert.equal(s.state.scope.viewMode,'specimen','the explicit user preference is retained');
-  assert.equal(s.state.scope.framingSource,'mother-surface');
-  assert.ok(Math.hypot(...sub(s.state.scope.target,context.surfaceTarget))<=.012+1e-12);
+  assert.equal(s.state.scope.framingSource,'active-tip');
+  nearVector(s.state.scope.target,s.state.tools[s.state.activeTool].position);
 });
 
 test('automatic insertion is bounded, monotone and independent of frame subdivision', () => {
@@ -718,12 +718,12 @@ test('scope anatomical contexts are detached and invalid updates never partially
   assert.throws(()=>s.restore(bad),TypeError);assert.deepEqual(s.snapshot(),stable);
 });
 
-test('pure scope framing uses only mother bounds when no surface query is available', () => {
+test('pure scope framing retains mother bounds for safety without moving the control target', () => {
   const context=anatomicalContext();
   const framed=resolveScopeFraming({port:[0,1.18,.14],intentTarget:[-.3,1.3,-.2],organBounds:context.organBounds});
-  assert.equal(framed.source,'mother-bounds');
+  assert.equal(framed.source,'active-tip');
   assert.ok(framed.anchor.every((v,i)=>v>=context.organBounds.min[i]&&v<=context.organBounds.max[i]));
-  assert.ok(Math.hypot(...sub(framed.target,framed.anchor))<=.012+1e-12);
+  nearVector(framed.target,[-.3,1.3,-.2]);
   assert.equal(resolveScopeFraming({port:[0,1.18,.14],intentTarget:[0,1.1,0]}),null);
 });
 
@@ -752,6 +752,7 @@ test('unreachable narrow-view framing reports best effort at the physical retrac
 
 test('live viewport aspect is validated atomically and stays independent of undo, restore and reset',()=>{
   const s=new Simulation(),context=anatomicalContext();context.heldSpecimen.radius=.014;
+  context.heldSpecimen.position=[...s.state.tools.left.position];
   s.setScopeContext({...context,viewAspect:1});s.setScopeViewMode('specimen');hold(s,[],4);
   const before=s.snapshot();s.checkpoint('display context');s.setScopeContext({viewAspect:.462});hold(s,[],4);
   assert.ok(s.state.scope.actualWorkingDistance>.065);assert.equal(s.state.scope.framingLimited,false);

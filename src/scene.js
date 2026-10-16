@@ -19,7 +19,7 @@ function setSegment(m,a,b){V.subVectors(b,a);const length=V.length();m.position.
 function labelSprite(text,color='#d6e9df'){
   const c=document.createElement('canvas');c.width=512;c.height=96;const x=c.getContext('2d');x.fillStyle='#12221ee0';x.roundRect(0,0,512,96,14);x.fill();x.fillStyle=color;x.font='500 28px sans-serif';x.textAlign='center';x.fillText(text,256,59);const m=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(c),transparent:true,depthTest:false}));m.scale.set(.29,.054,1);return m;
 }
-function tissueTexture(){const c=document.createElement('canvas');c.width=c.height=256;const x=c.getContext('2d');let seed=1234;const rnd=()=>{seed=(Math.imul(seed,1664525)+1013904223)|0;return(seed>>>0)/4294967296};x.fillStyle='#9a615b';x.fillRect(0,0,256,256);for(let i=0;i<7500;i++){const a=rnd(),b=rnd(),r=rnd()*2+.3;x.fillStyle=`rgba(${rnd()>.5?'225,164,135':'81,31,35'},${rnd()*.15})`;x.beginPath();x.ellipse(a*256,b*256,r,r*.6,0,0,7);x.fill();}const tex=new THREE.CanvasTexture(c);tex.wrapS=tex.wrapT=THREE.RepeatWrapping;tex.repeat.set(3,3);tex.colorSpace=THREE.SRGBColorSpace;return tex;}
+function tissueTexture(){const c=document.createElement('canvas');c.width=c.height=256;const x=c.getContext('2d');let seed=1234;const rnd=()=>{seed=(Math.imul(seed,1664525)+1013904223)|0;return(seed>>>0)/4294967296};x.fillStyle='#b39e91';x.fillRect(0,0,256,256);for(let i=0;i<7500;i++){const a=rnd(),b=rnd(),r=rnd()*2+.3;x.fillStyle=`rgba(${rnd()>.5?'205,182,160':'104,83,78'},${rnd()*.15})`;x.beginPath();x.ellipse(a*256,b*256,r,r*.6,0,0,7);x.fill();}const tex=new THREE.CanvasTexture(c);tex.wrapS=tex.wrapT=THREE.RepeatWrapping;tex.repeat.set(3,3);tex.colorSpace=THREE.SRGBColorSpace;return tex;}
 function sterileDrape(parent){
   const geometry=new THREE.PlaneGeometry(.78,.96,40,48),p=geometry.attributes.position;
   for(let i=0;i<p.count;i++){const x=p.getX(i),y=p.getY(i),edge=Math.abs(x)/.39;p.setZ(i,-.075*edge**4+.0028*Math.sin(31*x+7*y)*Math.sin(23*y)+.0015*Math.cos(57*x-19*y));}
@@ -109,7 +109,7 @@ export class SurgicalScene{
     sphere([.17,.095,.23],[0,1.09,-.02],cutoutMat,outer);
     // Drape portions flank an open work window instead of hiding the intracorporeal scene.
     for(const x of [-.22,.22])box([.11,.04,.51],[x,1.105,-.02],drape,outer);
-    this.cavity=new THREE.Group();this.scene.add(this.cavity);const cavityMat=new THREE.MeshPhysicalMaterial({color:'#c5b1a7',roughness:.72,metalness:0,side:THREE.BackSide,map:tissueTexture(),clearcoat:.08,clearcoatRoughness:.58});
+    this.cavity=new THREE.Group();this.scene.add(this.cavity);const cavityMat=new THREE.MeshPhysicalMaterial({color:'#b6afa2',roughness:.76,metalness:0,side:THREE.BackSide,map:tissueTexture(),clearcoat:.08,clearcoatRoughness:.58});
     const inner=sphere([.25,.16,.29],[0,1.085,0],cavityMat,this.cavity);inner.layers.set(1);inner.castShadow=false;
     const diaphragm=sphere([.18,.028,.13],[0,1.00,-.14],material('#ac7b74',0,.55),this.cavity);diaphragm.layers.enable(1);
     this.gallbladder=sphere([.012,.017,.032],[-.032,1.001,.055],new THREE.MeshPhysicalMaterial({color:'#68804b',roughness:.3,clearcoat:.6}),this.cavity);this.gallbladder.rotation.z=.3;this.gallbladder.layers.enable(1);
@@ -235,6 +235,7 @@ export class SurgicalScene{
     this.conceptDecoupled=this.assemblies?.conceptDecoupled??false;this.kinematicLimited=false;
     const sc=state.scope,sp=new THREE.Vector3(...sc.position);
     if(this.assemblies)this.portMeshes[2].quaternion.setFromUnitVectors(Y,this.assemblies.scope.direction);
+    if(this.endoCamera.fov!==(sc.fov??55)){this.endoCamera.fov=sc.fov??55;this.endoCamera.updateProjectionMatrix();}
     this.endoCamera.position.copy(sp);if(sc.cameraUp)this.endoCamera.up.fromArray(sc.cameraUp);else this.endoCamera.up.set(0,1,0);this.endoCamera.lookAt(new THREE.Vector3(...sc.lookAt));
     this.scopeLight.position.copy(sp);this.scopeLight.target.position.set(...sc.lookAt);
     this.controls.update();

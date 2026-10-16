@@ -162,7 +162,7 @@ export class GuidedDemo {
     const leftLift=leftRest.clone().addScaledVector(plan.worldNormal,.022).addScaledVector(up,.012);
     const leftAway=leftLift.clone().addScaledVector(plan.worldNormal,.045).addScaledVector(up,.025);
     const delta=this.tissue.group.worldToLocal(leftLift.clone()).sub(plan.referenceAnchor);
-    const preview=normalizeDeformation({local:plan.referenceAnchor.toArray(),displacement:delta.toArray()});
+    const preview=normalizeDeformation({model:'local-flow',local:plan.referenceAnchor.toArray(),displacement:delta.toArray()});
     const displayed=point=>world(new THREE.Vector3(...materialDisplay(point.toArray(),preview)));
     const rightEntry=displayed(plan.path[0]);
     const standbyCandidates=[new THREE.Vector3(...this.sim.state.tools.right.position),

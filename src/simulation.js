@@ -92,7 +92,8 @@ function rotateAround(vector, axis, angle) {
 function smoothDirection(from, to, time, up) {
   const angle = Math.acos(clamp(dot(from, to), -1, 1));
   if (angle < 1e-10) return [...to];
-  const amount = Math.min(angle * (1 - Math.exp(-CONTROL_RATES.followSmoothing * time)), CONTROL_RATES.followMaxRadiansPerSecond * time);
+  const amount = Math.min(angle, CONTROL_RATES.followMaxRadiansPerSecond * time);
+  if(amount===angle)return normalize(to);
   const axis = normalize(cross(from, to), perpendicularUp(from, up));
   return normalize(rotateAround(from, axis, amount));
 }
@@ -115,7 +116,7 @@ function initialState() {
     scope: {
       port: [...SCOPE_PORT], position: [0, 0, 0], target, lookAt: [...target],
       depth: clamp(Math.hypot(dx,dy,dz)-SCOPE_FRAMING.workingDistance,...LIMITS.scopeDepth), yaw: Math.atan2(dx, -dz), pitch: Math.atan2(-dy, Math.hypot(dx, dz)),
-      roll: 0, follow: true, followMode: 'active', graspTarget: null, operating: false,
+      roll: 0, fov: SCOPE_FRAMING.defaultFov, follow: true, followMode: 'active', graspTarget: null, operating: false,
       direction: normalize([dx, dy, dz]), up: [0, 1, 0], cameraUp: [0, 1, 0],
       viewMode:'field',depthBias:0,surfaceTarget:null,fieldAnchor:null,organBounds:null,heldSpecimen:null,
       framingSource:null,framingLimited:false,targetWorkingDistance:SCOPE_FRAMING.workingDistance,autoDepthTarget:null,intentTarget:[...target],
@@ -245,6 +246,8 @@ export class Simulation {
     if (s.graspTarget != null && !validVector(s.graspTarget)) throw new TypeError('Invalid scope grasp target.');
     s.graspTarget ??= null;
     s.operating = Boolean(s.operating);
+    s.fov ??= SCOPE_FRAMING.defaultFov;
+    if(!finite(s.fov)||s.fov<SCOPE_FRAMING.minimumFov||s.fov>SCOPE_FRAMING.maximumFov)throw new TypeError('Invalid scope optical FOV.');
     s.viewMode??='field';s.depthBias??=0;s.surfaceTarget??=null;s.fieldAnchor??=s.surfaceTarget?[...s.surfaceTarget]:null;
     s.organBounds??=null;s.heldSpecimen??=null;s.framingSource??=null;s.targetWorkingDistance??=SCOPE_FRAMING.workingDistance;
     s.framingLimited=Boolean(s.framingLimited);
@@ -336,6 +339,31 @@ export class Simulation {
     this._emit('scope-follow', { follow: this.state.scope.follow, mode });
   }
 
+  /** Mouse view rotation changes the real RCM scope direction, not a detached
+   * virtual camera. The host applies the same parent-surface clearance veto as
+   * keyboard navigation before drawing the next frame. */
+  navigateScope(deltaYaw,deltaPitch) {
+    if(![deltaYaw,deltaPitch].every(finite))throw new TypeError('Scope navigation requires finite angles.');
+    const s=this.state.scope;if(s.follow||this.state.paused||(!deltaYaw&&!deltaPitch))return false;
+    s.yaw+=deltaYaw;s.pitch+=deltaPitch;updateScopePose(this.state);return true;
+  }
+
+  zoomScope(logScale) {
+    if(!finite(logScale))throw new TypeError('Scope optical zoom requires a finite scale.');
+    if(this.state.paused)return false;
+    const s=this.state.scope,next=clamp(s.fov*Math.exp(clamp(logScale,-4,4)),SCOPE_FRAMING.minimumFov,SCOPE_FRAMING.maximumFov);
+    if(next===s.fov)return false;s.fov=next;return true;
+  }
+
+  homeScopeView() {
+    if(this.state.paused)return false;
+    const s=this.state.scope,direction=normalize(sub(this._scopeIntentTarget(),s.port),s.direction);
+    s.fov=SCOPE_FRAMING.defaultFov;s.roll=0;s.up=perpendicularUp(direction,[0,1,0]);
+    s.yaw+=wrapAngle(Math.atan2(direction[0],-direction[2])-s.yaw);
+    s.pitch=Math.atan2(-direction[1],Math.hypot(direction[0],direction[2]));
+    updateScopePose(this.state,direction);return true;
+  }
+
   setScopeContext({graspTarget = null, operating = false,surfaceTarget,organBounds,heldSpecimen,viewAspect} = {}) {
     if (graspTarget !== null && !validVector(graspTarget)) throw new TypeError('Grasp target must be null or three finite world coordinates.');
     if(surfaceTarget!==undefined&&surfaceTarget!==null&&!validVector(surfaceTarget))throw new TypeError('Surface target requires finite world coordinates.');
@@ -416,6 +444,7 @@ export class Simulation {
     const pose=instrumentPose(next);tool.shaftDirection=pose.shaftDirection;tool.alignment=pose.alignment;
     tool.wrist = [...next.wrist];
     tool.jaw = next.jaw;
+    if(changed)this.state.activeTool=id;
     this.state.collision=collisionState(this.state.tools,limited&&reason==='instrument-contact',id,reason);
     const clearance=this.state.collision.clearance;
     if (limited && this._limitCooldown <= 0) {

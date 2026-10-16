@@ -64,6 +64,36 @@ test('left traction persists while the selected right shear removes held tissue'
   tissue.dispose();
 });
 
+test('excess local strain visibly slips without limiting the tool and requires reopening before regrasp',async()=>{
+  const {sim,tissue,interaction}=workbench(),messages=[];interaction.onMessage=m=>messages.push(m);
+  await interaction.update(1/60);const held=[...sim.state.tools.left.position];
+  sim.state.tools.left.position[2]+=.025;await interaction.update(1/60);
+  assert.equal(tissue.graspMetrics.radiusMm,18);assert.ok(interaction.grasp);
+  sim.state.tools.left.position[2]+=.045;const far=[...sim.state.tools.left.position];await interaction.update(1/60);
+  assert.deepEqual(sim.state.tools.left.position,far,'slipping tissue never clamps instrument motion');
+  assert.equal(interaction.grasp,null);assert.equal(interaction.requiresReopen,true);assert.ok(messages.some(m=>m.includes('滑脱')));
+  sim.state.tools.left.position=[...held];for(let i=0;i<80;i++)await interaction.update(1/60);
+  assert.equal(interaction.grasp,null,'a closed jaw cannot instantly recapture after slipping');
+  const saved=interaction.snapshot();interaction.release(true);assert.equal(interaction.requiresReopen,false);
+  await interaction.restore(saved);assert.equal(interaction.requiresReopen,true);
+  sim.setJaw('left',.8);await interaction.update(1/60);assert.equal(interaction.requiresReopen,false);
+  sim.setJaw('left',0);await interaction.update(1/60);assert.ok(interaction.grasp,'open then close permits a fresh local material grasp');
+  tissue.dispose();
+});
+
+test('legacy held-tissue history preserves its original material mapping until released',async()=>{
+  const {sim,tissue,interaction}=workbench();await interaction.update(1/60);
+  sim.state.tools.left.position[2]+=.012;await interaction.update(1/60);
+  const data=interaction.snapshot();delete data.grasp.deformationModel;
+  data.tissue.deformation={local:[...data.grasp.local],displacement:[...data.grasp.displacement],radius:.065};
+  await interaction.restore(data);
+  assert.equal(tissue._deformation.model,undefined);assert.equal(tissue._deformation.radius,.065);
+  const expected=tissue.deformPoint(new THREE.Vector3(.01,0,.02));await interaction.update(1/60);
+  assert.ok(tissue.deformPoint(new THREE.Vector3(.01,0,.02)).distanceTo(expected)<1e-12);
+  sim.setJaw('left',1);await interaction.update(1/60);assert.equal(tissue._deformation.model,undefined,'legacy recoil preserves its recorded mapping too');
+  tissue.dispose();
+});
+
 test('composite history restores both the grasper attachment and the material cut history', async () => {
   const { sim, tissue, interaction } = workbench();
   await interaction.update(1 / 60);

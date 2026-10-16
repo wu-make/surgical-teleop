@@ -3,12 +3,13 @@
  * main. This module never treats a detached specimen as the mother organ. */
 export const SCOPE_FRAMING = Object.freeze({
   workingDistance: .065,
-  maximumIntentOffset: .012,
   minimumWorkingDistance: .028,
   maximumWorkingDistance: .13,
   insertionSpeed: .035,
   insertionSmoothing: 4.5,
   defaultFov: 55,
+  minimumFov: 25,
+  maximumFov: 80,
 });
 
 const vector = value => Array.isArray(value) && value.length === 3 && value.every(Number.isFinite);
@@ -23,27 +24,27 @@ export function validOrganBounds(bounds) {
 /** Returns null only when the host has not supplied an anatomical context. */
 export function resolveScopeFraming({port, intentTarget, surfaceTarget = null, fieldAnchor = null,
   organBounds = null, heldSpecimen = null, viewMode = 'field', depthBias = 0,
-  fovDegrees = SCOPE_FRAMING.defaultFov, aspect=1, minimumDepth = .018, maximumDepth = .135} = {}) {
+  followMode = 'active', fovDegrees = SCOPE_FRAMING.defaultFov, aspect=1, minimumDepth = .018, maximumDepth = .135} = {}) {
   if (!vector(port) || !vector(intentTarget) || !Number.isFinite(depthBias)||!Number.isFinite(aspect)||aspect<=0||!Number.isFinite(fovDegrees)) throw new TypeError('Invalid scope framing inputs.');
   let target, anchor, baseWorkingDistance, source;
   if (viewMode === 'specimen' && vector(heldSpecimen?.position)) {
-    anchor = clone(heldSpecimen.position); target = clone(anchor); source = 'specimen';
+    anchor = clone(heldSpecimen.position); target = clone(intentTarget); source = 'specimen';
     const radius = Number.isFinite(heldSpecimen.radius) && heldSpecimen.radius > 0 ? heldSpecimen.radius : .009;
     const fov = clamp(fovDegrees, 30, 100) * Math.PI / 180;
     // A perspective camera's configured FOV is vertical. Portrait scope areas
     // have a narrower horizontal field; both axes must contain the specimen.
     const tanHalf=Math.tan(fov/2)*Math.min(1,aspect);
-    baseWorkingDistance = Math.max(.03,radius/(.78*tanHalf));
+    // The selected control target remains centred even when a held specimen's
+    // bounds are offset from the grasped TCP. Back off enough to fit both.
+    baseWorkingDistance = Math.max(.03,(radius+distance(anchor,target))/(.78*tanHalf));
   } else {
     anchor = vector(surfaceTarget) ? clone(surfaceTarget) : vector(fieldAnchor) ? clone(fieldAnchor) : null;
     if (!anchor && validOrganBounds(organBounds)) anchor = intentTarget.map((v, i) => clamp(v, organBounds.min[i], organBounds.max[i]));
     if (!anchor) return null;
-    source = vector(surfaceTarget) ? 'mother-surface' : vector(fieldAnchor) ? 'retained-operative-field' : 'mother-bounds';
-    const offset = intentTarget.map((v, i) => v - anchor[i]), separation = Math.hypot(...offset);
-    let weight = .45 / (1 + (separation / .035) ** 2);
-    if (vector(heldSpecimen?.position) && distance(heldSpecimen.position, anchor) > .045) weight *= .35;
-    const amount = separation > 1e-12 ? Math.min(weight, SCOPE_FRAMING.maximumIntentOffset / separation) : 0;
-    target = anchor.map((v, i) => v + offset[i] * amount);
+    source = followMode === 'active' ? 'active-tip' : followMode === 'midpoint' ? 'instrument-midpoint' : 'cooperative-target';
+    // Parent geometry supplies clearance context, never an aim offset. In
+    // active mode the commanded/visible CAD TCP is the exact screen centre.
+    target = clone(intentTarget);
     baseWorkingDistance = SCOPE_FRAMING.workingDistance;
   }
   const targetDistance = distance(port, target);
