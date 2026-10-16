@@ -5,11 +5,11 @@ import { TissueVolume } from '../src/tissue.js';
 import { createVolumeState, allChunkKeys, polygonizeChunk, deformPoint } from '../src/tissue-worker.js';
 import { sampleFragmentVolume } from '../src/tissue-fragments.js';
 
-function fixture() {
+function fixture(fieldAt = (x, y, z) => Math.hypot(x, y, z) - .009) {
   const n = 19, spacing = .0015, origin = -.0135;
   const meta = { dims: [n, n, n], origin: [origin, origin, origin], spacing: [spacing, spacing, spacing] };
   const values = new Float32Array(n ** 3);
-  for (let z = 0; z < n; z++) for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) values[x + n * (y + n * z)] = Math.hypot(origin + x * spacing, origin + y * spacing, origin + z * spacing) - .009;
+  for (let z = 0; z < n; z++) for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) values[x + n * (y + n * z)] = fieldAt(origin + x * spacing, origin + y * spacing, origin + z * spacing);
   const state = createVolumeState(meta, values, 8);
   const chunks = allChunkKeys(state).map(key => polygonizeChunk(state, key));
   const merged = { positions: [], normals: [], colors: [], cutMasks: [], indices: [] };
@@ -133,5 +133,20 @@ test('specimen approach finds a released piece beyond the ordinary liver approac
   assert.equal(surface.fragmentId, piece.id);
   assert.ok(surface.distanceTo(tool) > .08);
   assert.ok(Math.abs(tissue.fragments.distance(piece, surface)) < .0001);
+  tissue.dispose();
+});
+
+test('far approach reaches the actual surface of a thin concave rotated specimen', () => {
+  const major = .008, minor = .0025;
+  const { tissue, descriptor } = fixture((x, y, z) => Math.hypot(Math.hypot(x, y) - major, z) - minor);
+  const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(.2, .4, .5));
+  const piece = tissue.fragments.add(descriptor, { position: [.03, -.055, .01], quaternion: q.toArray(), deformation: null });
+  const tool = new THREE.Vector3(0, 0, .08).applyQuaternion(q).add(piece.position);
+  const hit = tissue.findSpecimenGraspPoint(tool, .15);
+  assert.equal(hit?.fragmentId, piece.id);
+  const analyticDistance = Math.hypot(major, .08) - minor;
+  assert.ok(Math.abs(tool.distanceTo(hit) - analyticDistance) < .0015, 'matches analytic nearest distance within volume resolution');
+  assert.ok(Math.abs(tissue.fragments.distance(piece, hit)) < .0006, 'lands on tissue rather than in the concave hole');
+  assert.ok(Math.abs(hit.normal.length() - 1) < 1e-10);
   tissue.dispose();
 });

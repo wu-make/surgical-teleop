@@ -275,3 +275,35 @@ test('dedicated specimen approach never falls back to the mother and never drops
   assert.ok(messages.at(-1).includes('不会退回母体'));
   tissue.dispose();
 });
+
+test('resume rebases a restored specimen onto the fresh CAD orientation gauge without spontaneous rotation',async()=>{
+  const {sim,tissue,interaction}=raisedWorkbench();
+  const piece=tissue.fragments.add(specimenDescriptor([.05,.055,.01],.005));
+  sim.state.tools.left.position=tissue.group.localToWorld(new THREE.Vector3(.055,.055,.01)).toArray();
+  let worldRotation=new THREE.Quaternion();interaction.toolQuaternion=()=>worldRotation;
+  await interaction.update(1/60);
+  worldRotation.setFromAxisAngle(new THREE.Vector3(0,0,1),.6);await interaction.update(1/60);
+  const snapshot=interaction.snapshot(),saved=snapshot.tissue.fragments[0];
+  tissue.restore=async data=>{
+    const pose=data.fragments.find(value=>value.id===piece.id);
+    piece.position.fromArray(pose.position);piece.quaternion.fromArray(pose.quaternion);
+    piece.held=pose.held;piece.attachment=structuredClone(pose.attachment);tissue.fragments.sync(piece);
+  };
+  let rebases=0;const attach=tissue.attachFragment.bind(tissue);
+  tissue.attachFragment=(...args)=>{rebases++;return attach(...args);};
+  sim.setPaused(true);worldRotation.setFromAxisAngle(new THREE.Vector3(0,1,0),-1.1);
+  await interaction.restore(snapshot);await interaction.update(1/60);interaction.applyGrasp();
+  assert.equal(rebases,0,'paused restore must neither follow stale CAD nor consume the pending rebase');
+  assert.deepEqual(piece.position.toArray(),saved.position);assert.deepEqual(piece.quaternion.toArray(),saved.quaternion);
+  const freshGauge=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0),1.8);
+  worldRotation.copy(freshGauge);sim.setPaused(false);await interaction.update(1/60);
+  assert.equal(rebases,1);
+  assert.ok(piece.position.distanceTo(new THREE.Vector3(...saved.position))<1e-10);
+  assert.ok(piece.quaternion.angleTo(new THREE.Quaternion(...saved.quaternion))<1e-8,'a fresh parallel-transport gauge must not rotate the restored specimen');
+  worldRotation.copy(freshGauge).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1),.4));
+  await interaction.update(1/60);
+  assert.equal(rebases,1,'the alignment correction is one-shot, not a per-frame rotation lock');
+  assert.ok(Math.abs(piece.quaternion.angleTo(new THREE.Quaternion(...saved.quaternion))-.4)<1e-8,'subsequent deliberate wrist rotation must still rotate the specimen');
+  sim.setJaw('left',1);await interaction.update(1/60);assert.equal(piece.held,false);
+  tissue.dispose();
+});

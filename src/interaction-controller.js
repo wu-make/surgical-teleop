@@ -18,12 +18,14 @@ export class InteractionController {
     this.lastCut = null;
     this.contact = { left: false, right: false, rightDepthMm: 0, cutting: false };
     this._generation = 0;
+    this._fragmentRebaseId = null;
   }
 
   snapshot() { return { version: 3, tissue: this.tissue.snapshot(), grasp: copy(this.grasp), relaxing: copy(this.relaxing) }; }
 
   async restore(data) {
     const generation = ++this._generation;
+    this._fragmentRebaseId=null;
     this.lastCut = null;
     this.relaxing = null;
     await this.tissue.restore(data?.tissue ?? data);
@@ -34,6 +36,7 @@ export class InteractionController {
       if(!Object.hasOwn(this.grasp,'reference'))this.grasp.reference=this.grasp.kind==='fragment'?null:[...this.grasp.local];
     }
     this.relaxing = copy(data?.relaxing);
+    if(this.grasp?.kind==='fragment')this._fragmentRebaseId=this.grasp.fragmentId;
     // Rigid pose and attachment already belong to the tissue snapshot. The CAD
     // quaternion getter may still describe the pre-undo render; following it
     // here would corrupt an exact restored specimen pose before the next frame.
@@ -41,6 +44,7 @@ export class InteractionController {
   }
 
   release(immediate = false) {
+    this._fragmentRebaseId=null;
     const released=this.grasp;
     if(released?.kind==='fragment')this.tissue.releaseFragment?.(released.fragmentId);
     else if (released && !immediate) this.relaxing = { ...copy(released), remaining: 1 };
@@ -74,6 +78,7 @@ export class InteractionController {
       this.tissue.setGrasp(null);
     }
     this.grasp={kind:'fragment',fragmentId,local:point.toArray(),reference:reference?[...reference]:null,displacement:[0,0,0]};
+    this._fragmentRebaseId=null;
     this.onEvent('fragment-grasp',{fragmentId,transition});
     this.onMessage(transition?'切断已确认：左钳现夹持独立组织块，可移动、旋转，V 松开':'已夹住切离组织块：可移动和旋转，V 松开放下');
     return true;
@@ -96,10 +101,21 @@ export class InteractionController {
     if(this.grasp.kind==='fragment'){
       if(!this.tissue.getFragment?.(this.grasp.fragmentId)){
         this.grasp=null;
+        this._fragmentRebaseId=null;
         this.onMessage('该组织块已不存在，左钳夹持已解除');
         return;
       }
-      this.tissue.moveHeldFragment?.(this.grasp.fragmentId,localPoint(this.tissue,this.sim.state.tools.left.position),this._toolQuaternionLocal());
+      if(this.sim.state.paused)return;
+      const point=localPoint(this.tissue,this.sim.state.tools.left.position),quaternion=this._toolQuaternionLocal();
+      if(this._fragmentRebaseId===this.grasp.fragmentId){
+        // The authentic CAD uses path-dependent parallel transport. Undo/redo
+        // can therefore restore the same TCP/wrist with a different orientation
+        // gauge. Rebase against the first fresh CAD frame without moving the
+        // saved specimen, then continue ordinary relative rigid following.
+        if(this.tissue.attachFragment?.(this.grasp.fragmentId,point,quaternion)===false)return;
+        this._fragmentRebaseId=null;
+      }
+      this.tissue.moveHeldFragment?.(this.grasp.fragmentId,point,quaternion);
       return;
     }
     const position = localPoint(this.tissue, this.sim.state.tools.left.position);

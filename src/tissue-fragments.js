@@ -129,8 +129,11 @@ export class TissueFragments {
   }
 
   surfacePoint(point, margin) {
+    // A distant point can project past a thin, curved specimen in its cropped
+    // SDF. Approach commands use the actual displayed triangles directly.
+    if (margin > .02) return this.closestSurfacePoint(point, margin);
     const piece = this.nearest(point, margin);
-    if (!piece) return null;
+    if (!piece) return this.closestSurfacePoint(point, margin);
     const initial = vec(point), p = initial.clone(), gradient = new THREE.Vector3();
     const epsilon = Math.min(...piece.volume.spacing) * .3;
     for (let iteration = 0; iteration < 10; iteration++) {
@@ -140,13 +143,42 @@ export class TissueFragments {
         lo.setComponent(axis, lo.getComponent(axis) - epsilon); hi.setComponent(axis, hi.getComponent(axis) + epsilon);
         gradient.setComponent(axis, (this.distance(piece, hi) - this.distance(piece, lo)) / (2 * epsilon));
       }
-      if (!Number.isFinite(d) || gradient.lengthSq() < 1e-9) return null;
+      if (!Number.isFinite(d) || gradient.lengthSq() < 1e-9) return this.closestSurfacePoint(point, margin);
       if (Math.abs(d) < .00004) break;
       p.addScaledVector(gradient, -d / gradient.lengthSq());
     }
-    if (p.distanceTo(initial) > margin || Math.abs(this.distance(piece, p)) > .0003) return null;
+    if (p.distanceTo(initial) > margin || Math.abs(this.distance(piece, p)) > .0003) return this.closestSurfacePoint(point, margin);
     p.normal = gradient.normalize(); p.fragmentId = piece.id;
     return p;
+  }
+
+  closestSurfacePoint(point, margin) {
+    const initial = vec(point);
+    if (!Number.isFinite(margin) || margin <= 0 || !initial.toArray().every(Number.isFinite)) return null;
+    let best = margin * margin, result = null;
+    const triangle = new THREE.Triangle(), candidate = new THREE.Vector3(), barycentric = new THREE.Vector3();
+    const normal = new THREE.Vector3(), temporary = new THREE.Vector3();
+    for (const piece of this.items.values()) {
+      if (piece.box.distanceToPoint(initial) > margin) continue;
+      const local = initial.clone().sub(piece.position).applyQuaternion(piece.quaternion.clone().invert());
+      const geometry = piece.mesh.geometry, positions = geometry.attributes.position, normals = geometry.attributes.normal, indices = geometry.index.array;
+      for (let i = 0; i < indices.length; i += 3) {
+        const a = indices[i], b = indices[i + 1], c = indices[i + 2];
+        triangle.a.fromBufferAttribute(positions, a); triangle.b.fromBufferAttribute(positions, b); triangle.c.fromBufferAttribute(positions, c);
+        triangle.closestPointToPoint(local, candidate);
+        const distance = local.distanceToSquared(candidate);
+        if (distance > best) continue;
+        best = distance;
+        triangle.getBarycoord(candidate, barycentric);
+        normal.fromBufferAttribute(normals, a).multiplyScalar(barycentric.x);
+        normal.addScaledVector(temporary.fromBufferAttribute(normals, b), barycentric.y);
+        normal.addScaledVector(temporary.fromBufferAttribute(normals, c), barycentric.z);
+        if (!Number.isFinite(normal.lengthSq()) || normal.lengthSq() < 1e-12) triangle.getNormal(normal);
+        result = candidate.clone().applyQuaternion(piece.quaternion).add(piece.position);
+        result.normal = normal.clone().applyQuaternion(piece.quaternion).normalize(); result.fragmentId = piece.id;
+      }
+    }
+    return result;
   }
 
   attach(id, anchor, quaternion) {
