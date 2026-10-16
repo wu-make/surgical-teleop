@@ -1,3 +1,5 @@
+import {instrumentPose,instrumentCapsules} from './instrument-pose.js';
+import {sourceInstrumentContact,sweepInstrument,sourceSegmentDistance} from './instrument-contact.js';
 import {SCOPE_FRAMING,resolveScopeFraming,advanceScopeDepth,validOrganBounds} from './scope-framing.js';
 
 /**
@@ -5,18 +7,14 @@ import {SCOPE_FRAMING,resolveScopeFraming,advanceScopeDepth,validOrganBounds} fr
  * Units: metres, radians, seconds. This is a virtual workbench, not a
  * tissue/contact solver or a controller for physical surgical equipment.
  *
- * The abdominal ports are fixed remote centres of motion (RCM). A tool shaft
- * always joins its port and tip; wrist angles describe distal articulation only.
+ * The abdominal ports are fixed remote centres of motion (RCM). Source-CAD
+ * wrist articulation and the RCM frame share the same pose in rendering/contact.
  */
 
 export const LIMITS = Object.freeze({
   scopeDepth: Object.freeze([.018, .135]),
   workingDistance: .028,
-  shaftRadius: .003,
-  tipRadius: .005,
-  jawRadius: .004,
   collisionTolerance: 1e-7,
-  contactMargin: .00002,
   shaftLengths: Object.freeze({left: .4355, right: .4408}),
   maxFrameTime: .1,
   history: 40,
@@ -70,155 +68,15 @@ export function integratedControlDistance(age, duration, rate, fine = false) {
   return primitive(age + duration) - primitive(age);
 }
 
-/** Closest distance of two finite segments, including zero-length segments. */
-export function segmentDistance(p1, q1, p2, q2) {
-  const d1 = sub(q1, p1), d2 = sub(q2, p2), r = sub(p1, p2);
-  const a = dot(d1, d1), e = dot(d2, d2), f = dot(d2, r);
-  let s = 0, t = 0;
-  if (a <= 1e-20 && e <= 1e-20) return vectorDistance(p1, p2);
-  if (a <= 1e-20) t = clamp(f / e, 0, 1);
-  else {
-    const c = dot(d1, r);
-    if (e <= 1e-20) s = clamp(-c / a, 0, 1);
-    else {
-      const b = dot(d1, d2), denominator = a * e - b * b;
-      if (denominator > 1e-20) s = clamp((b * f - c * e) / denominator, 0, 1);
-      t = (b * s + f) / e;
-      if (t < 0) { t = 0; s = clamp(-c / a, 0, 1); }
-      else if (t > 1) { t = 1; s = clamp((b - c) / a, 0, 1); }
-    }
-  }
-  return vectorDistance(add(p1, mul(d1, s)), add(p2, mul(d2, t)));
+/** Shared source-CAD capsules: no TCP sphere or fictitious straight bent wrist. */
+export const segmentDistance=sourceSegmentDistance;
+export const toolCollisionShapes=tool=>instrumentCapsules(tool);
+export const instrumentClearance=(a,b)=>sourceInstrumentContact(a,b).clearance;
+function collisionState(tools,blocked=false,selected=null,reason=null){
+  const info=sourceInstrumentContact(tools.left,tools.right);
+  return {...info,active:blocked,blocked,contact:info.clearance<=.00025,selected:blocked?selected:null,reason:blocked?reason:null};
 }
-
-/**
- * Full internal/external shaft capsule and distal/jaw envelope. The straight
- * capsule spans the source CAD's neutral adaptor-to-TCP length (435.5/440.8 mm),
- * including the 416.2 mm rigid rod. Bent wrists and handles are approximated;
- * this is not triangle-level CAD contact. The distal envelope is
- * rotation invariant: wrist/roll can rotate continuously at contact, without a
- * changing bounding sphere artificially locking rotation. These are geometric
- * clearance proxies, not CAD mesh contact or an anatomy collision model.
- */
-export function toolCollisionShapes(tool) {
-  const direction = toolDirection(tool);
-  const length = toolLength(tool);
-  return [
-    {a: sub(tool.position, mul(direction, length)), b: tool.position, radius: LIMITS.shaftRadius},
-    {a: tool.position, b: tool.position, radius: LIMITS.tipRadius + LIMITS.jawRadius * tool.jaw},
-  ];
-}
-
-const toolLength = tool => tool.shaftLength ?? LIMITS.shaftLengths[tool.port[0] < 0 ? 'left' : 'right'];
-function toolDirection(tool) {
-  return normalize(sub(tool.position, tool.port), validVector(tool.shaftDirection) ? tool.shaftDirection : [0,0,-1]);
-}
-
-function clearancePairs(a, b) {
-  const result = [];
-  for (const one of toolCollisionShapes(a)) for (const two of toolCollisionShapes(b)) {
-    result.push(segmentDistance(one.a, one.b, two.a, two.b) - one.radius - two.radius);
-  }
-  return result;
-}
-
-export function instrumentClearance(a, b) { return Math.min(...clearancePairs(a, b)); }
-
-function toolTrajectory(start, end) {
-  const a=toolDirection(start),b=toolDirection(end),angle=Math.atan2(Math.hypot(...cross(a,b)),clamp(dot(a,b),-1,1));
-  const radiusA=vectorDistance(start.position,start.port),radiusB=vectorDistance(end.position,start.port);
-  const distance=vectorDistance(start.position,end.position),length=toolLength(start);
-  if(!finite(distance))throw new TypeError('Tool trajectory exceeds finite numeric precision.');
-  const jawBound=LIMITS.jawRadius*Math.abs(end.jaw-start.jaw);
-  // Exactly crossing the port makes the radial direction undefined. Traverse a
-  // continuous polar path in this submicron singular region, keeping TCP end
-  // commands exact; no position or insertion is rejected. This avoids an
-  // instantaneous 180-degree teleport of the external shaft.
-  const polar=segmentDistance(start.port,start.port,start.position,end.position)<1e-7&&angle>1e-12;
-  const axis=normalize(cross(a,b),perpendicularUp(a));
-  const pose=fraction=>{
-    let position,direction;
-    if(fraction<=0){position=[...start.position];direction=[...a];}
-    else if(fraction>=1){position=[...end.position];direction=[...b];}
-    else if(polar){
-      direction=normalize(rotateAround(a,axis,angle*fraction));
-      position=add(start.port,mul(direction,radiusA+(radiusB-radiusA)*fraction));
-    }else{position=interpolate(start.position,end.position,fraction);direction=normalize(sub(position,start.port),a);}
-    return {...start,position,shaftDirection:direction,wrist:interpolate(start.wrist,end.wrist,fraction),jaw:start.jaw+(end.jaw-start.jaw)*fraction};
-  };
-  const bound=(from,to)=>{
-    const span=to-from;
-    if(span<=0)return 0;
-    if(polar){
-      const maxLever=Math.max(radiusA,radiusB,Math.abs(radiusA-length),Math.abs(radiusB-length));
-      return span*(Math.abs(radiusB-radiusA)+maxLever*angle+jawBound)+1e-12;
-    }
-    const one=pose(from).shaftDirection,two=pose(to).shaftDirection;
-    // Along a Cartesian segment that does not cross the port, the radial axis
-    // travels monotonically along one great-circle arc. For any interval the
-    // full rod's Hausdorff travel is <= TCP distance + L * swept axis angle.
-    // This bounds the nonlinear handle, rather than incorrectly treating it as
-    // a linearly moving endpoint. Radius interpolation adds the final term.
-    const sweptAngle=Math.atan2(Math.hypot(...cross(one,two)),clamp(dot(one,two),-1,1));
-    return distance*span+length*sweptAngle+jawBound*span+1e-12;
-  };
-  return {pose,bound};
-}
-
-/**
- * Continuous advancement using a proven interval motion bound for both ends of
- * the complete shaft. Signed capsule clearance is 1-Lipschitz under this bound.
- * Each accepted interval therefore stays nonpenetrating, even when a long move
- * ends clear on the far side of the other instrument.
- */
-function sweepTool(start, desired, other) {
-  const trajectory=toolTrajectory(start,desired),fullBound=trajectory.bound(0,1);
-  if (fullBound < 2e-12) return {tool: trajectory.pose(1), limited: false};
-  const tolerance = LIMITS.collisionTolerance;
-  const originalGaps = clearancePairs(start, other);
-  const recovering=Math.min(...originalGaps)<0;
-  let clearanceAt=pose=>instrumentClearance(pose,other);
-  if(recovering){
-    // Legacy overlaps may recover without snapping. Each pair must stay at least
-    // as separated as it originally was (within 0.1 micrometre numeric tolerance).
-    // A maximally overlapping pair is already at its analytic distance floor and
-    // cannot worsen, so it must not trap the operator on a zero-gradient plateau.
-    const first=toolCollisionShapes(start),last=toolCollisionShapes(desired),fixed=toolCollisionShapes(other),constraints=[];
-    let index=0;
-    for(let i=0;i<first.length;i++)for(const shape of fixed){
-      const allowed=Math.min(0,originalGaps[index]);
-      const floor=-Math.max(first[i].radius,last[i].radius)-shape.radius;
-      if(floor<allowed-tolerance)constraints.push({index,allowed});
-      index++;
-    }
-    if(!constraints.length)return {tool:trajectory.pose(1),limited:false};
-    clearanceAt=pose=>{const gaps=clearancePairs(pose,other);return Math.min(...constraints.map(({index,allowed})=>gaps[index]-allowed+tolerance));};
-  }
-  let fraction = 0;
-  for (let iteration = 0; iteration < 768; iteration++) {
-    const pose = trajectory.pose(fraction);
-    const gap = clearanceAt(pose);
-    const remaining = 1 - fraction;
-    const endBound=trajectory.bound(fraction,1);
-    if (gap >= endBound + 1e-12) return {tool: trajectory.pose(1), limited: false};
-    if(gap<LIMITS.contactMargin){
-      const probe=Math.min(remaining,Math.max(1e-8,remaining*Math.min(.01,LIMITS.contactMargin/Math.max(endBound,1e-12))));
-      if(clearanceAt(trajectory.pose(fraction+probe))<gap-1e-11)return {tool:pose,limited:true};
-    }
-    // Find an interval whose complete nonlinear sweep fits inside current free
-    // clearance. A small contact margin gives tangential departures room to
-    // progress without allowing penetration or clamping a workspace coordinate.
-    let low=fraction,high=1;
-    for(let search=0;search<36;search++){
-      const middle=(low+high)*.5;
-      if(trajectory.bound(fraction,middle)<=Math.max(0,gap)*.8)low=middle;else high=middle;
-    }
-    if(low-fraction<1e-12)return {tool:pose,limited:true};
-    fraction=low;
-    if (fraction >= 1 - 1e-12) return {tool: trajectory.pose(1), limited: false};
-  }
-  return {tool: trajectory.pose(fraction), limited: true};
-}
+function clearCollisionBlock(state){if(state.collision?.blocked||state.collision?.active)state.collision={...state.collision,active:false,blocked:false,selected:null,reason:null};}
 
 function perpendicularUp(direction, suggestion = [0, 1, 0]) {
   const projected = sub(suggestion, mul(direction, dot(suggestion, direction)));
@@ -265,9 +123,10 @@ function initialState() {
   };
   for(const id of TOOL_IDS){
     state.tools[id].shaftLength=LIMITS.shaftLengths[id];
-    state.tools[id].shaftDirection=toolDirection(state.tools[id]);
+    state.tools[id].instrument=id==='left'?'needle-driver':'scissors';
+    const pose=instrumentPose(state.tools[id]);state.tools[id].alignment=pose.alignment;state.tools[id].shaftDirection=pose.shaftDirection;
   }
-  state.collision = {active: false, clearance: instrumentClearance(state.tools.left, state.tools.right), selected: null};
+  state.collision=collisionState(state.tools);
   updateScopePose(state);
   return state;
 }
@@ -371,7 +230,9 @@ export class Simulation {
       tool.shaftLength = LIMITS.shaftLengths[id];
       tool.position = constrainToolPosition(tool.position, tool.port);
       if(tool.shaftDirection!==undefined&&(!validVector(tool.shaftDirection)||Math.hypot(...tool.shaftDirection)<1e-10))throw new TypeError(`Invalid ${id} shaft direction.`);
-      tool.shaftDirection ??= toolDirection(tool);
+      tool.instrument=id==='left'?'needle-driver':'scissors';
+      if(tool.alignment!==undefined&&(!Array.isArray(tool.alignment)||tool.alignment.length!==4||!tool.alignment.every(finite)||Math.hypot(...tool.alignment)<1e-10))throw new TypeError(`Invalid ${id} tool frame.`);
+      const pose=instrumentPose(tool);tool.alignment=pose.alignment;tool.shaftDirection=pose.shaftDirection;
       tool.jaw = clamp(tool.jaw, 0, 1);
     }
     const s = state.scope;
@@ -393,7 +254,7 @@ export class Simulation {
       (s.organBounds!==null&&!validOrganBounds(s.organBounds))||!validVector(s.intentTarget)||
       (s.heldSpecimen!==null&&(!validVector(s.heldSpecimen.position)||!finite(s.heldSpecimen.radius)||s.heldSpecimen.radius<0)))throw new TypeError('Invalid scope anatomical framing snapshot.');
     state.elapsed = Math.max(0, state.elapsed);
-    state.collision ??= {active: instrumentClearance(state.tools.left, state.tools.right) < 0, clearance: instrumentClearance(state.tools.left, state.tools.right), selected: null};
+    state.collision=collisionState(state.tools);
     updateScopePose(state);
     this.state = state;
     this._gesture = false;
@@ -450,6 +311,7 @@ export class Simulation {
     if (id !== 'scope') this.state.activeTool = id;
     this._gesture = false;
     this._controlAges.clear();
+    clearCollisionBlock(this.state);
     this._emit('selection', { selected: id });
     return true;
   }
@@ -458,6 +320,7 @@ export class Simulation {
     this.state.paused = Boolean(value);
     this._gesture = false;
     this._controlAges.clear();
+    clearCollisionBlock(this.state);
     this._emit('pause', { paused: this.state.paused });
   }
 
@@ -545,18 +408,18 @@ export class Simulation {
 
   _applyTool(desired, id) {
     const tool = this._tool(id);
+    if(desired.position.every((v,i)=>v===tool.position[i])&&desired.wrist.every((v,i)=>v===tool.wrist[i])&&desired.jaw===tool.jaw)return {changed:false,limited:false};
     const other = this._tool(id === 'left' ? 'right' : 'left');
-    const {tool: next, limited} = sweepTool(tool, desired, other);
-    const changed = !equalVector(next.position, tool.position) || !equalVector(desired.wrist, tool.wrist) || next.jaw !== tool.jaw;
+    const {tool: next, limited,reason} = sweepInstrument(tool, desired, other);
+    const changed = !equalVector(next.position, tool.position) || !equalVector(next.wrist, tool.wrist) || next.jaw !== tool.jaw;
     tool.position = [...next.position];
-    tool.shaftDirection = [...next.shaftDirection];
-    // Rotation is not clipped by rotationally invariant clearance envelopes.
-    tool.wrist = [...desired.wrist];
+    const pose=instrumentPose(next);tool.shaftDirection=pose.shaftDirection;tool.alignment=pose.alignment;
+    tool.wrist = [...next.wrist];
     tool.jaw = next.jaw;
-    const clearance = instrumentClearance(tool, other);
-    this.state.collision = {active: limited || clearance < -LIMITS.collisionTolerance, clearance, selected: id};
+    this.state.collision=collisionState(this.state.tools,limited&&reason==='instrument-contact',id,reason);
+    const clearance=this.state.collision.clearance;
     if (limited && this._limitCooldown <= 0) {
-      this._emit('limit', { selected: id, kind: 'instrument-collision', clearance });
+      this._emit('limit', { selected: id, kind: reason==='instrument-contact'?'instrument-collision':'motion-resolution', clearance });
       this._limitCooldown = .6;
     }
     return { changed, limited };
@@ -621,15 +484,15 @@ export class Simulation {
     const tool = this._tool(id);
     const next = tool.wrist[index] + delta;
     if (!finite(next)) throw new TypeError('Wrist rotation overflow.');
-    const changed = next !== tool.wrist[index];
-    tool.wrist[index] = next;
-    return changed;
+    const wrist=[...tool.wrist];wrist[index]=next;
+    return this._applyTool({...tool,wrist},id).changed;
   }
 
   homeTools() {
     if (this.state.paused) return false;
     this.checkpoint('器械回中', this.getExtraData?.());
-    this.state.tools = clone(INITIAL_TOOLS);
+    this.state.tools = initialState().tools;
+    this.state.collision=collisionState(this.state.tools);
     this._emit('home');
     return true;
   }
@@ -644,6 +507,7 @@ export class Simulation {
   update(dt, input = new Set()) {
     this._events = [];
     const keys = normalizeKeys(input);
+    clearCollisionBlock(this.state);
     for (const [code, id] of [['Digit1', 'left'], ['Digit2', 'right'], ['Digit3', 'scope']]) {
       if (keys.has(code) && !this._previousKeys.has(code)) this.select(id);
     }

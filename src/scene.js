@@ -55,6 +55,7 @@ export class SurgicalScene{
     this.robot=new THREE.Group();this.robot.position.set(0,1.0922729,.42);this.robot.rotation.y=Math.PI/2;this.scene.add(this.robot);
     this.joints=[];this.robotLoaded=false;this.armTargets={left:new THREE.Vector3(),right:new THREE.Vector3()};this.armErrors={left:0,right:0};this.handPositions={left:new THREE.Vector3(),right:new THREE.Vector3()};this.conceptDecoupled=false;this.kinematicLimited=false;
     this.targetMarker=mesh(new THREE.SphereGeometry(.0011,12,8),new THREE.MeshBasicMaterial({color:'#9de3c6'}),this.scene);this.targetMarker.layers.set(1);this.targetMarker.visible=false;
+    this._makeCollisionMarkers();
     this.resizeObserver=new ResizeObserver(()=>this.resize());this.resizeObserver.observe(stage);this.lastMini=0;
   }
   async loadRobot(){
@@ -131,6 +132,21 @@ export class SurgicalScene{
   // Kept for reset/history compatibility. Rendering never rewrites a tool pose.
   releaseKinematicGuard(){this.acceptedArmPoses={};this.kinematicLimited=false;this._armIK=null;this.assemblies?.resetPose();}
   guardArmTargets(){this.kinematicLimited=false;return false;}
+  _makeCollisionMarkers(){
+    const group=this.collisionMarkers=new THREE.Group();group.name='Measured_Instrument_Contact';group.visible=false;this.scene.add(group);
+    const amber=new THREE.MeshBasicMaterial({color:'#ffc76d'}),pointGeometry=new THREE.SphereGeometry(.00065,10,8);
+    group.userData.points=['left','right'].map(side=>{const point=new THREE.Mesh(pointGeometry,amber);point.name=side+'_Surface_Contact_Point';point.layers.enable(1);group.add(point);return point;});
+    const line=group.userData.line=new THREE.Mesh(new THREE.CylinderGeometry(.00018,.00018,1,8),amber);line.name='Surface_Contact_Gap';line.layers.enable(1);group.add(line);group.layers.enable(1);
+  }
+  _updateCollisionMarkers(collision){
+    const group=this.collisionMarkers;if(!group)return;
+    const points=collision?.closestPoints,valid=p=>Array.isArray(p)&&p.length===3&&p.every(Number.isFinite);
+    group.visible=!!(collision?.blocked||collision?.contact)&&valid(points?.left)&&valid(points?.right);
+    if(!group.visible)return;
+    const [left,right]=group.userData.points;left.position.fromArray(points.left);right.position.fromArray(points.right);
+    const distance=left.position.distanceTo(right.position);group.userData.line.visible=distance>1e-6&&distance<.012;
+    if(group.userData.line.visible)setSegment(group.userData.line,left.position,right.position);
+  }
   solveArm(side,target,dt=1/60,gripOrientation=null){
     if(!this.robotLoaded)return;
     this._armIK??={};let cache=this._armIK[side];
@@ -207,6 +223,7 @@ export class SurgicalScene{
   }
   update(state,dt){
     this.assemblies?.update(state,dt);
+    this._updateCollisionMarkers(state.collision);
     for(const [index,side] of ['left','right'].entries()){
       const target=this.assemblies?.toolGripPositions[side];
       if(target){this.armTargets[side].copy(target);this._gripOrientation??=new THREE.Quaternion();this._gripClock??=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1),Math.PI/2);this._gripOrientation.copy(this.assemblies.tools[side].group.quaternion).multiply(this._gripClock);this.solveArm(side,target,dt,this._gripOrientation);}

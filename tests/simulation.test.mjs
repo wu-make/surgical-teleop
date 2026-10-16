@@ -1,7 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+import * as THREE from 'three';
 import { Simulation, LIMITS, CONTROL_RATES, constrainToolPosition, integratedControlDistance, instrumentClearance, segmentDistance, toolCollisionShapes } from '../src/simulation.js';
 import { SCOPE_FRAMING, resolveScopeFraming, advanceScopeDepth } from '../src/scope-framing.js';
+import {instrumentPose,instrumentCapsules,resolveInstrumentAlignment,rotateVector} from '../src/instrument-pose.js';
+import {sweepInstrument,sourceInstrumentContact} from '../src/instrument-contact.js';
+import {loadAssemblies} from '../src/authentic-assemblies.js';
 
 const near = (a, b, e = 1e-9) => assert.ok(Math.abs(a - b) <= e, `${a} ≠ ${b}`);
 const nearVector = (a, b, e = 1e-9) => a.forEach((v, i) => near(v, b[i], e));
@@ -312,16 +317,25 @@ test('continuous swept contact stops long moves at tips and shafts, with immedia
   assert.ok(instrumentClearance(s.state.tools.left, s.state.tools.right) >= -1e-8);
 });
 
-test('keyboard contact cannot tunnel, and contact never blocks continuous wrist or roll', () => {
+test('keyboard contact and articulated roll stop actual metal collisions, while free rotations have no angle limit', () => {
   const s = new Simulation();
   hold(s, ['KeyD'], 5, .05);
   assert.ok(instrumentClearance(s.state.tools.left, s.state.tools.right) >= -1e-8);
   const contact = [...s.state.tools.left.position];
   hold(s, ['KeyX'], 20, .05);
   nearVector(s.state.tools.left.position, contact);
-  assert.ok(s.state.tools.left.wrist[2] > 14);
+  assert.equal(s.state.collision.blocked, true, 'rotating the real open jaw into the other jaw must stop');
+  assert.ok(s.state.tools.left.wrist[2] < 14);
+  assert.ok(instrumentClearance(s.state.tools.left, s.state.tools.right) >= -LIMITS.collisionTolerance);
+  assert.equal(s.moveTool([-.02,0,0], 'left').limited, false);
+  const free=s.snapshot();free.state.tools.right.position=[3,3,3];s.restore(free);
+  const before=s.state.tools.left.wrist[2];
+  hold(s, ['KeyX'], 20, .05);
+  assert.ok(s.state.tools.left.wrist[2]-before > 14, 'free roll still makes multiple complete turns');
   s.adjustWrist(0, Math.PI * 20, 'left');
   s.adjustWrist(1, -Math.PI * 16, 'left');
+  near(s.state.tools.left.wrist[0],Math.PI*20);
+  near(s.state.tools.left.wrist[1],-Math.PI*16);
   const snapshot = s.snapshot();
   s.restore(snapshot);
   nearVector(s.state.tools.left.wrist, snapshot.state.tools.left.wrist);
@@ -336,11 +350,15 @@ test('legacy overlapping poses can move outward without snapping, and opening ja
   s.restore(imported);
   assert.ok(instrumentClearance(s.state.tools.left, s.state.tools.right) < 0);
   const original = [...s.state.tools.left.position];
-  assert.equal(s.moveTool([-.08,0,0], 'left').limited, false);
-  near(s.state.tools.left.position[0], original[0] - .08);
+  // This saved absolute source frame can separate in -Z. A sideways escape
+  // would first rotate some already overlapping link pairs further inward.
+  assert.equal(s.moveTool([0,0,-.08], 'left').limited, false);
+  near(s.state.tools.left.position[2], original[2] - .08);
   assert.ok(instrumentClearance(s.state.tools.left, s.state.tools.right) > 0);
+  s.reset();
   s.setJaw('left', -5); s.setJaw('right', -5);
   s.moveToolTo([.2,1.108,0], 'left');
+  assert.equal(s.state.collision.pair.left.part,'jaw','opening is checked at an actual jaw-to-jaw contact');
   const jaw = s.state.tools.left.jaw;
   s.setJaw('left', 1);
   assert.ok(s.state.tools.left.jaw >= jaw && s.state.tools.left.jaw < 1);
@@ -387,11 +405,15 @@ test('complete source-length shafts stay separated by default and detect the kno
   assert.ok(instrumentClearance(s.state.tools.left,s.state.tools.right) > .03);
   for(const id of ['left','right']) {
     const rod=toolCollisionShapes(s.state.tools[id])[0];
-    near(Math.hypot(...sub(rod.a,rod.b)),LIMITS.shaftLengths[id]);
+    assert.equal(rod.part,'shaft');
+    // Source rod extends 140 mm behind the adaptor, through the 416 mm roll
+    // frame. Its ~548 mm envelope is independent of the neutral TCP distance.
+    near(Math.hypot(...sub(rod.a,rod.b)),.5477684959,1e-9);
   }
   const crossing=s.snapshot();
   crossing.state.tools.left.position=[-.18,1.08,0];
   crossing.state.tools.right.position=[.18,1.08,0];
+  for(const tool of Object.values(crossing.state.tools))tool.alignment=resolveInstrumentAlignment(tool,tool.alignment);
   s.restore(crossing);
   // The ports-to-tips segments diverge and are 160 mm apart. Only their external
   // extensions intersect: this regression was invisible to the original proxy.
@@ -405,11 +427,22 @@ test('a nonlinear external handle sweep is stopped even if both requested endpoi
   assert.equal(s.moveToolTo([.025,1.08,0],'right').limited,false);
   const far=[.8,1.08,0];
   const hypothetical={...s.state.tools.right,position:far};
+  hypothetical.alignment=resolveInstrumentAlignment(hypothetical,hypothetical.alignment);
   assert.ok(instrumentClearance(s.state.tools.left,hypothetical) > .01);
   const result=s.moveToolTo(far,'right');
   assert.equal(result.limited,true);
-  assert.ok(s.state.tools.right.position[0] < .18);
+  assert.ok(s.state.tools.right.position[0] < far[0], 'the continuous source-metal sweep truncates the requested move');
   assert.ok(instrumentClearance(s.state.tools.left,s.state.tools.right) > 0);
+  assert.equal(s.state.collision.pair.left.part,'shaft');
+  assert.equal(s.state.collision.pair.right.part,'shaft');
+  assert.equal(s.state.collision.pair.left.section,'outside');
+  assert.equal(s.state.collision.pair.right.section,'outside');
+  for(const tool of Object.values(s.state.tools)){
+    const radial=sub(tool.position,tool.port),length=Math.hypot(...radial);
+    nearVector(rotateVector([0,0,1],tool.alignment),radial.map(v=>v/length),1e-9);
+    const pose=instrumentPose(tool),fromPort=sub(tool.port,pose.position);
+    assert.ok(Math.hypot(...cross(fromPort,pose.shaftDirection))<1e-9,'an intermediate accepted pose must preserve the source shaft RCM');
+  }
   const contact=[...s.state.tools.right.position];
   assert.equal(s.moveTool([-.01,0,0],'right').limited,false);
   near(s.state.tools.right.position[0],contact[0]-.01);
@@ -436,14 +469,117 @@ test('traversing the port singularity is finite, preserves exact endpoints and a
   }
 });
 
-test('even a submicrometre imported overlap can immediately move apart', () => {
-  const s=new Simulation(),snapshot=s.snapshot();
-  snapshot.state.tools.left.position=[.01020005,1.108,0];
+// Solve an actual CAD-envelope gap, rather than assuming a historical TCP
+// sphere radius. The first jaw-to-jaw contact along this approach is monotone.
+function sourceContactSnapshot(targetGap=0) {
+  const s=new Simulation(),snapshot=s.snapshot(),left=snapshot.state.tools.left,right=snapshot.state.tools.right;
+  let free=-.025,overlap=.024;
+  for(let i=0;i<60;i++){
+    const x=(free+overlap)*.5;
+    const candidate={...left,position:[x,1.105,0]};candidate.alignment=resolveInstrumentAlignment(candidate,left.alignment);
+    const gap=instrumentClearance(candidate,right);
+    if(gap>targetGap)free=x;else overlap=x;
+  }
+  left.position=[(free+overlap)*.5,1.105,0];
+  left.alignment=resolveInstrumentAlignment(left,left.alignment);
+  return snapshot;
+}
+
+test('even a submicrometre imported source-envelope overlap can immediately move apart', () => {
+  const s=new Simulation(),snapshot=sourceContactSnapshot(-5e-8);
   s.restore(snapshot);
   const gap=instrumentClearance(s.state.tools.left,s.state.tools.right);
-  assert.ok(gap<0&&gap>-1e-7);
+  near(gap,-5e-8,1e-12);
   assert.equal(s.moveTool([-.001,0,0],'left').limited,false);
   assert.ok(instrumentClearance(s.state.tools.left,s.state.tools.right)>0);
+});
+
+test('exact source-envelope tangency permits immediate reverse and sliding departures', () => {
+  const snapshot=sourceContactSnapshot();
+  for(const delta of [[-.001,0,0],[0,0,-.001]]){
+    const s=new Simulation();s.restore(snapshot);
+    near(instrumentClearance(s.state.tools.left,s.state.tools.right),0,1e-12);
+    const original=[...s.state.tools.left.position];
+    assert.equal(s.moveTool(delta,'left').limited,false);
+    nearVector(s.state.tools.left.position,original.map((v,i)=>v+delta[i]));
+    assert.ok(instrumentClearance(s.state.tools.left,s.state.tools.right)>0);
+    assert.equal(s.state.collision.blocked,false);
+  }
+});
+
+test('the reported separated-jaw scene has 11.60 mm clearance and permits fine control', () => {
+  const s=new Simulation(),snapshot=s.snapshot();
+  snapshot.state.tools.left.position=[.006953776536535539,1.105,.0006800918698292505];
+  snapshot.state.tools.right.position=[.019064760067993465,1.108,.008673961662072275];
+  for(const tool of Object.values(snapshot.state.tools))delete tool.alignment;
+  s.restore(snapshot);
+  near(instrumentClearance(s.state.tools.left,s.state.tools.right),.011603560801702273,1e-10);
+  for(const delta of [[-.000025,0,0],[.000025,0,0],[0,0,-.000025],[0,0,.000025]]){
+    const before=[...s.state.tools.right.position];
+    assert.equal(s.moveTool(delta,'right').limited,false);
+    nearVector(s.state.tools.right.position,before.map((v,i)=>v+delta[i]));
+    assert.equal(s.state.collision.blocked,false);
+  }
+});
+
+test('collision blocking clears on release, scope selection, pause, clutch, home and reset', () => {
+  for(const [name,action] of [
+    ['release',s=>s.update(.02,new Set())],
+    ['scope',s=>s.select('scope')],
+    ['pause',s=>s.setPaused(true)],
+    ['clutch',s=>s.update(.02,new Set(['Space']))],
+    ['home',s=>s.homeTools()],
+    ['reset',s=>s.reset()],
+  ]){
+    const s=new Simulation();s.moveToolTo([.2,1.108,0],'left');
+    assert.equal(s.state.collision.blocked,true,name+' begins blocked');
+    action(s);
+    assert.equal(s.state.collision.blocked,false,name+' clears the attempted-motion block');
+    assert.equal(s.state.collision.active,false,name+' clears the displayed warning');
+    if(name==='home'||name==='reset')assert.ok(s.state.collision.clearance>.03);
+  }
+});
+
+test('near-RCM microcommands commit exactly the swept CAD pose and remain stable through render and restore', async () => {
+  const originalFetch=globalThis.fetch;
+  let assemblies;
+  try{
+    globalThis.fetch=async url=>new Response(await readFile(new URL(`../public${url}`,import.meta.url)));
+    assemblies=await loadAssemblies(new THREE.Scene());
+  }finally{globalThis.fetch=originalFetch;}
+  try{
+    for(const distance of [.004,.012,.019]){
+      const s=new Simulation(),snapshot=s.snapshot(),initial=snapshot.state.tools.left;
+      initial.position=initial.port.map((v,i)=>v+(i===0?distance:0));
+      initial.wrist=[1.1,-.8,.2];
+      snapshot.state.tools.right.position=[3,3,3];
+      s.restore(snapshot);
+      const start=structuredClone(s.state.tools.left),other=structuredClone(s.state.tools.right),delta=[1e-6,0,1e-6];
+      const desired={...start,position:start.position.map((v,i)=>v+delta[i])};
+      const swept=sweepInstrument(start,desired,other);
+      assert.equal(swept.limited,false);
+      const expected=instrumentPose(swept.tool),expectedCapsules=instrumentCapsules(swept.tool);
+      assert.equal(s.moveTool(delta,'left').limited,false);
+      const committed=s.state.tools.left,actual=instrumentPose(committed);
+      nearVector(actual.position,expected.position,1e-12);
+      nearVector(actual.quaternion,expected.quaternion,1e-12);
+      assert.deepEqual(committed.alignment,swept.tool.alignment,'commit must retain the already swept absolute frame');
+      assert.deepEqual(instrumentCapsules(committed),expectedCapsules);
+      const contact=sourceInstrumentContact(committed,s.state.tools.right);
+      assert.deepEqual(s.state.collision.closestPoints,contact.closestPoints);
+      near(s.state.collision.clearance,contact.clearance,1e-12);
+      const stable=structuredClone(s.state.tools);
+      for(let i=0;i<5;i++){
+        s.update(.01,new Set());
+        assemblies.tools.left.update(s.state.tools.left);
+        nearVector(assemblies.tools.left.group.position.toArray(),expected.position,1e-12);
+        nearVector(assemblies.tools.left.group.quaternion.toArray(),expected.quaternion,1e-12);
+        nearVector(assemblies.tools.left.tipPosition.toArray(),committed.position,1e-9);
+        s.restore(s.snapshot());
+        assert.deepEqual(s.state.tools,stable,'idle reads and history restore must not advance the near-port frame');
+      }
+    }
+  }finally{assemblies?.dispose();}
 });
 
 const anatomicalContext = () => ({

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import {instrumentPose} from './instrument-pose.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 
@@ -204,38 +205,11 @@ class Instrument {
     setJoint(this, 'jaw', opening);
     setJoint(this, 'jaw_1', opening * .5);
     setJoint(this, 'jaw_2', -opening * .5);
-    this.group.updateWorldMatrix(true, true);
-    this.inverseRoot.copy(this.group.matrixWorld).invert();
-    this.tipNode.getWorldPosition(this.localTip).applyMatrix4(this.inverseRoot);
-    this.desired.fromArray(state.position);
-    this.port.fromArray(state.port);
-    this.delta.subVectors(this.desired, this.port);
-    const distanceSquared = this.delta.lengthSq();
-    const perpendicularSquared = this.localTip.x ** 2 + this.localTip.y ** 2;
-    // A bent rigid wrist cannot intersect a port closer than its lateral offset.
-    // In this singular region keep the TCP exact, retain continuous orientation,
-    // and report the RCM mismatch; never reject or rewrite the user's command.
-    this.rcmFeasible = distanceSquared + 1e-12 >= perpendicularSquared;
-    const axialDistance = Math.sqrt(Math.max(1e-10, distanceSquared - perpendicularSquared));
-    this.localFromPort.set(this.localTip.x, this.localTip.y, axialDistance).normalize();
-    if (distanceSquared > 1e-12) {
-      this.delta.normalize();
-      if (!this.initialized) this.alignment.setFromUnitVectors(Z, this.delta);
-      else {
-        this.nextAlignment.copy(this.alignment).premultiply(this.transport.setFromUnitVectors(this.previousDirection, this.delta));
-        const singularBlend = THREE.MathUtils.smoothstep(Math.sqrt(distanceSquared), .003, .020);
-        this.alignment.slerp(this.nextAlignment, singularBlend);
-      }
-      this.previousDirection.copy(Z).applyQuaternion(this.alignment);
-      this.initialized = true;
-    } else if (!this.initialized) {
-      this.alignment.setFromUnitVectors(Z, this.previousDirection);
-      this.initialized = true;
-    }
-    this.compensation.setFromUnitVectors(this.localFromPort, Z);
-    this.group.quaternion.copy(this.alignment).multiply(this.compensation);
-    this.scratch.copy(this.localTip).applyQuaternion(this.group.quaternion);
-    this.group.position.copy(this.desired).sub(this.scratch);
+    const pose=instrumentPose(state);
+    this.localTip.fromArray(pose.localTip);this.desired.fromArray(state.position);this.port.fromArray(state.port);
+    this.alignment.fromArray(pose.alignment);this.previousDirection.copy(Z).applyQuaternion(this.alignment);
+    this.group.quaternion.fromArray(pose.quaternion);this.group.position.fromArray(pose.position);
+    this.rcmFeasible=pose.rcmFeasible;this.initialized=true;
     this.group.updateWorldMatrix(true, true);
     this.tipNode.getWorldPosition(this.tipPosition);
     this.tipNode.getWorldQuaternion(this.tipQuaternion);

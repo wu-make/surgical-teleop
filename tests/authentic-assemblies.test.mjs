@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import * as THREE from 'three';
 import { Simulation, constrainToolPosition } from '../src/simulation.js';
 import { loadAssemblies } from '../src/authentic-assemblies.js';
+import { resolveInstrumentAlignment } from '../src/instrument-pose.js';
 
 const scene = new THREE.Scene();
 const originalFetch = globalThis.fetch;
@@ -37,6 +38,9 @@ test('actual CAD tool tips follow commands without RCM drift over wrist and inse
       ], tool.port);
       tool.wrist = [Math.sin(i * .17) * 1.2, Math.sin(i * .13) * 1.35, Math.sin(i * .19) * Math.PI];
       tool.jaw = (i % 17) / 16;
+      // This fixture constructs a new command directly. Resolve its frame once,
+      // as the command path does; the CAD renderer only reads committed poses.
+      tool.alignment = resolveInstrumentAlignment(tool, tool.alignment);
     }
     assembly.update(state, 1 / 60);
     for (const side of ['left', 'right']) {
@@ -134,6 +138,28 @@ test('passing through the RCM singularity preserves exact commands and finite co
     assert.ok(tool.group.quaternion.toArray().every(Number.isFinite));
     if(previous)assert.ok(tool.group.quaternion.angleTo(previous)<.05,'near-port orientation must not flip');
     previous=tool.group.quaternion.clone();
+  }
+});
+
+test('repeated production CAD updates do not advance a committed near-port frame', () => {
+  for (const side of ['left', 'right']) for (const distance of [.004, .012, .019]) {
+    const state = new Simulation().state, command = state.tools[side];
+    command.position = [command.port[0] + distance, command.port[1], command.port[2]];
+    command.wrist = [.43, -.67, 11 * Math.PI];
+    command.alignment = resolveInstrumentAlignment(command, command.alignment);
+    const savedState = structuredClone(state);
+    assembly.update(state, 1 / 60);
+    const actual = assembly.tools[side], root = [...actual.group.matrixWorld.elements];
+    const jaw = [...actual.group.getObjectByName('jaw_1_link').matrixWorld.elements];
+    const tip = actual.tipPosition.toArray();
+    for (let frame = 0; frame < 24; frame++) {
+      assembly.update(state, 1 / 60);
+      assert.deepEqual(actual.group.matrixWorld.elements, root, 'render reads moved the source root');
+      assert.deepEqual(actual.group.getObjectByName('jaw_1_link').matrixWorld.elements, jaw, 'render reads moved source jaw geometry');
+      assert.deepEqual(actual.tipPosition.toArray(), tip);
+      assert.deepEqual(state, savedState, 'a CAD update rewrote committed control state');
+    }
+    assert.ok(actual.tipPosition.distanceTo(new THREE.Vector3(...command.position)) < 1e-9);
   }
 });
 

@@ -6,12 +6,25 @@ import {TissueVolume} from './tissue.js';
 import {InteractionController} from './interaction-controller.js';
 import {GuidedDemo} from './guided-demo.js';
 import {makeScopeContext} from './scope-context.js';
+import {collisionFeedback} from './collision-feedback.js';
 
 const $=id=>document.getElementById(id),base=import.meta.env.BASE_URL;
 const held=new Set(),pointerHeld=new Set(),allMotion=new Set(['KeyW','KeyA','KeyS','KeyD','KeyQ','KeyE','KeyZ','KeyX','KeyC','KeyV','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','BracketLeft','BracketRight','Space','ShiftLeft','ShiftRight']);
-let view,tissue,sim,interactionController,demo,ready=false,precision='normal',lastFrame=performance.now(),nextRender=0,lastRenderAt=0,fpsFrames=0,fpsSince=lastFrame,lastUI=0,fps=0,historyBusy=false,frameHandle,frameDurations=[],runtimeErrors=[],lastLimitToast=0;
+let view,tissue,sim,interactionController,demo,ready=false,precision='normal',lastFrame=performance.now(),nextRender=0,lastRenderAt=0,fpsFrames=0,fpsSince=lastFrame,lastUI=0,fps=0,historyBusy=false,frameHandle,frameDurations=[],runtimeErrors=[];
 const record=[],maxRecords=3000;let toastTimer,inputFrames=0;const timings={};
 function toast(message){$('toast').textContent=message;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,3000);}
+function updateCollisionUI(){
+  if(!sim||!view)return;
+  const feedback=collisionFeedback(sim.state.collision,view.mode),status=$('collision-status');
+  const level=feedback.blocked?'blocked':feedback.contact?'contact':'clear';
+  if(status.textContent!==feedback.status)status.textContent=feedback.status;
+  if(status.title!==feedback.detail)status.title=feedback.detail;
+  if(status.dataset.collision!==level)status.dataset.collision=level;
+  let notice=$('collision-notice');
+  if(!notice){notice=document.createElement('div');notice.id='collision-notice';notice.className='collision-notice';notice.setAttribute('role','status');notice.setAttribute('aria-live','polite');$('stage').append(notice);}
+  if(notice.textContent!==feedback.notice)notice.textContent=feedback.notice;
+  notice.hidden=!feedback.blocked;
+}
 function log(type,details={}){record.push({t:Number((sim?.state.elapsed||0).toFixed(3)),type,...details});if(record.length>maxRecords)record.shift();}
 function clearInput(){held.clear();pointerHeld.clear();document.querySelectorAll('.held').forEach(n=>n.classList.remove('held'));if(interactionController)interactionController.lastCut=null;}
 function selected(id){demo?.stop('');clearInput();sim.select(id);updateUI();$('stage').focus({preventScroll:true});}
@@ -28,7 +41,7 @@ function updateUI(){if(!sim)return;const s=sim.state,tool=s.tools[s.selected]||s
   $('scope-summary').textContent=s.scope.follow?'RCM 持镜 · '+({active:'尖端跟随',midpoint:'双器械居中',grasp:'协作区域跟随'}[s.scope.followMode]):'RCM 持镜 · 手动控制';for(const side of['left','right']){$(side+'-summary').textContent=(s.selected===side?'已选择 · ':'待命 · ')+(s.tools[side].jaw<.16?(side==='left'&&interactionController?.grasp?(interactionController.grasp.fragmentId?'已夹持 · 独立组织块':'已抓持 · 牵拉中'):'钳口闭合'):'钳口 '+Math.round(s.tools[side].jaw*100)+'%');}
   $('view-status').textContent=view.mode==='endo'?'内窥镜 · '+(s.scope.follow?'器械自动跟随':'手动镜头'):'系统总览 · 鼠标拖动观察';$('removed').innerHTML=(tissue?.removedVolumeMm3||0).toFixed(1)+' <small>mm³</small>';$('removed-bar').style.width=Math.min(100,(tissue?.removedVolumeMm3||0)/(tissue?.totalVolumeMm3||1)*100)+'%';$('tissue-status').textContent=(tissue?.removedVolumeMm3||0)>0?'已切除组织':'完整';$('undo').disabled=!sim.canUndo||historyBusy||tissue?.busy;$('redo').disabled=!sim.canRedo||historyBusy||tissue?.busy;$('reset').disabled=historyBusy;$('pause-overlay').hidden=!s.paused;$('pause').innerHTML=(s.paused?'▶ 继续仿真':'Ⅱ 暂停仿真')+' <kbd>P</kbd>';$('run-status').textContent=s.paused?'Ⅱ 已暂停':'● 运行中';const sec=Math.floor(s.elapsed);$('session-time').textContent=String(Math.floor(sec/60)).padStart(2,'0')+':'+String(sec%60).padStart(2,'0');$('clutch-indicator').classList.toggle('active',held.has('Space')||pointerHeld.has('Space'));$('system-status').textContent=runtimeErrors.length?'需要检查':historyBusy?'恢复组织中':tissue?.busy?'更新组织':'系统就绪';
   document.querySelectorAll('[data-hold="KeyC"],[data-hold="KeyV"]').forEach(b=>b.disabled=s.selected==='scope');
-  const contact=interactionController?.contact;const deformation=tissue?.graspMetrics;$('left-contact').textContent=interactionController?.grasp?(interactionController.grasp.fragmentId?'已夹持独立组织块 · 可抬起移开 / V 释放':'已抓持 · 牵拉 '+(deformation?.displacementMm||0).toFixed(1)+' mm'):contact?.leftFragmentId?'标本接触 · C 夹持':contact?.left?'包膜接触 · C 抓持':'未接触 · 可表面就位';$('right-contact').textContent=contact?.cutting?'切除中 · 三维缺损更新':contact?.right?(s.cutting?'组织接触 · 闭合剪切':'组织接触 · B 启用剪切'):'未接触 · 可表面就位';$('roll-value').textContent=s.selected==='scope'?(s.scope.roll*180/Math.PI).toFixed(1)+'°':(tool.wrist[2]*180/Math.PI).toFixed(1)+'°';$('follow-mode').value=s.scope.followMode;$('scope-content').value=s.scope.viewMode;$('demo').textContent=demo?.active?'■ 停止自动操作':'▶ 切离与移开示范';$('demo').disabled=historyBusy||(!demo?.active&&tissue?.busy);$('approach').disabled=historyBusy||tissue?.busy||s.selected==='scope'||s.paused;$('collision-status').textContent=s.collision?.active?'双器械接近 · 已阻止互穿':'双器械防碰撞';$('connection-status').textContent=view.conceptDecoupled?'概念主从联接':'双臂器械联接';
+  const contact=interactionController?.contact;const deformation=tissue?.graspMetrics;$('left-contact').textContent=interactionController?.grasp?(interactionController.grasp.fragmentId?'已夹持独立组织块 · 可抬起移开 / V 释放':'已抓持 · 牵拉 '+(deformation?.displacementMm||0).toFixed(1)+' mm'):contact?.leftFragmentId?'标本接触 · C 夹持':contact?.left?'包膜接触 · C 抓持':'未接触 · 可表面就位';$('right-contact').textContent=contact?.cutting?'切除中 · 三维缺损更新':contact?.right?(s.cutting?'组织接触 · 闭合剪切':'组织接触 · B 启用剪切'):'未接触 · 可表面就位';$('roll-value').textContent=s.selected==='scope'?(s.scope.roll*180/Math.PI).toFixed(1)+'°':(tool.wrist[2]*180/Math.PI).toFixed(1)+'°';$('follow-mode').value=s.scope.followMode;$('scope-content').value=s.scope.viewMode;$('demo').textContent=demo?.active?'■ 停止自动操作':'▶ 切离与移开示范';$('demo').disabled=historyBusy||(!demo?.active&&tissue?.busy);$('approach').disabled=historyBusy||tissue?.busy||s.selected==='scope'||s.paused;updateCollisionUI();$('connection-status').textContent=view.conceptDecoupled?'概念主从联接':'双臂器械联接';
   const fragments=tissue?.fragmentMetrics;$('specimen-count').textContent=(fragments?.count||0)+' 块';$('specimen-volume').textContent=((fragments?.volumeMm3||0)/1000).toFixed(2)+' cm³';$('specimen-state').textContent=fragments?.pieces.some(piece=>piece.held)?'左钳夹持 · 独立搬运':fragments?.count?'已切离 · C 可再次夹持':'组织桥完全切断后才会分离';if(fragments?.count)$('tissue-status').textContent='已分离 '+fragments.count+' 块';$('approach-specimen').disabled=historyBusy||tissue?.busy||!fragments?.count||fragments.pieces.some(piece=>piece.held)||s.paused;
   $('stage').dataset.telemetry=JSON.stringify({state:sim.snapshot().state,fps,errors:runtimeErrors,removedVolumeMm3:tissue?.removedVolumeMm3,fragments:tissue?.fragmentMetrics,armErrors:view.armErrors,scopeArmError:view.assemblies?.scopeArmError,toolRCMErrors:view.assemblies?.toolRCMErrors,interaction:interactionController?.metrics,demo:demo?.active,demoPhase:demo?.phase,tissueBusy:tissue?.busy,cutCount:tissue?._cuts.length,viewMode:view.mode,precision,scopeFeed:view.scopeFeed.resolution,scopeViewAspect:sim.viewAspect,drawCalls:view.renderer.info.render.calls,triangles:view.renderer.info.render.triangles,connectionModes:view.assemblies?.connectionModes,timings});if(view.mode==='endo'){const p=new THREE.Vector3(...s.tools[s.activeTool].position).applyMatrix4(view.endoCamera.matrixWorldInverse);const pixels=.01*$('stage').clientHeight/(2*Math.tan(THREE.MathUtils.degToRad(view.endoCamera.fov*.5))*Math.max(.01,-p.z));$('lens-scale').style.width=pixels+'px';}
 }
@@ -61,9 +74,9 @@ function animate(now){
   const start=performance.now(),keys=new Set([...held,...pointerHeld]);if(precision==='fine')keys.add('ShiftLeft');if(historyBusy)keys.clear();
   if(!historyBusy)sim.setScopeContext({...makeScopeContext(sim,tissue,interactionController,now),viewAspect:view.scopeAspect});
   if(!historyBusy&&!keys.has('Space'))demo.update(dt);
-  const result=historyBusy?{limited:false}:sim.update(dt,keys);inputFrames++;const controlEnd=performance.now();timings.control=controlEnd-start;
+  if(!historyBusy)sim.update(dt,keys);inputFrames++;const controlEnd=performance.now();timings.control=controlEnd-start;
   if(!sim.state.paused&&!historyBusy)enforceScopeClearance();timings.clearance=performance.now()-controlEnd;
-  if(result.limited&&now-lastLimitToast>2500){lastLimitToast=now;toast('两器械接近接触，已阻止互相穿透；反向移动即可离开');}
+  updateCollisionUI();
   if(now>=nextRender){const renderDt=Math.min(.05,lastRenderAt?(now-lastRenderAt)/1000:dt),sceneStart=performance.now();view.update(sim.state,renderDt);lastRenderAt=now;const sceneEnd=performance.now();interaction(keys,renderDt);const interactionEnd=performance.now();view.render(now);timings.scene=sceneEnd-sceneStart;timings.interaction=interactionEnd-sceneEnd;timings.render=performance.now()-interactionEnd;fpsFrames++;nextRender=Math.max(nextRender+1000/60,now-1000/60);}
   frameDurations.push(performance.now()-start);if(frameDurations.length>600)frameDurations.shift();
   if(now-fpsSince>1000){fps=fpsFrames*1000/(now-fpsSince);$('fps').textContent=fps.toFixed(0)+' FPS';fpsFrames=0;fpsSince=now;}
