@@ -1,0 +1,112 @@
+{
+  "source": "https://github.com/Kevin-Mattheus-Moerman/BodyParts3D",
+  "revision": "f0eeb6e843380cfe6b83797cf8c3e1af74de5e61",
+  "licence": "CC BY-SA 2.1 Japan",
+  "attribution": "BodyParts3D, \u00a9 The Database Center for Life Science.",
+  "units": "metres",
+  "frame": "Same local anatomical frame as liver-volume.json",
+  "sourceToLocalMatrixRowMajor": [
+    [
+      0.001,
+      0.0,
+      0.0,
+      0.018465850830078127
+    ],
+    [
+      0.0,
+      6.123233995736766e-20,
+      0.001,
+      -1.1173350219726563
+    ],
+    [
+      0.0,
+      -0.001,
+      6.123233995736766e-20,
+      -0.1174242477416993
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "structures": [
+    {
+      "id": "FMA7202",
+      "name": "gallbladder",
+      "sourcePath": "assets/BodyParts3D_data/stl/FMA7202.stl",
+      "sourceTriangles": 13846,
+      "boundsMetres": [
+        [
+          -0.054367752075195314,
+          -0.05859503173828129,
+          0.011979759216308589
+        ],
+        [
+          -0.018488449096679686,
+          -0.012554992675781307,
+          0.055523750305175756
+        ]
+      ]
+    },
+    {
+      "id": "FMA14771",
+      "name": "common-hepatic-artery",
+      "sourcePath": "assets/BodyParts3D_data/stl/FMA14771.stl",
+      "sourceTriangles": 808,
+      "boundsMetres": [
+        [
+          0.002833451271057129,
+          -0.03866497802734381,
+          0.010647758483886688
+        ],
+        [
+          0.023280710697174075,
+          -0.007835021972656397,
+          0.02785475921630859
+        ]
+      ]
+    },
+    {
+      "id": "FMA7148",
+      "name": "stomach",
+      "sourcePath": "assets/BodyParts3D_data/stl/FMA7148.stl",
+      "sourceTriangles": 9384,
+      "boundsMetres": [
+        [
+          -0.009071849822998045,
+          -0.055664978027343714,
+          -0.03711404418945313
+        ],
+        [
+          0.13267085266113282,
+          0.06453497314453127,
+          0.0781167526245117
+        ]
+      ]
+    },
+    {
+      "id": "FMA7206",
+      "name": "duodenum",
+      "sourcePath": "assets/BodyParts3D_data/stl/FMA7206.stl",
+      "sourceTriangles": 11950,
+      "boundsMetres": [
+        [
+          -0.045602546691894535,
+          -0.11381500244140641,
+          -0.012767250061035157
+        ],
+        [
+          0.07400754928588868,
+          -0.016294982910156408,
+          0.042750755310058564
+        ]
+      ]
+    }
+  ],
+  "file": "hepatobiliary-context.glb",
+  "bytes": 653312,
+  "sha256": "45b3e835db09368a7bec8cdb9e1098255bb31f36b4456d5d7811aea0245e9a4f",
+  "notes": "Registered source gallbladder, common hepatic artery, stomach and duodenum. No generated internal vessel tree or patient-specific anatomy is implied."
+}
