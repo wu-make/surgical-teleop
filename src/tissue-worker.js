@@ -5,6 +5,9 @@ export const TETRAHEDRA = [[0, 5, 1, 6], [0, 1, 2, 6], [0, 2, 3, 6], [0, 3, 7, 6
 const CORNERS = [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]];
 const EDGES = [[0, 1], [0, 2], [0, 3], [1, 2], [1, 3], [2, 3]];
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const LOCAL_OFFSETS = [];
+for (let z = -1; z <= 1; z++) for (let y = -1; y <= 1; y++) for (let x = -1; x <= 1; x++) LOCAL_OFFSETS.push([x, y, z]);
+const LOCAL_ADJACENCY = LOCAL_OFFSETS.map((p, index) => LOCAL_OFFSETS.reduce((mask, q, j) => j !== index && Math.max(Math.abs(p[0] - q[0]), Math.abs(p[1] - q[1]), Math.abs(p[2] - q[2])) <= 1 ? mask | (1 << j) : mask, 0));
 
 export function normalizeMetadata(input) {
   const dims = input.dims ?? input.dimensions;
@@ -84,7 +87,33 @@ export function createVolumeState(metadata, values, chunkSize = 16) {
   const bandWidth = Math.min(...meta.spacing);
   let totalVolumeMm3 = 0;
   for (let i = 0; i < base.length; i++) totalVolumeMm3 += occupancy(base[i], bandWidth) * voxelMm3;
-  return { meta, base, field, chunkSize, bandWidth, voxelMm3, totalVolumeMm3, removedVolumeMm3: 0, cuts: [] };
+  return { meta, base, field, chunkSize, bandWidth, voxelMm3, totalVolumeMm3, removedVolumeMm3: 0, cuts: [],
+    separations: [], fragmentRecords: [], fragmentVolumeMm3: 0, excluded: new Uint8Array(length), exclusionIndices: [],
+    baselineLabels: null, connectivityVerified: false, topologyDirty: false,
+    topologyMetrics: { scans: 0, scannedNodes: 0, localChecks: 0, lastScanMs: 0 } };
+}
+
+// Removing a voxel cannot disconnect the global solid if all of its remaining
+// neighbours are still 26-connected inside the surrounding 3x3x3 block. A
+// negative result is conservative: it only requests a full global confirmation.
+function removalMayDisconnect(state, x, y, z) {
+  state.topologyMetrics.localChecks++;
+  const { meta, field } = state;
+  let mask = 0;
+  for (let i = 0; i < 27; i++) {
+    if (i === 13) continue;
+    const offset = LOCAL_OFFSETS[i], nx = x + offset[0], ny = y + offset[1], nz = z + offset[2];
+    if (nx >= 0 && nx < meta.dims[0] && ny >= 0 && ny < meta.dims[1] && nz >= 0 && nz < meta.dims[2] && field[nodeIndex(meta, nx, ny, nz)] < 0) mask |= 1 << i;
+  }
+  if (!mask) return false;
+  let frontier = mask & -mask, reached = frontier;
+  while (frontier && reached !== mask) {
+    const bit = frontier & -frontier, index = 31 - Math.clz32(bit);
+    frontier &= ~bit;
+    const next = LOCAL_ADJACENCY[index] & mask & ~reached;
+    frontier |= next; reached |= next;
+  }
+  return reached !== mask;
 }
 
 export function distanceToSegment(point, start, end) {
@@ -122,7 +151,7 @@ export function applyCapsuleCut(state, input) {
   const padding = cut.radius + margin;
   const lower = cut.a.map((v, axis) => clamp(Math.floor((Math.min(v, cut.b[axis]) - Math.max(0, displacement[axis]) - padding - meta.origin[axis]) / meta.spacing[axis]), 0, meta.dims[axis] - 1));
   const upper = cut.a.map((v, axis) => clamp(Math.ceil((Math.max(v, cut.b[axis]) - Math.min(0, displacement[axis]) + padding - meta.origin[axis]) / meta.spacing[axis]), 0, meta.dims[axis] - 1));
-  let removedMm3 = 0, changedSamples = 0;
+  let removedMm3 = 0, changedSamples = 0, removedNodes = 0;
   const point = [0, 0, 0];
   const changedBounds = [[Infinity, Infinity, Infinity], [-Infinity, -Infinity, -Infinity]];
   for (let z = lower[2]; z <= upper[2]; z++) for (let y = lower[1]; y <= upper[1]; y++) for (let x = lower[0]; x <= upper[0]; x++) {
@@ -132,8 +161,13 @@ export function applyCapsuleCut(state, input) {
     const displayPoint = cut.deformation ? deformPoint(point, cut.deformation) : point;
     const value = Math.fround(Math.max(field[index], cut.radius - distanceToSegment(displayPoint, cut.a, cut.b)));
     if (value <= field[index]) continue;
+    const wasInside = field[index] < 0;
     removedMm3 += (occupancy(field[index], state.bandWidth) - occupancy(value, state.bandWidth)) * state.voxelMm3;
     field[index] = value;
+    if (wasInside && value >= 0) {
+      removedNodes++;
+      if (!state.topologyDirty && removalMayDisconnect(state, x, y, z)) state.topologyDirty = true;
+    }
     changedSamples++;
     for (let axis = 0; axis < 3; axis++) { const coordinate = axis === 0 ? x : axis === 1 ? y : z; changedBounds[0][axis] = Math.min(changedBounds[0][axis], coordinate); changedBounds[1][axis] = Math.max(changedBounds[1][axis], coordinate); }
   }
@@ -146,11 +180,14 @@ export function applyCapsuleCut(state, input) {
     const last = changedBounds[1].map((v, axis) => Math.min(Math.ceil((meta.dims[axis] - 1) / state.chunkSize) - 1, Math.floor((v + 1) / state.chunkSize)));
     for (let z = first[2]; z <= last[2]; z++) for (let y = first[1]; y <= last[1]; y++) for (let x = first[0]; x <= last[0]; x++) dirty.add(`${x},${y},${z}`);
   }
-  return { dirty, removedMm3, changedSamples, removedVolumeMm3: state.removedVolumeMm3 };
+  return { dirty, removedMm3, changedSamples, removedNodes, removedVolumeMm3: state.removedVolumeMm3 };
 }
 
 export function resetVolume(state, cuts = []) {
   state.field.set(state.base); state.cuts = []; state.removedVolumeMm3 = 0;
+  state.separations = []; state.fragmentRecords = []; state.fragmentVolumeMm3 = 0;
+  state.excluded.fill(0); state.exclusionIndices = [];
+  state.topologyDirty = false; state.connectivityVerified = !!state.baselineLabels;
   for (const cut of cuts) applyCapsuleCut(state, cut);
   return state;
 }
@@ -233,28 +270,218 @@ export function polygonizeChunk(state, key) {
   return { key, positions: new Float32Array(positions), normals: new Float32Array(normals), colors: new Float32Array(colors), cutMasks: new Float32Array(cutMasks), indices: new Uint32Array(indices) };
 }
 
+function scanComponents(state, values, labels = null) {
+  const started = performance.now(), { dims } = state.meta, [nx, ny, nz] = dims, plane = nx * ny;
+  const visited = state._connectivityVisited ??= new Uint8Array(values.length);
+  const queue = state._connectivityQueue ??= new Uint32Array(values.length);
+  visited.fill(0);
+  const components = [];
+  let written = 0;
+  for (let seed = 0; seed < values.length; seed++) {
+    if (visited[seed] || values[seed] >= 0) continue;
+    const start = written, label = components.length + 1;
+    let read = start;
+    queue[written++] = seed; visited[seed] = 1;
+    if (labels) labels[seed] = label;
+    const low = [nx, ny, nz], high = [0, 0, 0];
+    while (read < written) {
+      const index = queue[read++], z = Math.floor(index / plane), y = Math.floor((index - z * plane) / nx), x = index - z * plane - y * nx;
+      if (x < low[0]) low[0] = x; if (x > high[0]) high[0] = x;
+      if (y < low[1]) low[1] = y; if (y > high[1]) high[1] = y;
+      if (z < low[2]) low[2] = z; if (z > high[2]) high[2] = z;
+      const x0 = Math.max(0, x - 1), x1 = Math.min(nx - 1, x + 1), y0 = Math.max(0, y - 1), y1 = Math.min(ny - 1, y + 1), z0 = Math.max(0, z - 1), z1 = Math.min(nz - 1, z + 1);
+      for (let zz = z0; zz <= z1; zz++) for (let yy = y0; yy <= y1; yy++) {
+        const row = zz * plane + yy * nx;
+        for (let xx = x0; xx <= x1; xx++) {
+          const neighbour = row + xx;
+          if (!visited[neighbour] && values[neighbour] < 0) {
+            visited[neighbour] = 1; queue[written++] = neighbour;
+            if (labels) labels[neighbour] = label;
+          }
+        }
+      }
+    }
+    components.push({ seed, start, end: written, voxelCount: written - start, low, high, baseline: state.baselineLabels?.[seed] ?? label });
+  }
+  state.topologyMetrics.scans++;
+  state.topologyMetrics.scannedNodes += values.length;
+  state.topologyMetrics.lastScanMs = performance.now() - started;
+  return { components, queue };
+}
+
+/** Label original islands once. A pre-existing source island is never invented
+ * as a newly cut specimen; each original island retains its largest descendant. */
+export function initializeConnectivity(state) {
+  if (state.baselineLabels) return state;
+  const labels = new Uint32Array(state.base.length);
+  scanComponents(state, state.base, labels);
+  state.baselineLabels = labels;
+  if (!state.cuts.length) { state.connectivityVerified = true; state.topologyDirty = false; }
+  return state;
+}
+
+function retainedComponents(components) {
+  const retained = new Map();
+  for (const component of components) {
+    const old = retained.get(component.baseline);
+    if (!old || component.voxelCount > old.voxelCount) retained.set(component.baseline, component);
+  }
+  return retained;
+}
+
+function keysForBounds(state, low, high) {
+  const first = low.map(v => Math.max(0, Math.floor((v - 2) / state.chunkSize)));
+  const last = high.map((v, axis) => Math.min(Math.ceil((state.meta.dims[axis] - 1) / state.chunkSize) - 1, Math.floor((v + 1) / state.chunkSize)));
+  const keys = new Set();
+  for (let z = first[2]; z <= last[2]; z++) for (let y = first[1]; y <= last[1]; y++) for (let x = first[0]; x <= last[0]; x++) keys.add(`${x},${y},${z}`);
+  return keys;
+}
+
+function joinMeshes(chunks) {
+  const vertexComponents = chunks.reduce((sum, chunk) => sum + chunk.positions.length, 0), indexCount = chunks.reduce((sum, chunk) => sum + chunk.indices.length, 0);
+  const result = { positions: new Float32Array(vertexComponents), normals: new Float32Array(vertexComponents), colors: new Float32Array(vertexComponents), cutMasks: new Float32Array(vertexComponents / 3), indices: new Uint32Array(indexCount) };
+  let positionOffset = 0, indexOffset = 0;
+  for (const chunk of chunks) {
+    result.positions.set(chunk.positions, positionOffset); result.normals.set(chunk.normals, positionOffset); result.colors.set(chunk.colors, positionOffset); result.cutMasks.set(chunk.cutMasks, positionOffset / 3);
+    for (let i = 0; i < chunk.indices.length; i++) result.indices[indexOffset + i] = chunk.indices[i] + positionOffset / 3;
+    positionOffset += chunk.positions.length; indexOffset += chunk.indices.length;
+  }
+  return result;
+}
+
+function meshMassProperties(mesh) {
+  let determinant = 0, x = 0, y = 0, z = 0;
+  const p = mesh.positions, indices = mesh.indices;
+  for (let i = 0; i < indices.length; i += 3) {
+    const a = indices[i] * 3, b = indices[i + 1] * 3, c = indices[i + 2] * 3;
+    const v = p[a] * (p[b + 1] * p[c + 2] - p[b + 2] * p[c + 1]) + p[a + 1] * (p[b + 2] * p[c] - p[b] * p[c + 2]) + p[a + 2] * (p[b] * p[c + 1] - p[b + 1] * p[c]);
+    determinant += v;
+    x += v * (p[a] + p[b] + p[c]); y += v * (p[a + 1] + p[b + 1] + p[c + 1]); z += v * (p[a + 2] + p[b + 2] + p[c + 2]);
+  }
+  if (Math.abs(determinant) < 1e-20) throw new Error('Detached tissue has no closed three-dimensional volume');
+  return { volumeMm3: Math.abs(determinant) / 6 * 1e9, center: [x, y, z].map(v => v / (4 * determinant)) };
+}
+
+function extractComponent(state, scan, component, record = null) {
+  const nodeIndices = scan.queue.slice(component.start, component.end), membership = new Set(nodeIndices);
+  const low = component.low.map(v => v - 2), high = component.high.map(v => v + 2), dims = low.map((v, axis) => high[axis] - v + 1);
+  const origin = low.map((v, axis) => state.meta.origin[axis] + v * state.meta.spacing[axis]);
+  const metadata = { dims, origin, spacing: [...state.meta.spacing] }, length = dims[0] * dims[1] * dims[2];
+  const field = new Float32Array(length), base = new Float32Array(length), outside = Math.max(...state.meta.spacing);
+  for (let z = 0; z < dims[2]; z++) for (let y = 0; y < dims[1]; y++) for (let x = 0; x < dims[0]; x++) {
+    const gx = x + low[0], gy = y + low[1], gz = z + low[2], localIndex = x + dims[0] * (y + dims[1] * z);
+    if (gx < 0 || gy < 0 || gz < 0 || gx >= state.meta.dims[0] || gy >= state.meta.dims[1] || gz >= state.meta.dims[2]) { field[localIndex] = outside; base[localIndex] = outside; continue; }
+    const globalIndex = nodeIndex(state.meta, gx, gy, gz), value = state.field[globalIndex];
+    field[localIndex] = membership.has(globalIndex) ? value : Math.max(0, value >= 0 ? value : -value);
+    base[localIndex] = state.base[globalIndex];
+  }
+  const cropped = { meta: metadata, field, base, chunkSize: state.chunkSize, bandWidth: state.bandWidth };
+  const mesh = joinMeshes(allChunkKeys(cropped).map(key => polygonizeChunk(cropped, key))), mass = meshMassProperties(mesh);
+  const cutIndex = state.cuts.length, seed = component.seed, id = record?.id ?? `fragment-${cutIndex.toString(36)}-${seed.toString(36)}`;
+  if (state.fragmentRecords.some(fragment => fragment.id === id)) throw new Error('Duplicate detached tissue identifier');
+  const deformation = normalizeDeformation(state.cuts[cutIndex - 1]?.deformation);
+  const fragment = { id, cutIndex, seed, voxelCount: component.voxelCount, ...mass, ...mesh, deformation,
+    coordinateSpace: 'source-material', volume: { dims, origin, spacing: [...state.meta.spacing], values: field } };
+  const positiveValues = new Float32Array(nodeIndices.length);
+  for (let i = 0; i < nodeIndices.length; i++) {
+    const index = nodeIndices[i], positive = Math.fround(Math.max(Math.abs(state.field[index]), state.bandWidth * 0.75));
+    state.field[index] = positive; positiveValues[i] = positive;
+    if (!state.excluded[index]) { state.excluded[index] = 1; state.exclusionIndices.push(index); }
+  }
+  state.fragmentRecords.push({ id, cutIndex, seed, voxelCount: component.voxelCount, volumeMm3: mass.volumeMm3, center: [...mass.center] });
+  state.fragmentVolumeMm3 += mass.volumeMm3;
+  state.separations.push({ id, cutIndex, seed });
+  return { fragment, nodeIndices, positiveValues, dirty: keysForBounds(state, component.low, component.high) };
+}
+
+function combineExtractions(extractions) {
+  const length = extractions.reduce((sum, extraction) => sum + extraction.nodeIndices.length, 0);
+  const nodeIndices = new Uint32Array(length), positiveValues = new Float32Array(length), dirty = new Set();
+  let offset = 0;
+  for (const extraction of extractions) { nodeIndices.set(extraction.nodeIndices, offset); positiveValues.set(extraction.positiveValues, offset); offset += extraction.nodeIndices.length; extraction.dirty.forEach(key => dirty.add(key)); }
+  return { fragments: extractions.map(result => result.fragment), dirty, exclusions: { nodeIndices, positiveValues } };
+}
+
+/** Only globally disconnected descendants become transportable closed solids.
+ * Every true split requests confirmation on the same cut batch; no N-cut timer. */
+export function separateDisconnectedComponents(state, { force = false, minVoxels = 12 } = {}) {
+  initializeConnectivity(state);
+  if (!force && state.connectivityVerified && !state.topologyDirty) return combineExtractions([]);
+  const scan = scanComponents(state, state.field), retained = retainedComponents(scan.components), extractions = [];
+  for (const component of scan.components) {
+    if (retained.get(component.baseline) === component || component.voxelCount < minVoxels) continue;
+    extractions.push(extractComponent(state, scan, component));
+  }
+  state.connectivityVerified = true; state.topologyDirty = false;
+  return combineExtractions(extractions);
+}
+
+/** Replay separation events at their exact cut index. Later cuts operate only
+ * on the remaining parent field, never on already detached specimens. */
+export function restoreVolumeWithSeparations(state, cuts = [], separations = []) {
+  const normalized = cuts.map(validateCut), events = separations.map(event => ({ ...event }));
+  const ids = new Set(), components = new Set();
+  for (const event of events) {
+    const componentKey = `${event.cutIndex}:${event.seed}`;
+    if (!Number.isInteger(event.cutIndex) || event.cutIndex < 1 || event.cutIndex > normalized.length || !Number.isInteger(event.seed) || event.seed < 0 || event.seed >= state.field.length || typeof event.id !== 'string' || !/^fragment-[a-z0-9-]+$/.test(event.id) || ids.has(event.id) || components.has(componentKey)) throw new Error('Invalid tissue separation history');
+    ids.add(event.id); components.add(componentKey);
+  }
+  events.sort((a, b) => a.cutIndex - b.cutIndex || a.seed - b.seed);
+  // Validate the complete replay before committing. A corrupt imported event
+  // must not leave the worker halfway through a different organ/history.
+  const original = state;
+  state = { ...state, field: new Float32Array(state.base), excluded: new Uint8Array(state.base.length), topologyMetrics: { ...state.topologyMetrics } };
+  resetVolume(state); initializeConnectivity(state);
+  const fragments = [];
+  for (let i = 0; i < normalized.length; i++) {
+    applyCapsuleCut(state, normalized[i]);
+    const scheduled = events.filter(event => event.cutIndex === i + 1);
+    if (!scheduled.length) continue;
+    const scan = scanComponents(state, state.field), retained = retainedComponents(scan.components);
+    for (const event of scheduled) {
+      const component = scan.components.find(component => component.seed === event.seed);
+      if (!component || retained.get(component.baseline) === component) throw new Error('Separation history does not match a fully disconnected component');
+      fragments.push(extractComponent(state, scan, component, event).fragment);
+    }
+    state.connectivityVerified = true; state.topologyDirty = false;
+  }
+  const nodeIndices = new Uint32Array(state.exclusionIndices), positiveValues = new Float32Array(nodeIndices.length);
+  for (let i = 0; i < nodeIndices.length; i++) positiveValues[i] = state.field[nodeIndices[i]];
+  const field = original.field;
+  field.set(state.field); Object.assign(original, state, { field });
+  return { fragments, dirty: new Set(allChunkKeys(state)), exclusions: { nodeIndices, positiveValues } };
+}
+
 function buildChunks(state, keys) { return [...keys].map(key => polygonizeChunk(state, key)); }
-function statistics(state) { return { removedVolumeMm3: state.removedVolumeMm3, totalVolumeMm3: state.totalVolumeMm3, voxelMm: Math.max(...state.meta.spacing) * 1000, cutCount: state.cuts.length }; }
+function statistics(state) { return { removedVolumeMm3: state.removedVolumeMm3, totalVolumeMm3: state.totalVolumeMm3, voxelMm: Math.max(...state.meta.spacing) * 1000, cutCount: state.cuts.length,
+  fragmentCount: state.fragmentRecords.length, fragmentVolumeMm3: state.fragmentVolumeMm3, topology: { ...state.topologyMetrics } }; }
 
 if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScope) {
   let state;
   self.onmessage = ({ data }) => {
     try {
-      let chunks, changedSamples = 0, removedMm3 = 0;
+      let chunks, changedSamples = 0, removedMm3 = 0, fragments = [], exclusions = { nodeIndices: new Uint32Array(), positiveValues: new Float32Array() };
       if (data.type === 'init') {
         state = createVolumeState(data.metadata, new Float32Array(data.buffer), data.chunkSize ?? 16);
+        initializeConnectivity(state);
         chunks = buildChunks(state, allChunkKeys(state));
       } else if (!state) throw new Error('The tissue volume is not initialized');
       else if (data.type === 'cut') {
         const dirty = new Set();
         for (const primitive of data.cuts) { const result = applyCapsuleCut(state, primitive); result.dirty.forEach(key => dirty.add(key)); changedSamples += result.changedSamples; removedMm3 += result.removedMm3; }
+        const separated = separateDisconnectedComponents(state);
+        fragments = separated.fragments; exclusions = separated.exclusions; separated.dirty.forEach(key => dirty.add(key));
         chunks = buildChunks(state, dirty);
       } else if (data.type === 'restore') {
-        resetVolume(state, data.cuts ?? []);
+        const restored = restoreVolumeWithSeparations(state, data.cuts ?? [], data.separations ?? []);
+        fragments = restored.fragments; exclusions = restored.exclusions;
         chunks = buildChunks(state, allChunkKeys(state));
       } else throw new Error(`Unknown tissue operation: ${data.type}`);
       const transfer = chunks.flatMap(chunk => [chunk.positions.buffer, chunk.normals.buffer, chunk.colors.buffer, chunk.cutMasks.buffer, chunk.indices.buffer]);
-      self.postMessage({ id: data.id, epoch: data.epoch, type: data.type, chunks, statistics: statistics(state), changedSamples, removedMm3 }, transfer);
+      for (const fragment of fragments) transfer.push(fragment.positions.buffer, fragment.normals.buffer, fragment.colors.buffer, fragment.cutMasks.buffer, fragment.indices.buffer, fragment.volume.values.buffer);
+      transfer.push(exclusions.nodeIndices.buffer, exclusions.positiveValues.buffer);
+      self.postMessage({ id: data.id, epoch: data.epoch, type: data.type, chunks, statistics: statistics(state), changedSamples, removedMm3, fragments,
+        exclusions: { reset: data.type !== 'cut', ...exclusions }, separations: state.separations.map(event => ({ ...event })) }, transfer);
     } catch (error) { self.postMessage({ id: data.id, epoch: data.epoch, error: error.message }); }
   };
 }

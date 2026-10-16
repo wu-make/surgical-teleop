@@ -118,7 +118,7 @@ test('Three mesh assembly uses indexed triangles, endoscope layers, and disposes
   const key = allChunkKeys(source).find(key => polygonizeChunk(source, key).indices.length > 0);
   const chunk = polygonizeChunk(source, key), tissue = new TissueVolume();
   tissue._replaceChunk(chunk);
-  const first = tissue.group.children[0];
+  const first = tissue.group.children.find(child => child.isMesh);
   assert.equal(first.geometry.index.count, chunk.indices.length);
   assert.equal(first.geometry.attributes.position.count, chunk.positions.length / 3);
   assert.ok(first.layers.mask & (1 << 1), 'new cut meshes are visible to the layer-1 endoscope');
@@ -126,7 +126,7 @@ test('Three mesh assembly uses indexed triangles, endoscope layers, and disposes
   first.geometry.addEventListener('dispose', () => { disposed = true; });
   tissue._replaceChunk(chunk);
   assert.equal(disposed, true);
-  assert.equal(tissue.group.children.length, 1);
+  assert.equal(tissue.group.children.filter(child => child.isMesh).length, 1);
   tissue.dispose();
 });
 
