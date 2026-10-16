@@ -3,7 +3,9 @@ import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
 import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
 import {RoomEnvironment} from 'three/addons/environments/RoomEnvironment.js';
 import {RoundedBoxGeometry} from 'three/addons/geometries/RoundedBoxGeometry.js';
-import {loadAssemblies} from './authentic-assemblies.js';
+import {loadAssemblies,G1_GRIP} from './authentic-assemblies.js';
+import {ScopeFeed} from './scope-feed.js';
+import {buildOperatingRoom} from './operating-room.js';
 
 const V=new THREE.Vector3(), Y=new THREE.Vector3(0,1,0), Q=new THREE.Quaternion();
 const BASE=import.meta.env?.BASE_URL??'/';
@@ -23,7 +25,7 @@ function sterileDrape(parent){
   for(let i=0;i<p.count;i++){const x=p.getX(i),y=p.getY(i),edge=Math.abs(x)/.39;p.setZ(i,-.075*edge**4+.0028*Math.sin(31*x+7*y)*Math.sin(23*y)+.0015*Math.cos(57*x-19*y));}
   geometry.computeVertexNormals();
   const cloth=material('#467e82',0,.97);cloth.side=THREE.DoubleSide;
-  cloth.onBeforeCompile=shader=>{shader.vertexShader='varying vec2 drapeLocal;\n'+shader.vertexShader;shader.vertexShader=shader.vertexShader.replace('#include <begin_vertex>','#include <begin_vertex>\ndrapeLocal=position.xy;');shader.fragmentShader='varying vec2 drapeLocal;\n'+shader.fragmentShader;shader.fragmentShader=shader.fragmentShader.replace('#include <clipping_planes_fragment>','#include <clipping_planes_fragment>\nif(abs(drapeLocal.x)<.168&&abs(drapeLocal.y)<.198)discard;');};
+  cloth.onBeforeCompile=shader=>{shader.vertexShader='varying vec2 drapeLocal;\n'+shader.vertexShader;shader.vertexShader=shader.vertexShader.replace('#include <begin_vertex>','#include <begin_vertex>\ndrapeLocal=position.xy;');shader.fragmentShader='varying vec2 drapeLocal;\n'+shader.fragmentShader;shader.fragmentShader=shader.fragmentShader.replace('#include <clipping_planes_fragment>','#include <clipping_planes_fragment>\nif(drapeLocal.y<-.30||(abs(drapeLocal.x)<.168&&abs(drapeLocal.y)<.198))discard;');};
   cloth.customProgramCacheKey=()=> 'cotton-operative-drape-window';
   const cover=mesh(geometry,cloth,parent);cover.name='Sterile_Fenestrated_Surgical_Drape';cover.rotation.x=-Math.PI/2;cover.position.set(0,1.14,0);cover.layers.set(0);
   const seam=material('#79a5a3',0,.98);
@@ -37,19 +39,20 @@ export class SurgicalScene{
     this.stage=stage;this.mini=mini;this.mode='endo';this.disposed=false;this.ready=false;
     this.renderer=new THREE.WebGLRenderer({canvas,antialias:true,powerPreference:'high-performance',preserveDrawingBuffer:false});
     this.renderer.setPixelRatio(Math.min(devicePixelRatio,1.5));this.renderer.setSize(stage.clientWidth,stage.clientHeight,false);this.renderer.outputColorSpace=THREE.SRGBColorSpace;this.renderer.toneMapping=THREE.ACESFilmicToneMapping;this.renderer.toneMappingExposure=1.15;
-    this.renderer.shadowMap.enabled=true;this.renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.enabled=true;this.renderer.shadowMap.type=THREE.PCFSoftShadowMap;this.renderer.info.autoReset=false;
+    this.scopeFeed=new ScopeFeed(this.renderer,1.10);
     this.scene=new THREE.Scene();this.scene.background=new THREE.Color('#a4b3b3');
     const pmrem=new THREE.PMREMGenerator(this.renderer);this.env=pmrem.fromScene(new RoomEnvironment(),.04);this.scene.environment=this.env.texture;pmrem.dispose();
-    this.overviewCamera=new THREE.PerspectiveCamera(42,1,.015,30);this.overviewCamera.position.set(1.55,1.87,-1.85);
-    this.endoCamera=new THREE.PerspectiveCamera(60,1,.003,5);this.endoCamera.layers.set(1);
-    this.controls=new OrbitControls(this.overviewCamera,canvas);this.controls.target.set(0,1.05,.12);this.controls.enableDamping=true;this.controls.minDistance=.3;this.controls.maxDistance=4;this.controls.maxPolarAngle=Math.PI*.49;this.controls.enabled=false;
+    this.overviewCamera=new THREE.PerspectiveCamera(42,1,.015,30);this.overviewCamera.position.set(1.68,2.02,-1.92);
+    this.endoCamera=new THREE.PerspectiveCamera(55,1,.003,5);this.endoCamera.layers.set(1);
+    this.controls=new OrbitControls(this.overviewCamera,canvas);this.controls.target.set(0,1.20,.18);this.controls.enableDamping=true;this.controls.minDistance=.3;this.controls.maxDistance=4;this.controls.maxPolarAngle=Math.PI*.49;this.controls.enabled=false;
     const hemi=new THREE.HemisphereLight('#f4f7f6','#667572',1.35);this.scene.add(hemi);
-    const endoHemi=new THREE.HemisphereLight('#dcc1b1','#36251f',.24);endoHemi.layers.set(1);this.scene.add(endoHemi);
+    const endoHemi=new THREE.HemisphereLight('#fff9f3','#9c7670',.60);endoHemi.layers.set(1);this.scene.add(endoHemi);
     const light=new THREE.DirectionalLight('#fff5e8',2.1);light.position.set(-1.6,3.2,-1.4);light.castShadow=true;light.shadow.mapSize.set(1024,1024);light.shadow.camera.left=-1.6;light.shadow.camera.right=1.6;light.shadow.camera.top=1.6;light.shadow.camera.bottom=-1.6;light.shadow.normalBias=.0015;this.scene.add(light);
     const fill=new THREE.DirectionalLight('#dcebf0',.75);fill.position.set(2.2,1.8,.7);this.scene.add(fill);
-    this.scopeLight=new THREE.SpotLight('#f6dfcd',.032,.6,.72,.82,1);this.scopeLight.layers.set(1);this.scopeLight.target=new THREE.Object3D();this.scene.add(this.scopeLight,this.scopeLight.target);
+    this.scopeLight=new THREE.SpotLight('#fffaf5',.14,.6,.72,.82,1);this.scopeLight.layers.set(1);this.scopeLight.target=new THREE.Object3D();this.scene.add(this.scopeLight,this.scopeLight.target);
     this._makeRoom();this._makePatient();this._makeTools();this._makeScopeArm();
-    this.robot=new THREE.Group();this.robot.position.set(0,.9922729,.67);this.robot.rotation.y=Math.PI/2;this.scene.add(this.robot);
+    this.robot=new THREE.Group();this.robot.position.set(0,1.0922729,.42);this.robot.rotation.y=Math.PI/2;this.scene.add(this.robot);
     this.joints=[];this.robotLoaded=false;this.armTargets={left:new THREE.Vector3(),right:new THREE.Vector3()};this.armErrors={left:0,right:0};this.handPositions={left:new THREE.Vector3(),right:new THREE.Vector3()};this.conceptDecoupled=false;this.kinematicLimited=false;
     this.targetMarker=mesh(new THREE.SphereGeometry(.0011,12,8),new THREE.MeshBasicMaterial({color:'#9de3c6'}),this.scene);this.targetMarker.layers.set(1);this.targetMarker.visible=false;
     this.resizeObserver=new ResizeObserver(()=>this.resize());this.resizeObserver.observe(stage);this.lastMini=0;
@@ -61,16 +64,19 @@ export class SurgicalScene{
     for(const j of meta.joints){const node=gltf.scene.getObjectByName(j.name);if(!node||j.type==='fixed')continue;node.userData.rest=node.quaternion.clone();node.userData.angle=0;node.userData.axis=new THREE.Vector3(...j.axis);node.userData.limit=j.limit||j.limits||{lower:-Math.PI,upper:Math.PI};this.joints.push(node);}
     // Nominal stable posture. The original manufacturer's mesh and joint frames are retained.
     for(const side of ['left','right']){this.setJoint(side+'_shoulder_pitch_joint',.8);this.setJoint(side+'_shoulder_roll_joint',side==='left'?.2:-.2);this.setJoint(side+'_elbow_joint',1.1);}
-    this.handMarkers={};for(const side of['left','right']){const hand=gltf.scene.getObjectByName(side+'_rubber_hand');if(hand){const marker=new THREE.Object3D();marker.position.set(.075,0,.02);hand.add(marker);this.handMarkers[side]=marker;}}
+    this.handMarkers={};this.handQuaternions={left:new THREE.Quaternion(),right:new THREE.Quaternion()};for(const side of['left','right']){const hand=gltf.scene.getObjectByName(side+'_rubber_hand');if(hand){const marker=new THREE.Object3D();marker.name=side+'_Measured_Palm_Grip_Frame';marker.position.fromArray(G1_GRIP[side]);hand.add(marker);this.handMarkers[side]=marker;}}
     this.robotLoaded=true;return meta;
   }
   async loadAnatomy(){
     this.assemblies=await loadAssemblies(this.scene);
-    this.assemblies.scopeMount.position.y+=.2;
+    this.assemblies.scopeMount.position.set(this.robot.position.x,this.robot.position.y+.2377271,this.robot.position.z-.17);
+    // Clock the vertical plate through 180 degrees so the source Z1 folds down
+    // from the elevated chest; the original joint geometry/limits are retained.
+    this.assemblies.scopeMount.quaternion.premultiply(Q.setFromAxisAngle(new THREE.Vector3(0,0,1),Math.PI));
     Object.values(this.tools).forEach(t=>t.group.visible=false);this.scopeShaft.visible=false;this.scopeHead.visible=false;this.scopeLens.visible=false;this.scopeArm.visible=false;
     const anatomy=await new GLTFLoader().loadAsync(BASE+'assets/patient-skin.glb');
     anatomy.scene.rotation.x=-Math.PI/2;anatomy.scene.position.set(0,1.035,0);
-    anatomy.scene.traverse(o=>{if(o.isMesh){if(!o.geometry.attributes.normal)o.geometry.computeVertexNormals();o.material=new THREE.MeshStandardMaterial({color:'#bfa08a',roughness:.65,metalness:0,side:THREE.DoubleSide});o.material.onBeforeCompile=shader=>{shader.vertexShader='varying vec3 patientLocal;\n'+shader.vertexShader;shader.vertexShader=shader.vertexShader.replace('#include <begin_vertex>','#include <begin_vertex>\npatientLocal=position;');shader.fragmentShader='varying vec3 patientLocal;\n'+shader.fragmentShader;shader.fragmentShader=shader.fragmentShader.replace('#include <clipping_planes_fragment>','#include <clipping_planes_fragment>\nif(abs(patientLocal.x)<.17&&abs(patientLocal.y)<.20&&patientLocal.z>0.0)discard;\nif(patientLocal.y<-.45)discard;');};o.material.customProgramCacheKey=()=> 'anatomy-teaching-window';o.castShadow=true;o.receiveShadow=true;o.layers.set(0);}});
+    anatomy.scene.traverse(o=>{if(o.isMesh){if(!o.geometry.attributes.normal)o.geometry.computeVertexNormals();o.material=new THREE.MeshStandardMaterial({color:'#bfa08a',roughness:.65,metalness:0,side:THREE.DoubleSide});o.material.onBeforeCompile=shader=>{shader.vertexShader='varying vec3 patientLocal;\n'+shader.vertexShader;shader.vertexShader=shader.vertexShader.replace('#include <begin_vertex>','#include <begin_vertex>\npatientLocal=position;');shader.fragmentShader='varying vec3 patientLocal;\n'+shader.fragmentShader;shader.fragmentShader=shader.fragmentShader.replace('#include <clipping_planes_fragment>','#include <clipping_planes_fragment>\nif(abs(patientLocal.x)<.17&&abs(patientLocal.y)<.20&&patientLocal.z>0.0)discard;\nif(patientLocal.y<-.30)discard;');};o.material.customProgramCacheKey=()=> 'anatomy-teaching-window';o.castShadow=true;o.receiveShadow=true;o.layers.set(0);}});
     this.scene.add(anatomy.scene);this.patientOuter.children[0].visible=false;this.patientOuter.children[3].visible=false;this.patientOuter.children[4].visible=false;
     this.patientOuter.children[1].visible=false;this.patientOuter.children[2].visible=false;this.patientOuter.children[5].visible=false;
     this.patientOuter.children[6].visible=false;this.patientOuter.children[7].visible=false;
@@ -90,17 +96,8 @@ export class SurgicalScene{
     if(!this._ikSolving&&this._armIK)for(const cache of Object.values(this._armIK))cache.valid=false;
   }
   _makeRoom(){
-    const room=new THREE.Group();this.scene.add(room);const floor=mesh(new THREE.PlaneGeometry(12,12),material('#728380',.05,.88),room);floor.rotation.x=-Math.PI/2;floor.receiveShadow=true;
-    const grid=new THREE.GridHelper(6,12,'#9cadaa','#829592');grid.position.y=.001;grid.material.transparent=true;grid.material.opacity=.055;room.add(grid);
-    box([4.8,2.4,.06],[0,1.2,1.75],material('#c3cfcd',.02,.93),room,.02);box([4.8,.09,.07],[0,.09,1.70],material('#819693',.1,.66),room,.01);
-    const table=new THREE.Group();room.add(table);box([.62,.065,1.6],[0,.875,-.35],material('#aab9b8',.66,.34),table,.025);box([.59,.05,1.58],[0,.934,-.35],material('#3b5354',.04,.74),table,.024);box([.27,.65,.39],[0,.43,-.12],material('#cad3d1',.35,.46),table,.025);box([.7,.06,.7],[0,.07,-.12],steelDark,table,.025);for(const x of [-.29,.29])for(const z of [-.38,.14]){const w=mesh(new THREE.CylinderGeometry(.045,.045,.027,18),black,table);w.position.set(x,.045,z);w.rotation.z=Math.PI/2;}
-    const platform=box([.58,.20,.55],[0,.10,.735],material('#647b79',.6,.45),room);box([.57,.009,.54],[0,.204,.735],material('#253b39',.15,.85),room);for(const x of[-.275,.275])box([.007,.008,.53],[x,.211,.735],material('#c8af79',.4,.6),room);
-    for(const x of [-.33,.33])segment(table,new THREE.Vector3(x,.85,-.87),new THREE.Vector3(x,.85,.40),.009,steel);
-    const pillow=box([.26,.055,.23],[0,1.044,-.49],material('#c9ddda',0,.95),room,.045);pillow.rotation.x=.05;
-    this.monitor=new THREE.Group();this.monitor.position.set(-.57,1.36,-.28);this.monitor.rotation.y=.35;room.add(this.monitor);box([.36,.24,.025],[0,0,0],black,this.monitor);this.monitorScreen=mesh(new THREE.PlaneGeometry(.335,.205),new THREE.MeshBasicMaterial({color:'#17302b'}),this.monitor);this.monitorScreen.position.z=.014;segment(room,new THREE.Vector3(-.57,.1,-.28),new THREE.Vector3(-.57,1.28,-.28),.015,steelDark);
-    const logo=labelSprite('MIRA  /  G1 TELEOP');logo.position.set(0,.80,.77);room.add(logo);
-    const ceiling=new THREE.Group();ceiling.position.set(.65,2.1,-.35);room.add(ceiling);const lamp=mesh(new THREE.CylinderGeometry(.19,.23,.035,32),material('#bbc8c4',.65,.25),ceiling);lamp.rotation.z=.22;const emitter=mesh(new THREE.CircleGeometry(.175,32),new THREE.MeshBasicMaterial({color:'#ebfff8'}),ceiling);emitter.position.y=-.023;emitter.rotation.x=Math.PI/2;
-    room.traverse(m=>m.layers.set(0));
+    const built=buildOperatingRoom(this.scene,this.scopeFeed.monitorMaterial);
+    this.room=built.room;this.monitor=built.monitor;this.monitorScreen=built.monitorScreen;this.robotPlatform=built.platform;
   }
   _makePatient(){
     const outer=new THREE.Group();this.patientOuter=outer;this.scene.add(outer);const drape=material('#436c70',.05,.94);drape.normalMap=null;
@@ -111,7 +108,7 @@ export class SurgicalScene{
     sphere([.17,.095,.23],[0,1.09,-.02],cutoutMat,outer);
     // Drape portions flank an open work window instead of hiding the intracorporeal scene.
     for(const x of [-.22,.22])box([.11,.04,.51],[x,1.105,-.02],drape,outer);
-    this.cavity=new THREE.Group();this.scene.add(this.cavity);const cavityMat=new THREE.MeshPhysicalMaterial({color:'#875b53',roughness:.72,metalness:0,side:THREE.BackSide,map:tissueTexture(),clearcoat:.08,clearcoatRoughness:.58});
+    this.cavity=new THREE.Group();this.scene.add(this.cavity);const cavityMat=new THREE.MeshPhysicalMaterial({color:'#c5b1a7',roughness:.72,metalness:0,side:THREE.BackSide,map:tissueTexture(),clearcoat:.08,clearcoatRoughness:.58});
     const inner=sphere([.25,.16,.29],[0,1.085,0],cavityMat,this.cavity);inner.layers.set(1);inner.castShadow=false;
     const diaphragm=sphere([.18,.028,.13],[0,1.00,-.14],material('#ac7b74',0,.55),this.cavity);diaphragm.layers.enable(1);
     this.gallbladder=sphere([.012,.017,.032],[-.032,1.001,.055],new THREE.MeshPhysicalMaterial({color:'#68804b',roughness:.3,clearcoat:.6}),this.cavity);this.gallbladder.rotation.z=.3;this.gallbladder.layers.enable(1);
@@ -127,13 +124,14 @@ export class SurgicalScene{
   }
   _makeScopeArm(){this.scopeArm=new THREE.Group();}
   addTissue(tissue){this.tissue=tissue;tissue.group.position.set(0,1.035,0);this.scene.add(tissue.group);tissue.group.traverse(m=>{m.layers.enable(1);if(m.isMesh){m.castShadow=true;m.receiveShadow=true;}});}
-  resize(){const w=this.stage.clientWidth,h=this.stage.clientHeight;this.renderer.setSize(w,h,false);this.overviewCamera.aspect=w/h;this.overviewCamera.updateProjectionMatrix();this.endoCamera.aspect=w/h;this.endoCamera.updateProjectionMatrix();}
+  resize(){const w=this.stage.clientWidth,h=this.stage.clientHeight;if(w<1||h<1)return;this.renderer.setSize(w,h,false);this.overviewCamera.aspect=w/h;this.overviewCamera.updateProjectionMatrix();this.endoCamera.aspect=w/h;this.endoCamera.updateProjectionMatrix();}
   setMode(mode){this.mode=mode;this.controls.enabled=mode==='overview';}
-  home(){this.overviewCamera.position.set(1.55,1.87,-1.85);this.controls.target.set(0,1.05,.12);this.controls.update();}
+  get scopeAspect(){const area=this.mode==='endo'?this.stage:this.mini;if(area===this.stage)return Math.max(1,area.clientWidth)/Math.max(1,area.clientHeight);const bounds=area.getBoundingClientRect();return Math.max(1,bounds.width)/Math.max(1,bounds.height);}
+  home(){this.overviewCamera.position.set(1.68,2.02,-1.92);this.controls.target.set(0,1.20,.18);this.controls.update();}
   // Kept for reset/history compatibility. Rendering never rewrites a tool pose.
   releaseKinematicGuard(){this.acceptedArmPoses={};this.kinematicLimited=false;this._armIK=null;this.assemblies?.resetPose();}
   guardArmTargets(){this.kinematicLimited=false;return false;}
-  solveArm(side,target){
+  solveArm(side,target,dt=1/60,gripOrientation=null){
     if(!this.robotLoaded)return;
     this._armIK??={};let cache=this._armIK[side];
     if(!cache){
@@ -142,34 +140,55 @@ export class SurgicalScene{
       const end=this.handMarkers?.[side]||this.robotModel.getObjectByName(side+'_wrist_yaw_link')||chain.at(-1);if(!end)return;
       cache=this._armIK[side]={chain,end,valid:false,settled:false,stationaryFrames:0,error:Infinity,bestError:Infinity,
         target:new THREE.Vector3(),rootMatrix:new THREE.Matrix4(),bestAngles:new Float64Array(chain.length),
+        jacobian:new Float64Array(3*chain.length),matrixElements:new Float64Array(9),centering:new Float64Array(chain.length),
+        orientationError:new THREE.Vector3(),orientationQ:new THREE.Quaternion(),goalOrientation:new THREE.Quaternion(),
+        lower:new Float64Array(chain.length),upper:new Float64Array(chain.length),inverse:new THREE.Matrix3(),
         pivot:new THREE.Vector3(),endPos:new THREE.Vector3(),axis:new THREE.Vector3(),a:new THREE.Vector3(),b:new THREE.Vector3(),cross:new THREE.Vector3(),scale:new THREE.Vector3(),q:new THREE.Quaternion()};
     }
     this.robot.updateWorldMatrix(true,false);
-    const unchanged=cache.valid&&cache.target.distanceToSquared(target)<1e-14&&cache.rootMatrix.equals(this.robot.matrixWorld);
+    const unchanged=cache.valid&&cache.target.distanceToSquared(target)<1e-14&&cache.rootMatrix.equals(this.robot.matrixWorld)&&(!gripOrientation||1-Math.abs(cache.goalOrientation.dot(gripOrientation))<1e-12);
     if(unchanged&&(cache.error<.0002||cache.settled)){this.armErrors[side]=cache.error;return;}
-    const {chain,end,pivot,endPos,axis,q,a,b,cross,scale}=cache,previousError=cache.error;
+    const {chain,end,pivot,endPos,axis,q,a,b,cross,scale,jacobian,matrixElements,centering,lower,upper,inverse,orientationError,orientationQ}=cache,previousError=cache.error;
     this.robot.updateMatrixWorld(true);
     endPos.setFromMatrixPosition(end.matrixWorld);
     if(!unchanged){
       cache.target.copy(target);cache.rootMatrix.copy(this.robot.matrixWorld);cache.stationaryFrames=0;cache.settled=false;
+      if(gripOrientation)cache.goalOrientation.copy(gripOrientation);
       cache.bestError=endPos.distanceTo(target);for(let i=0;i<chain.length;i++)cache.bestAngles[i]=chain[i].userData.angle;
     }
+    // A passive ball joint connects the real shaft clamp to the strapped palm
+    // saddle. Its centre follows position IK; the complete saddle orientation
+    // comes from the genuine hand frame, rather than rotating a fake hand.
+    // Damped least squares and null-space joint centering prevent the original
+    // CCD solver from becoming trapped at the shoulder roll limit mid-demo.
+    const count=chain.length,h=THREE.MathUtils.clamp(Number.isFinite(dt)?dt:1/60,.001,.05);
+    for(let i=0;i<count;i++){const n=chain[i],l=n.userData.limit,speed=l.velocity??12;lower[i]=Math.max(l.lower,n.userData.angle-speed*h);upper[i]=Math.min(l.upper,n.userData.angle+speed*h);}
     this._ikSolving=true;
     for(let pass=0;pass<6;pass++){
       if(endPos.distanceToSquared(target)<4e-8)break;
-      for(let i=chain.length-1;i>=0;i--){
-        const n=chain[i];n.matrixWorld.decompose(pivot,q,scale);
-        endPos.setFromMatrixPosition(end.matrixWorld);axis.copy(n.userData.axis).applyQuaternion(q).normalize();
-        a.subVectors(endPos,pivot);b.subVectors(target,pivot);a.addScaledVector(axis,-a.dot(axis));b.addScaledVector(axis,-b.dot(axis));
-        if(a.lengthSq()<1e-10||b.lengthSq()<1e-10)continue;
-        a.normalize();b.normalize();cross.crossVectors(a,b);
-        const delta=THREE.MathUtils.clamp(Math.atan2(axis.dot(cross),a.dot(b)),-.17,.17);
-        if(Math.abs(delta)<1e-10)continue;
-        this.setJoint(n.name,n.userData.angle+delta);
-        // Only this joint's descendants need new FK matrices; legs and the
-        // opposite arm do not change during this step.
-        n.updateMatrixWorld(true);
+      orientationError.set(0,0,0);
+      if(gripOrientation){
+        end.matrixWorld.decompose(pivot,orientationQ,scale);orientationQ.invert().premultiply(gripOrientation).normalize();
+        if(orientationQ.w<0)orientationQ.set(-orientationQ.x,-orientationQ.y,-orientationQ.z,-orientationQ.w);
+        const sine=Math.hypot(orientationQ.x,orientationQ.y,orientationQ.z),angle=2*Math.acos(THREE.MathUtils.clamp(orientationQ.w,-1,1));
+        orientationError.set(orientationQ.x,orientationQ.y,orientationQ.z).multiplyScalar(sine>1e-10?angle/sine:0);
       }
+      for(let i=0;i<count;i++){
+        const n=chain[i];n.matrixWorld.decompose(pivot,q,scale);
+        axis.copy(n.userData.axis).applyQuaternion(q).normalize();a.subVectors(endPos,pivot);cross.crossVectors(axis,a);
+        jacobian[i]=cross.x;jacobian[count+i]=cross.y;jacobian[2*count+i]=cross.z;
+        const l=n.userData.limit;centering[i]=.4*((l.lower+l.upper)*.5-n.userData.angle)/(l.upper-l.lower)+.015*axis.dot(orientationError);
+      }
+      for(let row=0;row<3;row++)for(let column=0;column<3;column++){let value=row===column?.000025:0;for(let i=0;i<count;i++)value+=jacobian[row*count+i]*jacobian[column*count+i];matrixElements[column*3+row]=value;}
+      inverse.fromArray(matrixElements).invert();a.subVectors(target,endPos).applyMatrix3(inverse);
+      b.set(0,0,0);for(let i=0;i<count;i++){b.x+=jacobian[i]*centering[i];b.y+=jacobian[count+i]*centering[i];b.z+=jacobian[2*count+i]*centering[i];}b.applyMatrix3(inverse);
+      for(let i=0;i<count;i++){
+        const delta=jacobian[i]*a.x+jacobian[count+i]*a.y+jacobian[2*count+i]*a.z+centering[i]-(jacobian[i]*b.x+jacobian[count+i]*b.y+jacobian[2*count+i]*b.z);
+        this.setJoint(chain[i].name,THREE.MathUtils.clamp(chain[i].userData.angle+THREE.MathUtils.clamp(delta,-.2,.2),lower[i],upper[i]));
+      }
+      // Updating the shoulder subtree once updates all seven joints and the
+      // unscaled source hand, without rebuilding every CAD subtree per joint.
+      chain[0].updateMatrixWorld(true);
       endPos.setFromMatrixPosition(end.matrixWorld);
       const error=endPos.distanceTo(target);
       if(error<cache.bestError){cache.bestError=error;for(let i=0;i<chain.length;i++)cache.bestAngles[i]=chain[i].userData.angle;}
@@ -189,12 +208,13 @@ export class SurgicalScene{
   update(state,dt){
     this.assemblies?.update(state,dt);
     for(const [index,side] of ['left','right'].entries()){
-      const target=this.assemblies?.toolHandlePositions[side];
-      if(target){this.armTargets[side].copy(target);this.solveArm(side,target);}
+      const target=this.assemblies?.toolGripPositions[side];
+      if(target){this.armTargets[side].copy(target);this._gripOrientation??=new THREE.Quaternion();this._gripClock??=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1),Math.PI/2);this._gripOrientation.copy(this.assemblies.tools[side].group.quaternion).multiply(this._gripClock);this.solveArm(side,target,dt,this._gripOrientation);}
       this.handMarkers?.[side]?.getWorldPosition(this.handPositions[side]);
+      this.handQuaternions??={left:new THREE.Quaternion(),right:new THREE.Quaternion()};this.handMarkers?.[side]?.getWorldQuaternion(this.handQuaternions[side]);
       if(this.assemblies)this.portMeshes[index].quaternion.setFromUnitVectors(Y,this.assemblies.tools[side].shaftDirection);
     }
-    this.assemblies?.connectHands(this.handPositions,this.armErrors);
+    this.assemblies?.connectHands(this.handPositions,this.armErrors,this.handQuaternions);
     this.conceptDecoupled=this.assemblies?.conceptDecoupled??false;this.kinematicLimited=false;
     const sc=state.scope,sp=new THREE.Vector3(...sc.position);
     if(this.assemblies)this.portMeshes[2].quaternion.setFromUnitVectors(Y,this.assemblies.scope.direction);
@@ -203,9 +223,27 @@ export class SurgicalScene{
     this.controls.update();
   }
   render(now=0){
-    const r=this.renderer,w=this.stage.clientWidth,h=this.stage.clientHeight;r.setScissorTest(false);r.setViewport(0,0,w,h);r.setClearColor(this.mode==='endo'?'#2c1919':'#a4b3b3');
-    const main=this.mode==='endo'?this.endoCamera:this.overviewCamera;main.aspect=w/h;main.updateProjectionMatrix();this.cavity.children[0].visible=this.mode==='endo';this.scene.background=new THREE.Color(this.mode==='endo'?'#30201b':'#a4b3b3');this.scene.environmentIntensity=this.mode==='endo'?.18:.68;r.toneMappingExposure=this.mode==='endo'?1.06:1.0;r.render(this.scene,main);
-    const stageRect=this.stage.getBoundingClientRect(),miniRect=this.mini.getBoundingClientRect();const mx=miniRect.left-stageRect.left,my=h-(miniRect.top-stageRect.top)-miniRect.height,mw=miniRect.width,mh=miniRect.height;const secondary=this.mode==='endo'?this.overviewCamera:this.endoCamera;secondary.aspect=mw/mh;secondary.updateProjectionMatrix();this.cavity.children[0].visible=this.mode!=='endo';this.scene.background=new THREE.Color(this.mode==='endo'?'#a4b3b3':'#30201b');this.scene.environmentIntensity=this.mode==='endo'?.68:.18;r.toneMappingExposure=this.mode==='endo'?1.0:1.06;r.setScissorTest(true);r.setScissor(mx,my,mw,mh);r.setViewport(mx,my,mw,mh);r.clearDepth();r.render(this.scene,secondary);r.setScissorTest(false);
+    const r=this.renderer,w=this.stage.clientWidth,h=this.stage.clientHeight;
+    if(w<1||h<1)return;
+    const stageRect=this.stage.getBoundingClientRect(),miniRect=this.mini.getBoundingClientRect();
+    const mx=miniRect.left-stageRect.left,my=h-(miniRect.top-stageRect.top)-miniRect.height,mw=miniRect.width,mh=miniRect.height;
+    r.info.reset();r.setScissorTest(false);r.setViewport(0,0,w,h);
+    // Capture the intracorporeal scene once. The LCD and viewport reuse this frame.
+    this.cavity.children[0].visible=true;this.scene.background=new THREE.Color('#6b4a42');
+    this.scene.environmentIntensity=.34;r.toneMappingExposure=1.10;
+    this.scopeFeed.capture(r,this.scene,this.endoCamera,this.mode==='endo'?w:mw,this.mode==='endo'?h:mh);
+    r.setRenderTarget(null);r.setScissorTest(false);r.setViewport(0,0,w,h);r.clear();
+    this.cavity.children[0].visible=false;this.scene.background=new THREE.Color('#c2d0d0');
+    this.scene.environmentIntensity=.80;r.toneMappingExposure=1.0;
+    if(this.mode==='endo'){
+      this.scopeFeed.blit(r,0,0,w,h);
+      this.overviewCamera.aspect=mw/mh;this.overviewCamera.updateProjectionMatrix();
+      r.setScissorTest(true);r.setScissor(mx,my,mw,mh);r.setViewport(mx,my,mw,mh);r.clearDepth();r.render(this.scene,this.overviewCamera);
+    }else{
+      this.overviewCamera.aspect=w/h;this.overviewCamera.updateProjectionMatrix();r.render(this.scene,this.overviewCamera);
+      this.scopeFeed.blit(r,mx,my,mw,mh);
+    }
+    r.setScissorTest(false);
   }
-  dispose(){this.disposed=true;this.resizeObserver.disconnect();this.controls.dispose();this.env.dispose();this.scene.traverse(o=>{o.geometry?.dispose();if(o.material){for(const m of Array.isArray(o.material)?o.material:[o.material])m.dispose();}});this.renderer.dispose();}
+  dispose(){this.disposed=true;this.resizeObserver.disconnect();this.controls.dispose();this.env.dispose();this.scene.traverse(o=>{o.geometry?.dispose();if(o.material){for(const m of Array.isArray(o.material)?o.material:[o.material])if(m!==this.scopeFeed.monitorMaterial)m.dispose();}});this.scopeFeed.dispose();this.renderer.dispose();}
 }

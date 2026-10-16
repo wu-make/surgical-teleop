@@ -178,6 +178,12 @@ export class TissueVolume {
     if (!this._baseField || !point || !Number.isFinite(margin) || margin <= 0) return null;
     const specimen = this.fragments.surfacePoint(point, margin);
     if (specimen) return specimen;
+    return this.findParentSurfacePoint(point, margin);
+  }
+
+  /** Mother-organ surface only: a carried specimen must not redirect the scope. */
+  findParentSurfacePoint(point, margin = 0.008) {
+    if (!this._baseField || !point || !Number.isFinite(margin) || margin <= 0) return null;
     const initial = new THREE.Vector3().fromArray(vectorArray(point));
     const distance = this.sampleDistance(initial);
     if (!Number.isFinite(distance) || Math.abs(distance) > margin) return null;

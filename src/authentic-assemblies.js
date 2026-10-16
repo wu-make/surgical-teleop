@@ -6,6 +6,14 @@ const BASE = import.meta.env?.BASE_URL ?? '/';
 const Z = new THREE.Vector3(0, 0, 1);
 const clamp = THREE.MathUtils.clamp;
 
+// The source G1 rubber hands have fixed, slightly curved fingers. A strapped
+// palm saddle supplies the mechanical grip; source fingers are never animated.
+export const G1_GRIP = Object.freeze({
+  left: Object.freeze([.085, -.026, 0]), right: Object.freeze([.085, .026, 0]),
+  proximalShaftZ: -.095, lateralBallOffset: .060,
+  clevisDepth: .075, clevisRadius: .0035,
+});
+
 const displayMaterial = (color, metalness = .65, roughness = .35) => new THREE.MeshStandardMaterial({ color, metalness, roughness });
 function detail(parent, geometry, material, position = [0, 0, 0]) {
   const object = new THREE.Mesh(geometry, material);
@@ -32,6 +40,74 @@ function makeToolCoupler(parent, color) {
     const screw = detail(group, new THREE.CylinderGeometry(.0017, .0017, .002, 8), alloy, [x, y, -.048]);
     screw.rotation.x = Math.PI / 2;
   }
+  return group;
+}
+
+function makeProximalGrip(parent, side, color) {
+  const clampGroup = new THREE.Group();
+  clampGroup.name = `Concept_${side}_Proximal_Shaft_Clamp`;
+  clampGroup.position.z = G1_GRIP.proximalShaftZ; parent.add(clampGroup);
+  const alloy = displayMaterial('#b2c0c3', .76, .28), dark = displayMaterial('#26373a', .15, .54);
+  const housing = detail(clampGroup, new RoundedBoxGeometry(.021, .025, .029, 2, .003), dark);
+  housing.name = 'Custom_Shaft_Clamp_Housing';
+  for (const z of [-.012, .012]) detail(clampGroup, new THREE.TorusGeometry(.0071, .0017, 8, 24), alloy, [0, 0, z]);
+  const sign = side === 'left' ? -1 : 1;
+  // A fixed-size U clevis goes around the source palm. Its only passive motion
+  // is clocking about the two unchanged end centres; no segment telescopes.
+  const clevis = new THREE.Group(); clevis.name = 'Custom_Fixed_Size_Palm_Clearance_Clevis'; clampGroup.add(clevis);
+  for (const x of [0, sign * G1_GRIP.lateralBallOffset]) detail(clevis, new THREE.CylinderGeometry(G1_GRIP.clevisRadius, G1_GRIP.clevisRadius, G1_GRIP.clevisDepth, 12), alloy, [x, G1_GRIP.clevisDepth * .5, 0]);
+  const bridge = detail(clevis, new THREE.CylinderGeometry(G1_GRIP.clevisRadius, G1_GRIP.clevisRadius, G1_GRIP.lateralBallOffset, 12), alloy, [sign * G1_GRIP.lateralBallOffset * .5, G1_GRIP.clevisDepth, 0]); bridge.rotation.z = Math.PI / 2;
+  for (const x of [0, sign * G1_GRIP.lateralBallOffset]) detail(clevis, new THREE.SphereGeometry(G1_GRIP.clevisRadius, 12, 8), alloy, [x, G1_GRIP.clevisDepth, 0]);
+  const ball = detail(clampGroup, new THREE.SphereGeometry(.008, 18, 12), alloy, [sign * G1_GRIP.lateralBallOffset, 0, 0]);
+  ball.name = 'Custom_Passive_Universal_Grip_Ball';
+  detail(clampGroup, new THREE.TorusGeometry(.0073, .0012, 6, 20), displayMaterial(color, .2, .43), [0, 0, -.014]);
+  return clampGroup;
+}
+
+function palmClearanceCloud(hand, grip) {
+  hand.updateWorldMatrix(true, true);
+  const inverse = hand.matrixWorld.clone().invert(), matrix = new THREE.Matrix4(), point = new THREE.Vector3(), cells = new Map();
+  hand.traverse(node => {
+    if (!node.isMesh) return;
+    matrix.multiplyMatrices(inverse, node.matrixWorld); const positions = node.geometry.attributes.position;
+    for (let i = 0; i < positions.count; i++) {
+      point.fromBufferAttribute(positions, i).applyMatrix4(matrix);
+      const key = `${Math.floor(point.x / .008)},${Math.floor(point.y / .008)},${Math.floor(point.z / .008)}`;
+      if (!cells.has(key)) cells.set(key, [point.x - grip[0], point.y - grip[1], point.z - grip[2]]);
+    }
+  });
+  return new Float64Array([...cells.values()].flat());
+}
+
+function clevisClearance(points, theta, endpoint) {
+  const cosine = Math.cos(theta), sine = Math.sin(theta), height = G1_GRIP.clevisDepth;
+  let minimum = Infinity;
+  for (let i = 0; i < points.length; i += 3) {
+    const x = points[i], z = points[i + 2] - G1_GRIP.proximalShaftZ;
+    const y = points[i + 1] * cosine + z * sine, sideways = -points[i + 1] * sine + z * cosine;
+    const along = Math.max(0, -y, y - height), across = Math.max(Math.min(0, endpoint) - x, 0, x - Math.max(0, endpoint));
+    minimum = Math.min(minimum, x * x + along * along + sideways * sideways,
+      (x - endpoint) ** 2 + along * along + sideways * sideways, across * across + (y - height) ** 2 + sideways * sideways);
+  }
+  return Math.sqrt(minimum);
+}
+
+function makePalmSaddle(parent, side, color) {
+  const group = new THREE.Group(); group.name = `Concept_${side}_Strapped_Palm_Grip`; parent.add(group);
+  const sign = side === 'left' ? -1 : 1;
+  const dark = displayMaterial('#1f3032', .12, .62), alloy = displayMaterial('#afbdc0', .72, .3);
+  const bar = detail(group, new THREE.CylinderGeometry(.0105, .0105, .061, 20), dark); bar.rotation.x = Math.PI / 2;
+  bar.name = 'Custom_Palm_Transverse_Grip_Bar';
+  for (const z of [-.03, .03]) detail(group, new THREE.SphereGeometry(.0107, 12, 8), dark, [0, 0, z]);
+  // Local origin is the measured grip-bar centre, not the buried hand origin.
+  detail(group, new RoundedBoxGeometry(.049, .008, .061, 2, .004), alloy, [-.03, -sign * .008, 0]);
+  for (const x of [-.052, -.015]) {
+    // Two closed, finite straps wrap the fixed hand and anchor its palm plate.
+    detail(group, new RoundedBoxGeometry(.009, .004, .066, 2, .0015), dark, [x, -sign * .011, 0]);
+    detail(group, new RoundedBoxGeometry(.009, .004, .066, 2, .0015), dark, [x, -sign * .044, 0]);
+    for (const z of [-.031, .031]) detail(group, new RoundedBoxGeometry(.009, .037, .004, 2, .0015), dark, [x, -sign * .0275, z]);
+  }
+  detail(group, new THREE.TorusGeometry(.0085, .0016, 8, 24), displayMaterial(color, .25, .4));
   return group;
 }
 
@@ -97,6 +173,8 @@ class Instrument {
     this.cuttingDirection = new THREE.Vector3(0, 0, 1);
     this.tipQuaternion = new THREE.Quaternion();
     this.handlePosition = new THREE.Vector3();
+    this.gripPosition = new THREE.Vector3();
+    this.gripLocal = new THREE.Vector3(assembly.name === 'needle-driver' ? -G1_GRIP.lateralBallOffset : G1_GRIP.lateralBallOffset, 0, G1_GRIP.proximalShaftZ);
     this.shaftDirection = new THREE.Vector3();
     this.rcmError = 0;
     this.localTip = new THREE.Vector3();
@@ -114,6 +192,7 @@ class Instrument {
     this.initialized = false;
     this.rcmFeasible = true;
     this.coupler = makeToolCoupler(this.group, assembly.name === 'needle-driver' ? '#5faaa9' : '#c3a46b');
+    this.proximalGrip = makeProximalGrip(this.group, assembly.name === 'needle-driver' ? 'left' : 'right', assembly.name === 'needle-driver' ? '#5faaa9' : '#c3a46b');
   }
 
   update(state) {
@@ -162,6 +241,7 @@ class Instrument {
     this.tipNode.getWorldQuaternion(this.tipQuaternion);
     this.cuttingDirection.copy(Z).applyQuaternion(this.tipQuaternion).normalize();
     this.handlePosition.copy(this.group.position);
+    this.gripPosition.copy(this.gripLocal).applyQuaternion(this.group.quaternion).add(this.group.position);
     this.shaftDirection.copy(Z).applyQuaternion(this.group.quaternion);
     this.scratch.subVectors(this.port, this.group.position);
     this.scratch.addScaledVector(this.shaftDirection, -this.scratch.dot(this.shaftDirection));
@@ -333,6 +413,7 @@ class ScopeArm {
     if (!this.initialized) {
       this.solve(target, 80, .25);
       this.initialized = true;
+      this.accumulated = 0;
       if (this.error > .003) this.recover(target);
     } else if (this.accumulated >= 1 / 30) {
       const frameTime = this.accumulated;
@@ -393,7 +474,9 @@ export async function loadAssemblies(scene) {
     controller.name = `Concept_${side}_Master_Grip_Indicator`;
     line.visible = controller.visible = false;
     connections.add(line);
-    handConnections[side] = { line, controller };
+    const saddle = makePalmSaddle(connections, side, color); saddle.visible = false;
+    handConnections[side] = { line, controller, saddle, clevis: tools[side].proximalGrip.getObjectByName('Custom_Fixed_Size_Palm_Clearance_Clevis'),
+      sourceHand: null, cloud: null, transformed: null, inverse: new THREE.Quaternion(), relative: new THREE.Quaternion(), point: new THREE.Vector3(), origin: new THREE.Vector3(), initialized: false };
   }
   const scopeCollar = new THREE.Group();
   scopeCollar.name = 'Custom_Universal_Endoscope_Shaft_Clamp';
@@ -401,6 +484,7 @@ export async function loadAssemblies(scene) {
   detail(scopeCollar, new THREE.TorusGeometry(.0065, .002, 8, 28), displayMaterial('#879b9d', .78, .3));
   detail(scopeCollar, new RoundedBoxGeometry(.014, .011, .016, 2, .002), displayMaterial('#28373a', .2, .52), [.011, 0, 0]);
   let disposed = false;
+  let gripFrameTime = 1 / 60;
   const result = {
     loaded: true,
     toolNames: Object.freeze({ left: '持针钳', right: '单极弯剪' }),
@@ -412,6 +496,9 @@ export async function loadAssemblies(scene) {
     toolTipPositions: { left: tools.left.tipPosition, right: tools.right.tipPosition },
     toolDirections: { left: tools.left.cuttingDirection, right: tools.right.cuttingDirection },
     toolHandlePositions: { left: tools.left.handlePosition, right: tools.right.handlePosition },
+    toolGripPositions: { left: tools.left.gripPosition, right: tools.right.gripPosition },
+    handGripPositions: { left: new THREE.Vector3(), right: new THREE.Vector3() },
+    handGripQuaternions: { left: new THREE.Quaternion(), right: new THREE.Quaternion() },
     toolRCMErrors: { left: 0, right: 0 },
     toolRCMFeasible: { left: true, right: true },
     connectionModes: { left: 'direct', right: 'direct' },
@@ -419,17 +506,19 @@ export async function loadAssemblies(scene) {
     resetPose() {
       tools.left.initialized=tools.right.initialized=scope.initialized=false;
       scopeArm.initialized=false;scopeArm.recoveryPose=null;
+      scopeArm.accumulated=0;scopeArm.frameBounds=null;scopeArm.stallTime=0;scopeArm.recoveryCooldown=0;
+      for(const connection of Object.values(handConnections))connection.initialized=false;
     },
-    connectHands(positions, errors) {
+    connectHands(positions, errors, quaternions) {
       result.conceptDecoupled = false;
       for (const side of ['left', 'right']) {
         const connection = handConnections[side], hand = positions[side];
-        const virtual = (errors[side] ?? 0) > .012;
+        const virtual = (errors[side] ?? 0) > .003;
         result.connectionModes[side] = virtual ? 'virtual' : 'direct';
         result.conceptDecoupled ||= virtual;
         connection.line.visible = connection.controller.visible = virtual;
         if (!hand) continue;
-        const handle = tools[side].handlePosition;
+        const handle = tools[side].gripPosition;
         const attribute = connection.line.geometry.attributes.position;
         attribute.setXYZ(0, hand.x, hand.y, hand.z);
         attribute.setXYZ(1, handle.x, handle.y, handle.z);
@@ -437,11 +526,36 @@ export async function loadAssemblies(scene) {
         connection.line.computeLineDistances();
         connection.line.geometry.computeBoundingSphere();
         connection.controller.position.copy(hand);
-        connection.controller.quaternion.copy(tools[side].group.quaternion);
+        const orientation = quaternions?.[side] ?? tools[side].group.quaternion;
+        connection.controller.quaternion.copy(orientation);
+        connection.saddle.visible = true;
+        connection.saddle.position.copy(hand); connection.saddle.quaternion.copy(orientation);
+        result.handGripPositions[side].copy(hand); result.handGripQuaternions[side].copy(orientation);
+        // Cache a sparse cloud from the actual loaded G1 palm. It selects the
+        // passive U-clevis clock; the source robot and tool geometry stay rigid.
+        connection.sourceHand ??= scene.getObjectByName(`${side}_rubber_hand`);
+        if (connection.sourceHand && !connection.cloud) { connection.cloud = palmClearanceCloud(connection.sourceHand, G1_GRIP[side]); connection.transformed = new Float64Array(connection.cloud.length); }
+        if (connection.cloud) {
+          connection.inverse.copy(tools[side].group.quaternion).invert(); connection.relative.copy(connection.inverse).multiply(orientation);
+          connection.origin.copy(hand).sub(tools[side].group.position).applyQuaternion(connection.inverse);
+          for (let i = 0; i < connection.cloud.length; i += 3) { connection.point.fromArray(connection.cloud, i).applyQuaternion(connection.relative).add(connection.origin); connection.point.toArray(connection.transformed, i); }
+          const previous = connection.clevis.rotation.x, endpoint = tools[side].gripLocal.x;
+          let chosen = previous, best = clevisClearance(connection.transformed, previous, endpoint);
+          if (best < .010) for (let sample = 1; sample <= 128; sample++) {
+            const candidate = previous + Math.ceil(sample / 2) * (sample % 2 ? 1 : -1) * Math.PI / 64;
+            const clearance = clevisClearance(connection.transformed, candidate, endpoint);
+            if (clearance > best) { best = clearance; chosen = candidate; }
+            if (clearance >= .010) break;
+          }
+          const delta = Math.atan2(Math.sin(chosen - previous), Math.cos(chosen - previous));
+          connection.clevis.rotation.x = connection.initialized ? previous + clamp(delta, -4.8 * gripFrameTime, 4.8 * gripFrameTime) : chosen;
+          connection.initialized = true;
+        }
       }
     },
     update(state, dt = 1 / 60) {
       if (disposed) return;
+      gripFrameTime = clamp(Number.isFinite(dt) ? dt : 1 / 60, .001, .05);
       for (const side of ['left', 'right']) {
         tools[side].update(state.tools[side]);
         result.toolRCMErrors[side] = tools[side].rcmError;

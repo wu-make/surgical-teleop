@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Simulation, LIMITS, CONTROL_RATES, constrainToolPosition, integratedControlDistance, instrumentClearance, segmentDistance, toolCollisionShapes } from '../src/simulation.js';
+import { SCOPE_FRAMING, resolveScopeFraming, advanceScopeDepth } from '../src/scope-framing.js';
 
 const near = (a, b, e = 1e-9) => assert.ok(Math.abs(a - b) <= e, `${a} ≠ ${b}`);
 const nearVector = (a, b, e = 1e-9) => a.forEach((v, i) => near(v, b[i], e));
@@ -443,4 +444,188 @@ test('even a submicrometre imported overlap can immediately move apart', () => {
   assert.ok(gap<0&&gap>-1e-7);
   assert.equal(s.moveTool([-.001,0,0],'left').limited,false);
   assert.ok(instrumentClearance(s.state.tools.left,s.state.tools.right)>0);
+});
+
+const anatomicalContext = () => ({
+  surfaceTarget:[-.025,1.09,.015],
+  organBounds:{min:[-.13,1.015,-.09],max:[.13,1.135,.1]},
+  heldSpecimen:{id:'cap-1',position:[-.03,1.09,.035],radius:.007},
+});
+
+test('initial laparoscope working distance frames a local organ patch at 55 degrees', () => {
+  const s=new Simulation(),camera=s.state.scope;
+  near(camera.actualWorkingDistance,.065);
+  near(Math.hypot(...sub(camera.position,camera.port)),camera.depth);
+  const visibleHeight=2*camera.actualWorkingDistance*Math.tan(55*Math.PI/360);
+  const oldVisibleHeight=2*.11*Math.tan(60*Math.PI/360);
+  assert.ok(visibleHeight>.06&&visibleHeight<.075);
+  assert.ok(oldVisibleHeight/visibleHeight>1.85,'the local organ patch must gain meaningful magnification');
+});
+
+test('field composition retains the mother organ when a held specimen moves far away', () => {
+  const s=new Simulation(),context=anatomicalContext();
+  context.heldSpecimen.position=[-.19,1.19,-.13];
+  context.graspTarget=[...context.heldSpecimen.position];
+  s.setScopeContext(context);s.setScopeFollow(true,'grasp');
+  hold(s,[],6,.02);
+  const camera=s.state.scope;
+  nearVector(camera.intentTarget,context.graspTarget);
+  assert.ok(Math.hypot(...sub(camera.target,context.surfaceTarget))<=SCOPE_FRAMING.maximumIntentOffset+1e-12);
+  assert.ok(Math.hypot(...sub(camera.target,context.graspTarget))>.2);
+  near(camera.actualWorkingDistance,.065,1e-8);
+  assert.equal(camera.framingSource,'mother-surface');
+  s.setScopeContext({surfaceTarget:null});hold(s,[],1);
+  assert.equal(camera.framingSource,'retained-operative-field');
+  assert.ok(Math.hypot(...sub(camera.target,context.surfaceTarget))<=.012+1e-12);
+});
+
+test('anatomical framing preserves active, midpoint and cooperative grasp intentions', () => {
+  const s=new Simulation(),context=anatomicalContext(),grasp=[-.04,1.06,-.02];
+  s.setScopeContext({...context,graspTarget:grasp});
+  s.select('right');s.update(.02);
+  nearVector(s.state.scope.intentTarget,s.state.tools.right.position);
+  s.setScopeFollow(true,'midpoint');s.update(.02);
+  nearVector(s.state.scope.intentTarget,s.state.tools.left.position.map((v,i)=>(v+s.state.tools.right.position[i])/2));
+  s.setScopeFollow(true,'grasp');s.update(.02);
+  nearVector(s.state.scope.intentTarget,grasp);
+  s.setScopeContext({graspTarget:grasp,operating:true});s.update(.02);
+  nearVector(s.state.scope.intentTarget,grasp.map((v,i)=>(v+s.state.tools.right.position[i])/2));
+  assert.equal(s.state.scope.viewMode,'field');
+});
+
+test('explicit specimen view centres its real bounds and falls back honestly when none is held', () => {
+  const s=new Simulation(),context=anatomicalContext();
+  s.setScopeContext(context);s.setScopeViewMode('specimen');hold(s,[],6,.02);
+  nearVector(s.state.scope.target,context.heldSpecimen.position);
+  assert.equal(s.state.scope.framingSource,'specimen');
+  assert.ok(s.state.scope.actualWorkingDistance>=.028&&s.state.scope.actualWorkingDistance<=.065);
+  s.setScopeContext({heldSpecimen:null});hold(s,[],3);
+  assert.equal(s.state.scope.viewMode,'specimen','the explicit user preference is retained');
+  assert.equal(s.state.scope.framingSource,'mother-surface');
+  assert.ok(Math.hypot(...sub(s.state.scope.target,context.surfaceTarget))<=.012+1e-12);
+});
+
+test('automatic insertion is bounded, monotone and independent of frame subdivision', () => {
+  for(const desired of [.018,.055,.135]){
+    const single=advanceScopeDepth(.096,desired,1.6);
+    let subdivided=.096;
+    for(let i=0;i<320;i++)subdivided=advanceScopeDepth(subdivided,desired,.005);
+    near(single,subdivided,1e-12);
+    assert.ok(single>=Math.min(.096,desired)&&single<=Math.max(.096,desired));
+    assert.ok(Math.abs(single-.096)<=SCOPE_FRAMING.insertionSpeed*1.6+1e-12);
+  }
+  const a=new Simulation(),b=new Simulation();
+  a.setScopeContext(anatomicalContext());b.setScopeContext(anatomicalContext());
+  hold(a,[],3,1/30);hold(b,[],3,1/200);
+  near(a.state.scope.depth,b.state.scope.depth,1e-10);
+  nearVector(a.state.scope.position,b.state.scope.position,1e-8);
+});
+
+test('manual scope depth and nudges persist after release under anatomical automatic following', () => {
+  const s=new Simulation();s.setScopeContext(anatomicalContext());hold(s,[],4);
+  const depth=s.state.scope.depth;
+  hold(s,['BracketRight'],.5);
+  near(s.state.scope.depth-depth,integratedControlDistance(0,.5,CONTROL_RATES.scopeDepth),1e-9);
+  const commanded=s.state.scope.depth;hold(s,[],4);
+  near(s.state.scope.depth,commanded,1e-10);
+  const bias=s.state.scope.depthBias;
+  s.nudge('z',1,.002,'scope');hold(s,[],3);
+  near(s.state.scope.depth,commanded-.002,1e-10);
+  near(s.state.scope.depthBias,bias-.002,1e-10);
+  hold(s,['BracketLeft','ShiftLeft'],.5);
+  const fine=s.state.scope.depth;hold(s,[],2);
+  near(fine,commanded-.002-CONTROL_RATES.scopeDepth*.5*CONTROL_RATES.fineFactor,1e-10);
+  near(s.state.scope.depth,fine,1e-10);
+});
+
+test('scope view preference, field anchor and manual distance restore exactly across history', () => {
+  const s=new Simulation();s.setScopeContext(anatomicalContext());hold(s,[],4);
+  const before=s.snapshot();s.checkpoint('观察内容');s.setScopeViewMode('specimen');
+  hold(s,[],3);hold(s,['BracketLeft'],.2);hold(s,[],1);
+  const after=s.snapshot();
+  const sameSnapshot=(actual,expected)=>{
+    // RCM pose restoration normalizes unit vectors; preserve the whole state
+    // while allowing roundoff below a picometre in these derived quantities.
+    const a=structuredClone(actual),b=structuredClone(expected);
+    for(const key of ['up','cameraUp','direction','position','lookAt']){
+      nearVector(a.state.scope[key],b.state.scope[key],1e-12);
+      delete a.state.scope[key];delete b.state.scope[key];
+    }
+    near(a.state.scope.actualWorkingDistance,b.state.scope.actualWorkingDistance,1e-12);
+    delete a.state.scope.actualWorkingDistance;delete b.state.scope.actualWorkingDistance;
+    assert.deepEqual(a,b);
+  };
+  s.undo();s.undo();sameSnapshot(s.snapshot(),before);
+  s.redo();s.redo();sameSnapshot(s.snapshot(),after);
+  s.setPaused(true);const frozen=s.snapshot();
+  s.setScopeViewMode('field');hold(s,['BracketRight'],2);
+  nearVector(s.state.scope.position,frozen.state.scope.position);
+  nearVector(s.state.scope.lookAt,frozen.state.scope.lookAt);
+  near(s.state.scope.depth,frozen.state.scope.depth);
+  assert.equal(s.state.scope.viewMode,'field');
+  assert.throws(()=>s.setScopeViewMode('arbitrary'),RangeError);
+});
+
+test('scope anatomical contexts are detached and invalid updates never partially mutate them', () => {
+  const s=new Simulation(),context=anatomicalContext();s.setScopeContext(context);
+  const stored=s.snapshot();context.surfaceTarget[0]=9;context.organBounds.min[0]=9;context.heldSpecimen.position[0]=9;
+  assert.deepEqual(s.snapshot(),stored);
+  for(const invalid of [{surfaceTarget:[NaN,0,0]},{organBounds:{min:[1,0,0],max:[0,0,0]}},{heldSpecimen:{position:[0,0,0],radius:-1}}]){
+    assert.throws(()=>s.setScopeContext({graspTarget:[0,0,0],...invalid}),TypeError);
+    assert.deepEqual(s.snapshot(),stored);
+  }
+  const old=s.snapshot();
+  for(const field of ['viewMode','depthBias','surfaceTarget','fieldAnchor','organBounds','heldSpecimen','framingSource','targetWorkingDistance','autoDepthTarget','intentTarget','actualWorkingDistance'])delete old.state.scope[field];
+  s.restore(old);assert.equal(s.state.scope.viewMode,'field');assert.equal(s.state.scope.depthBias,0);
+  near(s.state.scope.actualWorkingDistance,Math.hypot(...sub(s.state.scope.position,s.state.scope.target)));
+  const stable=s.snapshot(),bad=s.snapshot();bad.state.scope.viewMode='other';
+  assert.throws(()=>s.restore(bad),TypeError);assert.deepEqual(s.snapshot(),stable);
+});
+
+test('pure scope framing uses only mother bounds when no surface query is available', () => {
+  const context=anatomicalContext();
+  const framed=resolveScopeFraming({port:[0,1.18,.14],intentTarget:[-.3,1.3,-.2],organBounds:context.organBounds});
+  assert.equal(framed.source,'mother-bounds');
+  assert.ok(framed.anchor.every((v,i)=>v>=context.organBounds.min[i]&&v<=context.organBounds.max[i]));
+  assert.ok(Math.hypot(...sub(framed.target,framed.anchor))<=.012+1e-12);
+  assert.equal(resolveScopeFraming({port:[0,1.18,.14],intentTarget:[0,1.1,0]}),null);
+});
+
+test('portrait specimen framing fits the narrower horizontal FOV beyond the former 65 mm cap',()=>{
+  const input={port:[0,1.18,.14],intentTarget:[0,1.09,0],viewMode:'specimen',heldSpecimen:{position:[0,1.09,0],radius:.014}};
+  const portrait=resolveScopeFraming({...input,aspect:.462}),square=resolveScopeFraming({...input,aspect:1});
+  near(portrait.baseWorkingDistance,square.baseWorkingDistance/.462);
+  assert.ok(portrait.baseWorkingDistance>.065);
+  assert.equal(portrait.framingLimited,false);
+  const actualDistance=portrait.targetDistance-portrait.depthTarget;
+  // Use a sphere's perspective silhouette, rather than its orthographic width.
+  const coverage=input.heldSpecimen.radius/(Math.sqrt(actualDistance**2-input.heldSpecimen.radius**2)*Math.tan(55*Math.PI/360)*.462);
+  assert.ok(coverage<1,'the actual bounding sphere fits horizontally without cropping');
+  const landscape=resolveScopeFraming({...input,aspect:2});near(landscape.depthTarget,square.depthTarget);
+});
+
+test('unreachable narrow-view framing reports best effort at the physical retraction stop',()=>{
+  const framing=resolveScopeFraming({port:[0,1.18,.14],intentTarget:[0,1.09,0],viewMode:'specimen',aspect:.08,
+    heldSpecimen:{position:[0,1.09,0],radius:.014}});
+  assert.ok(framing.baseWorkingDistance>.13);
+  near(framing.depthTarget,LIMITS.scopeDepth[0]);
+  assert.equal(framing.retractionLimited,true);assert.equal(framing.framingLimited,true);
+  assert.ok(framing.targetDistance-framing.depthTarget<framing.workingDistance);
+  for(const aspect of [0,-1,NaN,Infinity])assert.throws(()=>resolveScopeFraming({port:[0,1.18,.14],intentTarget:[0,1.09,0],aspect}),TypeError);
+});
+
+test('live viewport aspect is validated atomically and stays independent of undo, restore and reset',()=>{
+  const s=new Simulation(),context=anatomicalContext();context.heldSpecimen.radius=.014;
+  s.setScopeContext({...context,viewAspect:1});s.setScopeViewMode('specimen');hold(s,[],4);
+  const before=s.snapshot();s.checkpoint('display context');s.setScopeContext({viewAspect:.462});hold(s,[],4);
+  assert.ok(s.state.scope.actualWorkingDistance>.065);assert.equal(s.state.scope.framingLimited,false);
+  assert.equal(Object.hasOwn(s.snapshot().state.scope,'viewAspect'),false);
+  s.undo();near(s.viewAspect,.462);s.restore(before);near(s.viewAspect,.462);
+  const stored=s.snapshot();
+  for(const viewAspect of [null,0,-.1,NaN,Infinity]){
+    assert.throws(()=>s.setScopeContext({graspTarget:[0,0,0],viewAspect}),TypeError);
+    assert.deepEqual(s.snapshot(),stored);near(s.viewAspect,.462);
+  }
+  s.setPaused(true);s.setScopeContext({viewAspect:.08});const pose=[...s.state.scope.position];hold(s,[],1);nearVector(s.state.scope.position,pose);
+  s.reset();near(s.viewAspect,.08);
 });

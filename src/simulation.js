@@ -1,3 +1,5 @@
+import {SCOPE_FRAMING,resolveScopeFraming,advanceScopeDepth,validOrganBounds} from './scope-framing.js';
+
 /**
  * Deterministic kinematic controls for the browser demonstration.
  * Units: metres, radians, seconds. This is a virtual workbench, not a
@@ -254,9 +256,11 @@ function initialState() {
     tools: clone(INITIAL_TOOLS),
     scope: {
       port: [...SCOPE_PORT], position: [0, 0, 0], target, lookAt: [...target],
-      depth: .05, yaw: Math.atan2(dx, -dz), pitch: Math.atan2(-dy, Math.hypot(dx, dz)),
+      depth: clamp(Math.hypot(dx,dy,dz)-SCOPE_FRAMING.workingDistance,...LIMITS.scopeDepth), yaw: Math.atan2(dx, -dz), pitch: Math.atan2(-dy, Math.hypot(dx, dz)),
       roll: 0, follow: true, followMode: 'active', graspTarget: null, operating: false,
       direction: normalize([dx, dy, dz]), up: [0, 1, 0], cameraUp: [0, 1, 0],
+      viewMode:'field',depthBias:0,surfaceTarget:null,fieldAnchor:null,organBounds:null,heldSpecimen:null,
+      framingSource:null,framingLimited:false,targetWorkingDistance:SCOPE_FRAMING.workingDistance,autoDepthTarget:null,intentTarget:[...target],
     },
   };
   for(const id of TOOL_IDS){
@@ -289,6 +293,7 @@ function updateScopePose(state, directionOverride) {
   s.position = s.port.map((v, i) => v + direction[i] * s.depth);
   s.lookAt = s.port.map((v, i) => v + direction[i] * Math.max(distance, s.depth + LIMITS.workingDistance));
   if (!s.follow) s.target = [...s.lookAt];
+  s.actualWorkingDistance=vectorDistance(s.position,s.target);
 }
 
 /** Compatibility entry: finite positions are free; there is no workspace box. */
@@ -329,6 +334,8 @@ export class Simulation {
     this._limitCooldown = 0;
     this._controlAges = new Map();
     this.getExtraData = typeof getExtraData === 'function' ? getExtraData : undefined;
+    // Viewport shape is display context, never part of surgical undo history.
+    this.viewAspect=1;
   }
 
   /** Subscribe to {type, ...details} events; returns an unsubscribe function. */
@@ -377,6 +384,14 @@ export class Simulation {
     if (s.graspTarget != null && !validVector(s.graspTarget)) throw new TypeError('Invalid scope grasp target.');
     s.graspTarget ??= null;
     s.operating = Boolean(s.operating);
+    s.viewMode??='field';s.depthBias??=0;s.surfaceTarget??=null;s.fieldAnchor??=s.surfaceTarget?[...s.surfaceTarget]:null;
+    s.organBounds??=null;s.heldSpecimen??=null;s.framingSource??=null;s.targetWorkingDistance??=SCOPE_FRAMING.workingDistance;
+    s.framingLimited=Boolean(s.framingLimited);
+    s.autoDepthTarget??=null;s.intentTarget??=[...s.target];
+    if(!['field','specimen'].includes(s.viewMode)||!finite(s.depthBias)||
+      (s.surfaceTarget!==null&&!validVector(s.surfaceTarget))||(s.fieldAnchor!==null&&!validVector(s.fieldAnchor))||
+      (s.organBounds!==null&&!validOrganBounds(s.organBounds))||!validVector(s.intentTarget)||
+      (s.heldSpecimen!==null&&(!validVector(s.heldSpecimen.position)||!finite(s.heldSpecimen.radius)||s.heldSpecimen.radius<0)))throw new TypeError('Invalid scope anatomical framing snapshot.');
     state.elapsed = Math.max(0, state.elapsed);
     state.collision ??= {active: instrumentClearance(state.tools.left, state.tools.right) < 0, clearance: instrumentClearance(state.tools.left, state.tools.right), selected: null};
     updateScopePose(state);
@@ -458,10 +473,50 @@ export class Simulation {
     this._emit('scope-follow', { follow: this.state.scope.follow, mode });
   }
 
-  setScopeContext({graspTarget = null, operating = false} = {}) {
+  setScopeContext({graspTarget = null, operating = false,surfaceTarget,organBounds,heldSpecimen,viewAspect} = {}) {
     if (graspTarget !== null && !validVector(graspTarget)) throw new TypeError('Grasp target must be null or three finite world coordinates.');
+    if(surfaceTarget!==undefined&&surfaceTarget!==null&&!validVector(surfaceTarget))throw new TypeError('Surface target requires finite world coordinates.');
+    if(organBounds!==undefined&&organBounds!==null&&!validOrganBounds(organBounds))throw new TypeError('Organ bounds require finite min/max world coordinates.');
+    if(heldSpecimen!==undefined&&heldSpecimen!==null&&(!validVector(heldSpecimen.position)||!finite(heldSpecimen.radius)||heldSpecimen.radius<0))throw new TypeError('Held specimen requires a finite world position and nonnegative radius.');
+    if(viewAspect!==undefined&&(!finite(viewAspect)||viewAspect<=0))throw new TypeError('Scope view aspect requires a finite positive width/height ratio.');
+    if(viewAspect!==undefined)this.viewAspect=viewAspect;
     this.state.scope.graspTarget = graspTarget === null ? null : [...graspTarget];
     this.state.scope.operating = Boolean(operating);
+    if(surfaceTarget!==undefined){
+      this.state.scope.surfaceTarget=surfaceTarget===null?null:[...surfaceTarget];
+      if(surfaceTarget!==null)this.state.scope.fieldAnchor=[...surfaceTarget];
+    }
+    if(organBounds!==undefined)this.state.scope.organBounds=organBounds===null?null:{min:[...organBounds.min],max:[...organBounds.max]};
+    if(heldSpecimen!==undefined)this.state.scope.heldSpecimen=heldSpecimen===null?null:{...heldSpecimen,position:[...heldSpecimen.position]};
+  }
+
+  setScopeViewMode(mode) {
+    if(!['field','specimen'].includes(mode))throw new RangeError('Scope view mode must be field or specimen.');
+    if(this.state.scope.viewMode===mode)return false;
+    this.state.scope.viewMode=mode;this.state.scope.depthBias=0;
+    this._emit('scope-view',{viewMode:mode});return true;
+  }
+
+  _scopeIntentTarget() {
+    const s=this.state.scope;
+    if(s.followMode==='grasp'&&s.graspTarget)return s.operating?interpolate(s.graspTarget,this.state.tools.right.position,.5):[...s.graspTarget];
+    if(s.followMode==='midpoint'||s.followMode==='grasp')return interpolate(this.state.tools.left.position,this.state.tools.right.position,.5);
+    return [...this.state.tools[this.state.activeTool].position];
+  }
+
+  _scopeFraming(intentTarget=this._scopeIntentTarget()) {
+    const s=this.state.scope;
+    return resolveScopeFraming({...s,intentTarget,aspect:this.viewAspect,minimumDepth:LIMITS.scopeDepth[0],maximumDepth:LIMITS.scopeDepth[1]});
+  }
+
+  /** A depth command sets a persistent working-distance offset, rather than
+   * fighting the automatic insertion servo on the next unpressed frame. */
+  _manualScopeDepth(delta,framing=null) {
+    const s=this.state.scope;
+    const targetDistance=framing?.targetDistance??(s.follow?vectorDistance(s.target,s.port):.19);
+    const maximum=Math.max(LIMITS.scopeDepth[0],Math.min(LIMITS.scopeDepth[1],targetDistance-LIMITS.workingDistance));
+    s.depth=clamp(s.depth+delta,LIMITS.scopeDepth[0],maximum);
+    if(s.follow&&framing)s.depthBias=s.depth-framing.baseDepth;
   }
 
   _integrateControl(channel, vector, time, rate, fine) {
@@ -526,7 +581,7 @@ export class Simulation {
     if (this.state.paused) return false;
     this.checkpoint('微调位移', this.getExtraData?.());
     if (id === 'scope') {
-      if (index === 2) this.state.scope.depth += -sign * step;
+      if (index === 2) this._manualScopeDepth(-sign*step,this.state.scope.follow?this._scopeFraming():null);
       else {
         this.setScopeFollow(false);
         this.state.scope[index === 0 ? 'yaw' : 'pitch'] += sign * step * 5;
@@ -627,11 +682,9 @@ export class Simulation {
       const s = this.state.scope;
       if ((x || y || pitch || yaw) && s.follow) this.setScopeFollow(false);
       const before = [s.depth, s.yaw, s.pitch, s.roll];
-      s.depth += scopeMove;
       s.pitch += scopeRotation[0];
       s.yaw += scopeRotation[1];
       s.roll += scopeRotation[2];
-      updateScopePose(this.state);
       changed = !equalVector(before.slice(0, 3), [s.depth, s.yaw, s.pitch]) || before[3] !== s.roll;
     } else {
       const tool = this._tool();
@@ -644,25 +697,37 @@ export class Simulation {
       changed = result.changed;
     }
     const scope = this.state.scope;
-    if (this.state.selected !== 'scope' && scopeInsertion) {
-      scope.depth += globalDepth;
-      updateScopePose(this.state);
-    }
+    const manualDepth=this.state.selected==='scope'?scopeMove:globalDepth;
     if (scope.follow) {
-      let target;
-      if (scope.followMode === 'grasp' && scope.graspTarget) {
-        target = scope.operating ? interpolate(scope.graspTarget, this.state.tools.right.position, .5) : [...scope.graspTarget];
-      } else if (scope.followMode === 'midpoint' || scope.followMode === 'grasp') {
-        target = interpolate(this.state.tools.left.position, this.state.tools.right.position, .5);
-      } else target = [...this.state.tools[this.state.activeTool].position];
+      const intentTarget=this._scopeIntentTarget();
+      let framing=this._scopeFraming(intentTarget);
+      const target=framing?.target??intentTarget;
+      scope.intentTarget=[...intentTarget];
       scope.target = target;
       const oldPosition = [...scope.position];
       const oldAim = [...scope.lookAt];
       const direction = smoothDirection(scope.direction, normalize(sub(target, scope.port), scope.direction), time, scope.up);
+      if(manualDepth){
+        this._manualScopeDepth(manualDepth,framing);
+        framing=this._scopeFraming(intentTarget);
+      }else if(framing){
+        const nextDepth=advanceScopeDepth(scope.depth,framing.depthTarget,time);
+        // Retraction is always permitted. Do not advance toward a new field
+        // while the lens is still turning away from the previous field.
+        if(nextDepth<=scope.depth||dot(direction,normalize(sub(target,scope.port),direction))>Math.cos(.35))scope.depth=nextDepth;
+      }
+      scope.framingSource=framing?.source??null;
+      scope.framingLimited=framing?.framingLimited??false;
+      scope.targetWorkingDistance=framing?.workingDistance??vectorDistance(scope.position,scope.target);
+      scope.autoDepthTarget=framing?.depthTarget??null;
       scope.yaw += wrapAngle(Math.atan2(direction[0], -direction[2]) - scope.yaw);
       scope.pitch = Math.atan2(-direction[1], Math.hypot(direction[0], direction[2]));
       updateScopePose(this.state, direction);
       changed = !equalVector(oldPosition, scope.position) || !equalVector(oldAim, scope.lookAt) || changed;
+    }else{
+      if(manualDepth)this._manualScopeDepth(manualDepth);
+      scope.framingSource=null;scope.framingLimited=false;scope.autoDepthTarget=null;
+      updateScopePose(this.state);
     }
     changed = !equalVector(previousScopePosition, scope.position) || previousScopeDepth !== scope.depth || changed;
     this.state.elapsed += time;

@@ -48,8 +48,13 @@ test('actual CAD tool tips follow commands without RCM drift over wrist and inse
 });
 
 test('scope source tip stays exact and genuine Z1 supports the shaft across full angular workspace', () => {
+  // Production chest plate: elevated G1 standing mount, clocked downwards.
+  assembly.scopeMount.position.set(0,1.33,.25);
+  assembly.scopeMount.quaternion.setFromEuler(new THREE.Euler(-Math.PI/2,0,0)).premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1),Math.PI));
+  assembly.resetPose();
   const state = new Simulation().state;
   const tip = new THREE.Vector3(), direction = new THREE.Vector3(), port = new THREE.Vector3(...state.scope.port);
+  assembly.update(state,1/30); // Offscreen initial installation/seed, as in main.
   for (let i = 0; i < 100; i++) {
     const yaw = (i % 10 - 4.5) / 4.5 * Math.PI;
     const pitch = Math.floor(i / 10) / 9 * 1.55 + .01;
@@ -75,6 +80,23 @@ test('scope source tip stays exact and genuine Z1 supports the shaft across full
       const { lower, upper } = joint.specification.limit;
       assert.ok(joint.angle >= lower - 1e-9 && joint.angle <= upper + 1e-9);
     }
+  }
+});
+
+test('proximal grip is a finite rigid fixture on the genuine shaft and never changes its TCP', () => {
+  const state=new Simulation().state;assembly.resetPose();assembly.update(state,1/60);
+  for(const side of['left','right']){
+    const tool=assembly.tools[side],local=tool.gripPosition.clone().sub(tool.group.position).applyQuaternion(tool.group.quaternion.clone().invert());
+    assert.ok(Math.abs(local.z+.095)<1e-10,'shaft clamp must remain inside the actual proximal source shaft');
+    assert.ok(Math.abs(Math.abs(local.x)-.060)<1e-10,'finite 60 mm universal adaptor is explicit custom geometry');
+    const ball=tool.proximalGrip.getObjectByName('Custom_Passive_Universal_Grip_Ball');
+    assert.ok(ball.getWorldPosition(new THREE.Vector3()).distanceTo(tool.gripPosition)<1e-10);
+    assert.ok(tool.tipPosition.distanceTo(new THREE.Vector3(...state.tools[side].position))<1e-7);
+    assert.ok(tool.handlePosition.distanceTo(tool.group.position)<1e-10,'source adaptor frame remains available unchanged');
+    const clevis=tool.proximalGrip.getObjectByName('Custom_Fixed_Size_Palm_Clearance_Clevis'),lengths=[];
+    clevis.traverse(n=>{if(n.geometry?.type==='CylinderGeometry')lengths.push(n.geometry.parameters.height);});
+    assert.deepEqual(lengths.sort((a,b)=>a-b),[.060,.075,.075],'the U adaptor must have three fixed physical lengths');
+    clevis.traverse(n=>assert.deepEqual(n.scale.toArray(),[1,1,1],'clocking cannot stretch a connector'));
   }
 });
 
