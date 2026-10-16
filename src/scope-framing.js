@@ -21,6 +21,18 @@ const dot=(a,b)=>a.reduce((sum,v,i)=>sum+v*b[i],0);
 const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
 const unit=a=>{const length=Math.hypot(...a);return a.map(v=>v/length);};
 
+/** Largest insertion depth that retains every supplied world point inside the
+ * actual camera axes/FOV. Unlike a sphere about a midpoint, this includes the
+ * targets' different optical depths and preserves the user's chosen FOV. */
+export function scopeTargetsDepthLimit({port,targets,direction,cameraUp=[0,1,0],aspect=1,fovDegrees=55,margin=.004,coverage=.86}={}){
+  if(!vector(port)||!Array.isArray(targets)||!targets.length||!targets.every(vector)||!vector(direction)||Math.hypot(...direction)<1e-12||!vector(cameraUp)||!Number.isFinite(aspect)||aspect<=0||!Number.isFinite(fovDegrees)||fovDegrees<=0||fovDegrees>=180)throw new TypeError('Scope target fit requires finite projection geometry.');
+  const forward=unit(direction);let right=cross(forward,cameraUp);
+  if(Math.hypot(...right)<1e-9)right=cross(forward,Math.abs(forward[2])<.9?[0,0,1]:[0,1,0]);
+  right=unit(right);const up=unit(cross(right,forward)),tanHalf=Math.tan(fovDegrees*Math.PI/360);
+  return Math.min(...targets.flatMap(target=>{const offset=minus(target,port),z=dot(offset,forward);
+    return [z-(Math.abs(dot(offset,right))+margin)/(tanHalf*aspect*coverage),z-(Math.abs(dot(offset,up))+margin)/(tanHalf*coverage)];}));
+}
+
 /** Fit actual source-CAD TCPs at startup/reset, before the first render. The
  * physical lens remains on its RCM ray; aspect controls retraction first and
  * widens optical FOV only if the retraction stop otherwise clips either TCP. */
@@ -50,7 +62,9 @@ export function validOrganBounds(bounds) {
 /** Returns null only when the host has not supplied an anatomical context. */
 export function resolveScopeFraming({port, intentTarget, surfaceTarget = null, fieldAnchor = null,
   organBounds = null, heldSpecimen = null, viewMode = 'field', depthBias = 0,
-  followMode = 'active', startupOverview = false, initialTargets = null, fovDegrees = SCOPE_FRAMING.defaultFov, aspect=1, minimumDepth = .018, maximumDepth = .135} = {}) {
+  followMode = 'active', operating = false, graspTarget = null, startupOverview = false, initialTargets = null,
+  direction = null,cameraUp = [0,1,0],cooperativeFovDegrees = null,
+  fovDegrees = SCOPE_FRAMING.defaultFov, aspect=1, minimumDepth = .018, maximumDepth = .135} = {}) {
   if (!vector(port) || !vector(intentTarget) || !Number.isFinite(depthBias)||!Number.isFinite(aspect)||aspect<=0||!Number.isFinite(fovDegrees)) throw new TypeError('Invalid scope framing inputs.');
   if(startupOverview&&initialTargets){
     const framed=resolveInitialScopeFraming({port,targets:initialTargets,aspect,fovDegrees,minimumDepth,maximumDepth});
@@ -58,6 +72,7 @@ export function resolveScopeFraming({port, intentTarget, surfaceTarget = null, f
     framed.depthTarget=clamp(framed.targetDistance-framed.workingDistance,minimumDepth,maximumDepth);
     return framed;
   }
+  const cooperative=(followMode==='midpoint'||followMode==='grasp'&&(!vector(graspTarget)||operating))&&Array.isArray(initialTargets)&&initialTargets.length>1&&initialTargets.every(vector);
   let target, anchor, baseWorkingDistance, source;
   if (viewMode === 'specimen' && vector(heldSpecimen?.position)) {
     anchor = clone(heldSpecimen.position); target = clone(intentTarget); source = 'specimen';
@@ -72,6 +87,7 @@ export function resolveScopeFraming({port, intentTarget, surfaceTarget = null, f
   } else {
     anchor = vector(surfaceTarget) ? clone(surfaceTarget) : vector(fieldAnchor) ? clone(fieldAnchor) : null;
     if (!anchor && validOrganBounds(organBounds)) anchor = intentTarget.map((v, i) => clamp(v, organBounds.min[i], organBounds.max[i]));
+    if (!anchor&&cooperative)anchor=clone(intentTarget);
     if (!anchor) return null;
     source = followMode === 'active' ? 'active-tip' : followMode === 'midpoint' ? 'instrument-midpoint' : 'cooperative-target';
     // Parent geometry supplies clearance context, never an aim offset. In
@@ -80,15 +96,22 @@ export function resolveScopeFraming({port, intentTarget, surfaceTarget = null, f
     baseWorkingDistance = SCOPE_FRAMING.workingDistance;
   }
   const targetDistance = distance(port, target);
+  let fitDepthMaximum=null;
+  if(cooperative){
+    const forward=vector(direction)&&Math.hypot(...direction)>1e-12?direction:minus(target,port);
+    fitDepthMaximum=scopeTargetsDepthLimit({port,targets:initialTargets,direction:Math.hypot(...forward)>1e-12?forward:[0,-1,0],cameraUp,aspect,
+      fovDegrees:cooperativeFovDegrees??fovDegrees});
+    baseWorkingDistance=Math.max(baseWorkingDistance,targetDistance-fitDepthMaximum);
+  }
   const workingDistance = clamp(baseWorkingDistance - depthBias, SCOPE_FRAMING.minimumWorkingDistance,
     Math.max(SCOPE_FRAMING.maximumWorkingDistance,baseWorkingDistance,targetDistance-minimumDepth));
   const baseDepth = targetDistance - baseWorkingDistance;
   const depthTarget = clamp(targetDistance - workingDistance, minimumDepth, maximumDepth);
   return {target, anchor, source, baseWorkingDistance, workingDistance, baseDepth, depthTarget,
-    targetDistance, viewMode: source === 'specimen' ? 'specimen' : 'field',
+    targetDistance,fitDepthMaximum,viewMode: source === 'specimen' ? 'specimen' : 'field',
     insertionLimited: depthTarget < targetDistance - workingDistance - 1e-9,
     retractionLimited: depthTarget > targetDistance - workingDistance + 1e-9,
-    framingLimited:Math.abs(depthTarget-(targetDistance-workingDistance))>1e-9};
+    framingLimited:Math.abs(depthTarget-(targetDistance-workingDistance))>1e-9||fitDepthMaximum!==null&&depthTarget>fitDepthMaximum+1e-9};
 }
 
 /** Monotone, bounded depth servo; manual commands are applied by Simulation. */

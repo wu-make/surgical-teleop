@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import {Simulation} from '../src/simulation.js';
 import {attachScopeNavigation} from '../src/scope-navigation.js';
+import {scopeTargetsDepthLimit} from '../src/scope-framing.js';
 
 const near=(a,b,tolerance=1e-9)=>assert.ok(Math.abs(a-b)<=tolerance,`${a} != ${b}`);
 const nearVector=(a,b,tolerance=1e-9)=>a.forEach((v,i)=>near(v,b[i],tolerance));
@@ -10,7 +11,7 @@ const settle=(sim,seconds=3)=>{for(let i=0;i<seconds*60;i++)sim.update(1/60);};
 const context=()=>({surfaceTarget:[-.08,1.05,.04],organBounds:{min:[-.14,1.01,-.09],max:[.14,1.14,.1]},
   heldSpecimen:{id:'held',position:[-.15,1.14,-.1],radius:.008}});
 function projected(sim,target=sim.state.tools[sim.state.activeTool].position){
-  const s=sim.state.scope,camera=new THREE.PerspectiveCamera(s.fov,.75,.003,5);
+  const s=sim.state.scope,camera=new THREE.PerspectiveCamera(s.fov,sim.viewAspect,.003,5);
   camera.position.fromArray(s.position);camera.up.fromArray(s.cameraUp);camera.lookAt(new THREE.Vector3(...s.lookAt));
   camera.updateMatrixWorld();return new THREE.Vector3(...target).project(camera);
 }
@@ -131,4 +132,49 @@ test('manual navigation and optical zoom validate inputs, home/reset restore def
   assert.ok(ray.angleTo(target)<1e-7);
   sim.setScopeFollow(true);const auto=sim.snapshot();assert.equal(sim.navigateScope(.1,.1),false);assert.deepEqual(sim.snapshot(),auto);
   sim.reset();near(sim.state.scope.fov,55);
+});
+
+test('explicit midpoint and right-hand grasp cooperation continuously fit both actual projected TCPs after startup',()=>{
+  for(const aspect of [.462,.75,1,1.55])for(const mode of ['midpoint','grasp']){
+    const sim=new Simulation();sim.state.tools.left.position=[-.04,1.12,-.02];sim.state.tools.right.position=[.015,1.108,-.01];
+    sim.select('right');sim.setScopeFollow(true,mode);
+    sim.setScopeContext({...context(),viewAspect:aspect,graspTarget:[...sim.state.tools.left.position],operating:true});settle(sim,6);
+    assert.equal(sim.state.scope.startupOverview,false);near(sim.state.scope.fov,55);
+    for(const side of ['left','right']){const p=projected(sim,sim.state.tools[side].position);assert.ok(Math.abs(p.x)<.86&&Math.abs(p.y)<.86,`${aspect}/${mode}/${side}: ${p.toArray()}`);}
+    const before=sim.state.scope.depth;
+    for(let frame=0;frame<180;frame++){
+      // Advance the cooperating right tool outward by a typical fine-control
+      // increment; the other grasped end remains under tension and visible.
+      sim.moveTool([.000025,0,0],'right');sim.update(1/60);
+    }
+    settle(sim,3);assert.ok(sim.state.scope.depth<=before+1e-8,'growing tool separation must retract the physical scope');
+    for(const side of ['left','right']){const p=projected(sim,sim.state.tools[side].position);assert.ok(Math.abs(p.x)<.86&&Math.abs(p.y)<.86);}
+  }
+});
+
+test('cooperative framing uses the rolled real optical axes, respects user FOV and reports physical retraction limits',()=>{
+  const sim=new Simulation();sim.state.tools.left.position=[-.04,1.12,-.02];sim.state.tools.right.position=[.015,1.108,-.01];
+  sim.select('right');sim.setScopeFollow(true,'midpoint');sim.state.scope.roll=.65;
+  sim.setScopeContext({...context(),viewAspect:.462});settle(sim,6);
+  for(const side of ['left','right']){const p=projected(sim,sim.state.tools[side].position);assert.ok(Math.abs(p.x)<.86&&Math.abs(p.y)<.86);}
+  sim.zoomScope(-.8);const chosen=sim.state.scope.fov;settle(sim,6);
+  near(sim.state.scope.fov,chosen);near(sim.state.scope.depth,.018,1e-8);assert.equal(sim.state.scope.framingLimited,true);
+  const s=sim.state.scope,maximum=scopeTargetsDepthLimit({port:s.port,targets:Object.values(sim.state.tools).map(t=>t.position),direction:s.direction,cameraUp:s.cameraUp,aspect:.462,fovDegrees:s.fov});
+  assert.ok(maximum<.018,'the chosen narrow FOV really cannot fit at the physical stop');
+  sim.zoomScope(1);settle(sim,6);assert.equal(sim.state.scope.framingLimited,false);
+  for(const side of ['left','right']){const p=projected(sim,sim.state.tools[side].position);assert.ok(Math.abs(p.x)<.86&&Math.abs(p.y)<.86);}
+});
+
+test('explicit specimen view fits its full real sphere at a user-selected 25 degree FOV while keeping the TCP centred',()=>{
+  const sim=new Simulation();sim.setScopeFollow(true,'active');sim.select('left');sim.setScopeViewMode('specimen');
+  const tcp=sim.state.tools.left.position,sphere={id:'held-small-piece',position:tcp.map((v,i)=>v+[.004,.001,.001][i]),radius:.006};
+  sim.setScopeContext({...context(),viewAspect:.75,heldSpecimen:sphere});settle(sim,5);
+  const before=sim.state.scope.depth;sim.zoomScope(Math.log(25/55));settle(sim,6);
+  near(sim.state.scope.fov,25);assert.ok(sim.state.scope.depth<before,'specimen-specific auto framing must retract for the narrower chosen lens');
+  assert.equal(sim.state.scope.framingLimited,false);centred(sim);
+  for(let i=0;i<192;i++){
+    const y=1-2*(i+.5)/192,angle=i*Math.PI*(3-Math.sqrt(5)),radius=Math.sqrt(1-y*y);
+    const point=sphere.position.map((v,axis)=>v+sphere.radius*[Math.cos(angle)*radius,y,Math.sin(angle)*radius][axis]);
+    const p=projected(sim,point);assert.ok(Math.abs(p.x)<1&&Math.abs(p.y)<1&&p.z<1&&p.z>-1,'the actual sphere must remain in the selected optical FOV');
+  }
 });

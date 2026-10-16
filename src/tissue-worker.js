@@ -8,6 +8,13 @@ const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const LOCAL_OFFSETS = [];
 for (let z = -1; z <= 1; z++) for (let y = -1; y <= 1; y++) for (let x = -1; x <= 1; x++) LOCAL_OFFSETS.push([x, y, z]);
 const LOCAL_ADJACENCY = LOCAL_OFFSETS.map((p, index) => LOCAL_OFFSETS.reduce((mask, q, j) => j !== index && Math.max(Math.abs(p[0] - q[0]), Math.abs(p[1] - q[1]), Math.abs(p[2] - q[2])) <= 1 ? mask | (1 << j) : mask, 0));
+const EXTENDED_OFFSETS=[],EXTENDED_ADJACENCY=[];
+for(let z=-2;z<=2;z++)for(let y=-2;y<=2;y++)for(let x=-2;x<=2;x++)EXTENDED_OFFSETS.push([x,y,z]);
+for(let i=0;i<125;i++){
+  const p=EXTENDED_OFFSETS[i],neighbours=[];
+  for(let j=0;j<125;j++)if(i!==j&&Math.max(...p.map((v,k)=>Math.abs(v-EXTENDED_OFFSETS[j][k])))<=1)neighbours.push(j);
+  EXTENDED_ADJACENCY.push(neighbours);
+}
 
 export function normalizeMetadata(input) {
   const dims = input.dims ?? input.dimensions;
@@ -176,7 +183,34 @@ function removalMayDisconnect(state, x, y, z) {
     const next = LOCAL_ADJACENCY[index] & mask & ~reached;
     frontier |= next; reached |= next;
   }
-  return reached !== mask;
+  return reached !== mask&&extendedRemovalMayDisconnect(state,x,y,z);
+}
+
+// The 3³ test can fail because a neighbouring surface route leaves that tiny
+// cube. A 5³ proof is still sufficient (never a heuristic split decision) and
+// avoids scanning all ~1.8 million liver nodes for each such blade sample.
+function extendedRemovalMayDisconnect(state,x,y,z){
+  state.topologyMetrics.extendedChecks=(state.topologyMetrics.extendedChecks??0)+1;
+  const solid=state._localSolid??=new Uint8Array(125),visited=state._localVisited??=new Uint8Array(125),queue=state._localQueue??=new Uint8Array(125);
+  const {meta,field}=state;let seed=-1,remaining=0;
+  visited.fill(0);
+  for(let i=0;i<125;i++){
+    const p=EXTENDED_OFFSETS[i],xx=x+p[0],yy=y+p[1],zz=z+p[2];
+    solid[i]=xx>=0&&yy>=0&&zz>=0&&xx<meta.dims[0]&&yy<meta.dims[1]&&zz<meta.dims[2]&&field[nodeIndex(meta,xx,yy,zz)]<0?1:0;
+    if(solid[i]&&Math.max(Math.abs(p[0]),Math.abs(p[1]),Math.abs(p[2]))<=1){remaining++;seed=i;}
+  }
+  if(seed<0)return false;
+  let read=0,written=1;queue[0]=seed;visited[seed]=1;remaining--;
+  while(read<written&&remaining){
+    for(const next of EXTENDED_ADJACENCY[queue[read++]]){
+      if(visited[next]||!solid[next])continue;
+      visited[next]=1;queue[written++]=next;
+      const p=EXTENDED_OFFSETS[next];
+      if(Math.max(Math.abs(p[0]),Math.abs(p[1]),Math.abs(p[2]))<=1)remaining--;
+    }
+  }
+  if(!remaining)state.topologyMetrics.extendedProofs=(state.topologyMetrics.extendedProofs??0)+1;
+  return remaining>0;
 }
 
 export function distanceToSegment(point, start, end) {
@@ -574,9 +608,18 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
       } else if (!state) throw new Error('The tissue volume is not initialized');
       else if (data.type === 'cut') {
         const dirty = new Set();
-        for (const primitive of data.cuts) { const result = applyCapsuleCut(state, primitive); result.dirty.forEach(key => dirty.add(key)); changedSamples += result.changedSamples; removedMm3 += result.removedMm3; }
-        const separated = separateDisconnectedComponents(state);
-        fragments = separated.fragments; exclusions = separated.exclusions; separated.dirty.forEach(key => dirty.add(key));
+        const separatedIndices=[],separatedValues=[];
+        for (const primitive of data.cuts) {
+          const result = applyCapsuleCut(state, primitive); result.dirty.forEach(key => dirty.add(key)); changedSamples += result.changedSamples; removedMm3 += result.removedMm3;
+          // Preserve the same topology boundary as one-at-a-time input: after
+          // a true split, later samples cut only the mother, not the specimen.
+          // Geometry generation remains amortized across the bounded pass.
+          const separated=separateDisconnectedComponents(state);
+          fragments.push(...separated.fragments);separated.dirty.forEach(key=>dirty.add(key));
+          for(const value of separated.exclusions.nodeIndices)separatedIndices.push(value);
+          for(const value of separated.exclusions.positiveValues)separatedValues.push(value);
+        }
+        exclusions={nodeIndices:new Uint32Array(separatedIndices),positiveValues:new Float32Array(separatedValues)};
         chunks = buildChunks(state, dirty);
       } else if (data.type === 'restore') {
         const restored = restoreVolumeWithSeparations(state, data.cuts ?? [], data.separations ?? []);

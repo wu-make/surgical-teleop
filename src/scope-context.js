@@ -65,7 +65,10 @@ export function makeScopeContext(sim,tissue,interaction,now=globalThis.performan
   }
   const bounds=parentBounds(tissue);
   const graspTarget=interaction?.grasp?[...state.tools.left.position]:null;
-  const operating=!!(state.cutting||(interaction?.grasp&&state.activeTool==='right'));
+  // An armed B switch is not an ongoing right-hand operation. After cutting,
+  // selecting the left grasper to carry a specimen must leave the parked right
+  // tool out of grasp-follow composition, even when剪切 remains enabled.
+  const operating=state.activeTool==='right'&&!!(state.cutting||interaction?.grasp||interaction?.contact?.cutting||interaction?.cuttingBusy);
   let intent;
   if(scope.followMode==='grasp'&&graspTarget)intent=operating?midpoint(graspTarget,state.tools.right.position):graspTarget;
   else if(scope.followMode==='midpoint'||scope.followMode==='grasp')intent=midpoint(state.tools.left.position,state.tools.right.position);

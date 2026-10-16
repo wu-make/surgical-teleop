@@ -427,3 +427,41 @@ test('a full curved-blade union is voxel-identical to all original capsule segme
   snapshot.cuts[0].segments[0].a[0]=100;assert.notEqual(grouped._cuts[0].segments[0].a[0],100);
   grouped.dispose();old.dispose();
 });
+
+test('queued CAD samples freeze distinct material maps without changing live traction',async()=>{
+  const volume=sphereVolume(),tissue=new TissueVolume();tissue.ready=true;tissue.metadata=volume.meta;tissue._baseField=volume.base;
+  const first=normalizeDeformation({model:'local-flow',local:[0,0,.013],displacement:[0,0,.006]}),second=normalizeDeformation({...first,displacement:[0,0,.012]});
+  tissue.setGrasp(second);let operation,finish;
+  tissue._enqueue=value=>{operation=value;return new Promise(resolve=>{finish=resolve;});};
+  const promise=tissue.cutSamples([
+    {segments:[{a:[-.004,0,.016],b:[.004,0,.016]}],deformation:first},
+    {segments:[{a:[-.004,0,.022],b:[.004,0,.022]}],deformation:second}
+  ],.0024);
+  first.displacement[2]=.03;second.displacement[2]=.03;
+  assert.equal(operation.cuts[0].deformation.displacement[2],.006);
+  assert.equal(operation.cuts[1].deformation.displacement[2],.012);
+  assert.equal(tissue._deformation.displacement[2],.012,'old accepted samples never replace current display deformation');
+  for(const cut of operation.cuts)applyCapsuleCut(volume,cut);
+  finish({changed:true,removedMm3:volume.removedVolumeMm3});await promise;
+  const snapshot=tissue.snapshot();assert.equal(snapshot.cuts.length,2);
+  const replay=sphereVolume();resetVolume(replay,snapshot.cuts);assert.deepEqual(replay.field,volume.field);
+  tissue.dispose();
+});
+
+test('worker coalescing is bounded by total source blade segments rather than stroke count',async()=>{
+  const tissue=new TissueVolume();tissue.ready=true;const posted=[];
+  tissue.worker={postMessage:message=>posted.push(structuredClone(message)),terminate(){}};
+  const segments=Array.from({length:12},(_,i)=>({a:[i*.0001,0,0],b:[i*.0001,.003,0]}));
+  const requests=Array.from({length:6},()=>tissue.cutSegments(segments,.0024));
+  await Promise.resolve();
+  assert.equal(posted.length,1);assert.equal(posted[0].cuts.length,5);
+  assert.equal(posted[0].cuts.reduce((n,cut)=>n+cut.segments.length,0),60);
+  tissue._receive({id:posted[0].id,epoch:posted[0].epoch,type:'cut',chunks:[],changedSamples:1,removedMm3:1,statistics:{removedVolumeMm3:1}});
+  assert.equal(posted.length,2);assert.equal(posted[1].cuts.length,1);
+  tissue._receive({id:posted[1].id,epoch:posted[1].epoch,type:'cut',chunks:[],changedSamples:1,removedMm3:1,statistics:{removedVolumeMm3:2}});
+  await Promise.all(requests);
+  const count=tissue._cuts.length;
+  await assert.rejects(tissue.cutSamples([{segments:Array.from({length:65},()=>segments[0]),deformation:null}],.0024),/64/);
+  assert.equal(tissue._cuts.length,count,'rejected oversized work cannot pollute replay history');
+  tissue.dispose();
+});

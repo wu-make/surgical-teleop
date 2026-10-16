@@ -78,6 +78,7 @@ export class GuidedDemo {
     if (!this.active) return;
     this.active = false;
     this.sim.setCutting(false);
+    this.interaction.breakCutTrajectory?.();
     this.interaction.lastCut = null;
     this.onChange();
     if (message) this.onMessage(message);
@@ -98,7 +99,7 @@ export class GuidedDemo {
     const tool = this.sim.state.tools[side];
     const surface = surfacePose(this.tissue, tool.position) ?? surfacePose(this.tissue, defaults[side]);
     if (!surface) { this.onMessage('当前区域没有可接近的组织表面'); return; }
-    this.sim.checkpoint('器械表面就位', this.interaction.snapshot());
+    this.sim.checkpoint('器械表面就位', ()=>this.interaction.snapshot());
     if (side === 'left') this.interaction.release(true);
     this.sim.setCutting(false);
     this.sim.setJaw(side, .7);
@@ -122,7 +123,7 @@ export class GuidedDemo {
     const piece=surface?.fragmentId!=null?this.tissue.getFragment?.(surface.fragmentId):null;
     if(!piece||!available.has(piece.id)){this.onMessage('附近 35 cm 内未找到可接近的独立标本表面，不会退回母体');return false;}
     const normal=(surface.normal??new THREE.Vector3(0,1,0)).clone().normalize(),inverse=piece.quaternion.clone().invert();
-    this.sim.checkpoint('左钳接近独立标本',this.interaction.snapshot());
+    this.sim.checkpoint('左钳接近独立标本',()=>this.interaction.snapshot());
     this.sim.select('left');this.sim.setCutting(false);this.sim.setJaw('left',.75);
     this.mode='approach';this.active=true;this.time=0;this.side='left';
     this.start=new THREE.Vector3(...tool.position);
@@ -134,13 +135,13 @@ export class GuidedDemo {
 
   startExample() {
     if (this.active) { this.stop(); return; }
-    if(this.tissue.busy){this.onMessage('组织更新中，请稍候再开始示范');return;}
+    if(this.tissue.busy||this.interaction.cuttingBusy){this.onMessage('组织更新中，请稍候再开始示范');return;}
     const plans=planPeripheralResections(this.tissue);
     let prepared=null;
     for(const plan of plans){prepared=this._preparePlan(plan);if(prepared)break;}
     if(!prepared){this.onMessage('当前器官没有可安全到达的薄缘切离路径；请移开器械或重置完整器官后重试');return;}
     Object.assign(this,prepared);
-    this.sim.checkpoint('真实切离、夹持与移开示范', this.interaction.snapshot());
+    this.sim.checkpoint('真实切离、夹持与移开示范', ()=>this.interaction.snapshot());
     this.interaction.release(true);
     this.sim.setCutting(false);
     this.sim.setPaused(false);

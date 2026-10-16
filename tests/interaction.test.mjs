@@ -151,6 +151,22 @@ test('an attached material anchor transfers seamlessly to its disconnected speci
   tissue.dispose();
 });
 
+test('a delayed cut result retains the exact material contact when the left hand moved during worker processing',async()=>{
+  const {sim,tissue,interaction}=raisedWorkbench();interaction.toolQuaternion=()=>new THREE.Quaternion();
+  await interaction.update(1/60);sim.state.tools.left.position[2]+=.012;await interaction.update(1/60);
+  const reference=new THREE.Vector3(...interaction.grasp.reference),center=reference.clone().addScaledVector(reference.clone().normalize(),-.005);
+  const descriptor=specimenDescriptor(center.toArray());descriptor.deformation=structuredClone(tissue._deformation);
+  const piece=tissue.fragments.add(descriptor),frozenAnchor=tissue.deformPoint(reference).sub(piece.frozenCenter);
+  sim.state.tools.left.position[0]+=.006;sim.state.tools.left.position[2]+=.004;
+  interaction._reconcileDetachedGrasp();
+  assert.equal(interaction.grasp.kind,'fragment');
+  assert.ok(new THREE.Vector3(...piece.attachment.anchor).distanceTo(frozenAnchor)<1e-10,'the attachment follows the frozen material anchor, not a new point outside the delayed specimen');
+  const actualContact=new THREE.Vector3(...piece.attachment.anchor).applyQuaternion(piece.quaternion).add(piece.position);
+  const tip=tissue.group.worldToLocal(new THREE.Vector3(...sim.state.tools.left.position));
+  assert.ok(actualContact.distanceTo(tip)<1e-10,'the delayed specimen catches up continuously to the current held jaw');
+  tissue.dispose();
+});
+
 test('regrasp uses the actual specimen surface, supports local orientation, release gravity, clutch and pause',async()=>{
   const {sim,tissue,interaction}=raisedWorkbench();
   tissue.group.rotation.z=.28;tissue.group.updateMatrixWorld(true);

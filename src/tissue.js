@@ -69,13 +69,20 @@ export class TissueVolume {
 
   cutSegment(start, end, radius) {return this.cutSegments([{a:start,b:end}],radius);}
 
-  cutSegments(segments,radius){
+  cutSegments(segments,radius){return this.cutSamples([{segments,deformation:this._deformation}],radius);}
+
+  /** Ordered, complete CAD blade samples, each with its own frozen material
+   * map. A pass is bounded to 64 real blade segments, not 64 render frames. */
+  cutSamples(samples,radius){
     if (!this.ready || this._disposed) return Promise.resolve({ changed: false, removedMm3: 0, reason: 'not-ready' });
-    if(!segments?.length)return Promise.resolve({changed:false,removedMm3:0,reason:'no-blade'});
+    if(!samples?.length)return Promise.resolve({changed:false,removedMm3:0,reason:'no-blade'});
     let primitives;
     try {
-      const points=segments.map(segment=>({a:vectorArray(segment.a),b:vectorArray(segment.b)}));
-      primitives=[validateCut({...points[0],...(points.length>1?{segments:points}:{}),radius,deformation:this._deformation})];
+      if(samples.reduce((n,sample)=>n+(sample.segments?.length??0),0)>64)throw new Error('A cutting pass supports at most 64 source blade segments');
+      primitives=samples.filter(sample=>sample.segments?.length).map(sample=>{
+        const points=sample.segments.map(segment=>({a:vectorArray(segment.a),b:vectorArray(segment.b)}));
+        return validateCut({...points[0],...(points.length>1?{segments:points}:{}),radius,deformation:sample.deformation});
+      });
     }
     catch (error) { return Promise.reject(error); }
     if(!primitives.length)return Promise.resolve({changed:false,removedMm3:0,reason:'no-blade'});
@@ -456,8 +463,10 @@ export class TissueVolume {
     // Coalesce queued strokes to rebuild each dirty tile once per worker pass.
     const callbacks = [command];
     if (command.type === 'cut') {
-      while (this._commands[0]?.type === 'cut' && this._commands[0].epoch === command.epoch && command.cuts.length < 256) {
+      let segmentCount=command.cuts.reduce((n,cut)=>n+(cut.segments?.length??1),0);
+      while (this._commands[0]?.type === 'cut' && this._commands[0].epoch === command.epoch && segmentCount+this._commands[0].cuts.reduce((n,cut)=>n+(cut.segments?.length??1),0)<=64) {
         const next = this._commands.shift(); callbacks.push(next); command.cuts.push(...next.cuts);
+        segmentCount=command.cuts.reduce((n,cut)=>n+(cut.segments?.length??1),0);
       }
     }
     command.id = ++this._sequence;

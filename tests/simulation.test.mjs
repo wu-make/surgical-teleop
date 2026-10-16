@@ -189,6 +189,42 @@ test('automatic gesture checkpoints capture external tissue once at gesture star
   assert.deepEqual(redone.extraData.mask, new Uint8Array([1, 0, 1]));
 });
 
+test('pending geometry folds new input gestures into the earliest stable composite history without sampling it',()=>{
+  let pending=false,captures=0,tissue={mask:new Uint8Array([1,1,1]),cuts:[]};
+  const sim=new Simulation({shouldCheckpoint:()=>!pending,getExtraData:()=>{captures++;assert.equal(pending,false,'a pending worker mask must never be sampled');return tissue;}});
+  const initial=sim.snapshot(),original=structuredClone(tissue);
+  hold(sim,['KeyA'],.12);assert.equal(captures,1);assert.equal(sim.undoStack.length,1);
+  pending=true;tissue.mask[1]=0;tissue.cuts.push('first-unfinished-cut');
+  const before=sim.state.tools.left.position.slice();
+  for(const keys of [['KeyQ'],['KeyW'],['ArrowUp']]){sim.update(.01,new Set());hold(sim,keys,.12);}
+  sim.nudge('x',-1,.0005,'left');
+  sim.moveToolTo(sim.state.tools.left.position.map((v,i)=>v+(i===2?-.0005:0)),'left',{checkpoint:true});
+  assert.notDeepEqual(sim.state.tools.left.position,before,'pending history gate must not freeze manual control');
+  assert.equal(captures,1);assert.equal(sim.undoStack.length,1);
+  pending=false;tissue.cuts.push('completed-union');
+  // Completing the worker during the same held gesture must not introduce a
+  // midpoint checkpoint between tool pose and the now-completed cut geometry.
+  hold(sim,['ArrowUp'],.1);assert.equal(captures,1);
+  const action=sim.undo(tissue);assert.deepEqual(action.extraData,original);assert.deepEqual(sim.snapshot(),initial);
+  tissue=action.extraData;sim.update(.01,new Set());hold(sim,['KeyA'],.1);
+  assert.equal(captures,2);assert.equal(sim.undoStack.length,1,'a new gesture after the queue drains creates its stable baseline');
+});
+
+test('checkpoint gates reject lazy external snapshots atomically and preserve redo until a stable new action',()=>{
+  let allowed=true,externalCalls=0,snapshotCalls=0;
+  const sim=new Simulation({shouldCheckpoint:()=>allowed,getExtraData:()=>({cuts:[]})});
+  sim.checkpoint('stable',{mask:new Uint8Array([1,1])});sim.moveTool([-.001,0,0],'left');sim.undo({mask:new Uint8Array([1,0])});
+  assert.equal(sim.canRedo,true);const redo=structuredClone(sim.redoStack),undoLength=sim.undoStack.length;
+  const snapshot=sim.snapshot.bind(sim);sim.snapshot=()=>{snapshotCalls++;return snapshot();};
+  allowed=false;
+  assert.equal(sim.checkpoint('pending',()=>{externalCalls++;throw new Error('must remain lazy');}),false);
+  assert.equal(snapshotCalls,0);assert.equal(externalCalls,0);assert.equal(sim.undoStack.length,undoLength);assert.deepEqual(sim.redoStack,redo);
+  hold(sim,['KeyA'],.08);assert.equal(snapshotCalls,0);assert.deepEqual(sim.redoStack,redo);
+  sim.update(.01,new Set());allowed=true;
+  assert.equal(sim.checkpoint('stable after queue',()=>{externalCalls++;return {mask:new Uint8Array([1,0])};}),true);
+  assert.equal(snapshotCalls,1);assert.equal(externalCalls,1);assert.equal(sim.canRedo,false);
+});
+
 test('atomic tissue checkpoints detach typed masks and undo/redo restores both domains', () => {
   const s = new Simulation();
   const before = s.snapshot();

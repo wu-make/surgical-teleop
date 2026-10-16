@@ -18,6 +18,21 @@ function dumbbell() {
 const shallow = { a: [0.004, -0.004, 0.002], b: [0.004, 0.004, 0.002], radius: 0.0013 };
 const sever = { a: [0.004, -0.004, -0.001], b: [0.004, 0.004, -0.001], radius: 0.0027 };
 
+test('a wider local connectivity proof avoids full scans without hiding a genuinely severed bridge',()=>{
+  const meta={dims:[9,9,9],origin:[-.004,-.004,-.004],spacing:[.001,.001,.001]},points=[[0,0,0],[-1,0,0],[1,0,0]];
+  function fixture(bypass){
+    const field=new Float32Array(9**3).fill(.001),route=bypass?[[-2,1,0],[-1,2,0],[0,2,0],[1,2,0],[2,1,0]]:[];
+    for(const p of [...points,...route])field[nodeIndex(meta,...p.map(v=>v+4))]=-.0002;
+    const volume=createVolumeState(meta,field,4);initializeConnectivity(volume);return volume;
+  }
+  const connected=fixture(true);applyCapsuleCut(connected,{a:[0,0,0],radius:.0004});
+  assert.equal(connected.topologyMetrics.extendedProofs,1,'the bypass lies outside the old 3³ neighbourhood');
+  separateDisconnectedComponents(connected,{minVoxels:1});assert.equal(connected.topologyMetrics.scans,1,'a proven surviving route needs no whole-volume scan');
+  const bridge=fixture(false);applyCapsuleCut(bridge,{a:[0,0,0],radius:.0004});
+  assert.equal(bridge.topologyDirty,true,'a missing bypass still requests global proof on the very same cut');
+  separateDisconnectedComponents(bridge,{minVoxels:1});assert.equal(bridge.topologyMetrics.scans,2);
+});
+
 function assertClosed(mesh) {
   const edges = new Map(), keys = [];
   for (let i = 0; i < mesh.positions.length; i += 3) keys.push([...mesh.positions.slice(i, i + 3)].map(value => Math.round(value * 1e8)).join(','));
@@ -175,6 +190,11 @@ test('the actual worker protocol transfers detached geometry safely and restores
     const reset = send({ type: 'restore', cuts: [], separations: [] });
     assert.equal(reset.fragments.length, 0); assert.equal(reset.statistics.fragmentCount, 0);
     assert.equal(reset.exclusions.nodeIndices.length, 0); assert.equal(reset.statistics.removedVolumeMm3, 0);
+    const batched=send({type:'cut',cuts:[shallow,sever,later]});
+    assert.equal(batched.fragments.length,1);assert.equal(batched.fragments[0].cutIndex,2,'a specimen separates at its exact pose sample, not the end of a worker batch');
+    assert.deepEqual(batched.fragments[0].positions,severed.fragments[0].positions,'later samples in the same pass must not recut detached specimen geometry');
+    const replayBatch=send({type:'restore',cuts:[shallow,sever,later],separations:batched.separations});
+    assert.deepEqual(replayBatch.fragments[0].positions,batched.fragments[0].positions);
   } finally {
     if (previousSelf === undefined) delete globalThis.self; else globalThis.self = previousSelf;
     if (previousScope === undefined) delete globalThis.WorkerGlobalScope; else globalThis.WorkerGlobalScope = previousScope;

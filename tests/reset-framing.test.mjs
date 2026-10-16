@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import {Simulation} from '../src/simulation.js';
 import {loadAssemblies} from '../src/authentic-assemblies.js';
 import {resolveInitialScopeFraming} from '../src/scope-framing.js';
+import {resolveInstrumentAlignment} from '../src/instrument-pose.js';
 
 const originalFetch=globalThis.fetch;
 globalThis.fetch=async url=>new Response(await readFile(new URL(`../public${url}`,import.meta.url)));
@@ -73,4 +74,15 @@ test('extremely narrow impossible framing reports its optical/physical limit ins
   const fit=resolveInitialScopeFraming({port:s.port,targets:Object.values(sim.state.tools).map(t=>t.position),aspect:.08});
   assert.equal(fit.framingLimited,true);near(fit.depthTarget,.018);near(fit.recommendedFov,80);
   assert.throws(()=>sim.prepareInitialScopeView(0),TypeError);
+});
+
+test('explicit cooperative framing retains both real CAD jaw ends after manual grasp/traction changes the default geometry',()=>{
+  for(const aspect of [.462,1,1.55]){
+    const sim=new Simulation();sim.state.tools.left.position=[-.04,1.12,-.02];sim.state.tools.right.position=[.015,1.108,-.01];
+    for(const tool of Object.values(sim.state.tools))tool.alignment=resolveInstrumentAlignment(tool,tool.alignment);
+    sim.select('right');sim.setScopeFollow(true,'grasp');
+    sim.setScopeContext({viewAspect:aspect,graspTarget:[...sim.state.tools.left.position],operating:true,surfaceTarget:[0,1.09,0]});
+    for(let frame=0;frame<360;frame++)sim.update(1/60);
+    bothVisible(sim,aspect);assert.equal(sim.state.scope.startupOverview,false);
+  }
 });

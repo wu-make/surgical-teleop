@@ -153,17 +153,23 @@ function updateScopePose(state, directionOverride) {
   const maxDepth = Math.max(LIMITS.scopeDepth[0], Math.min(LIMITS.scopeDepth[1], distance - LIMITS.workingDistance));
   s.depth = clamp(s.depth, LIMITS.scopeDepth[0], maxDepth);
   const direction = normalize(directionOverride || scopeDirection(s));
-  const previous = validVector(s.direction) ? normalize(s.direction) : direction;
-  const previousUp = perpendicularUp(previous, s.up);
-  const axis = cross(previous, direction);
-  const angle = Math.acos(clamp(dot(previous, direction), -1, 1));
-  s.up = angle > 1e-10 ? perpendicularUp(direction, rotateAround(previousUp, normalize(axis, previousUp), angle)) : perpendicularUp(direction, previousUp);
+  const transported=scopeUpForDirection(s,direction);
+  s.up=transported.up;
   s.direction = direction;
-  s.cameraUp = normalize(rotateAround(s.up, direction, s.roll));
+  s.cameraUp=transported.cameraUp;
   s.position = s.port.map((v, i) => v + direction[i] * s.depth);
   s.lookAt = s.port.map((v, i) => v + direction[i] * Math.max(distance, s.depth + LIMITS.workingDistance));
   if (!s.follow) s.target = [...s.lookAt];
   s.actualWorkingDistance=vectorDistance(s.position,s.target);
+}
+
+function scopeUpForDirection(s,direction){
+  const previous = validVector(s.direction) ? normalize(s.direction) : direction;
+  const previousUp = perpendicularUp(previous, s.up);
+  const axis = cross(previous, direction);
+  const angle = Math.acos(clamp(dot(previous, direction), -1, 1));
+  const up=angle>1e-10?perpendicularUp(direction,rotateAround(previousUp,normalize(axis,previousUp),angle)):perpendicularUp(direction,previousUp);
+  return {up,cameraUp:normalize(rotateAround(up,direction,s.roll))};
 }
 
 /** Compatibility entry: finite positions are free; there is no workspace box. */
@@ -192,7 +198,7 @@ function normalizeKeys(input) {
 const axisInput = (keys, positive, negative) => Number(keys.has(positive)) - Number(keys.has(negative));
 
 export class Simulation {
-  constructor({ onEvent, getExtraData } = {}) {
+  constructor({ onEvent, getExtraData, shouldCheckpoint } = {}) {
     this.state = initialState();
     this.undoStack = [];
     this.redoStack = [];
@@ -204,6 +210,7 @@ export class Simulation {
     this._limitCooldown = 0;
     this._controlAges = new Map();
     this.getExtraData = typeof getExtraData === 'function' ? getExtraData : undefined;
+    this.shouldCheckpoint = typeof shouldCheckpoint === 'function' ? shouldCheckpoint : undefined;
     // Viewport shape is display context, never part of surgical undo history.
     this.viewAspect=1;
   }
@@ -287,14 +294,19 @@ export class Simulation {
   }
 
   /**
-   * Save BEFORE an atomic action. extraData may contain a typed tissue mask.
+   * Save BEFORE an atomic action. extraData may contain a typed tissue mask,
+   * or be a lazy factory so pending worker geometry is never sampled when the
+   * host's stability gate is closed. A rejected checkpoint leaves redo intact.
    * Pass the current extraData to undo/redo so the other direction can restore it.
    */
   checkpoint(label = '操作', extraData) {
+    if(this.shouldCheckpoint&&!this.shouldCheckpoint())return false;
+    if(typeof extraData==='function')extraData=extraData();
     this.undoStack.push({ label: String(label), snapshot: this.snapshot(), extraData: extraData === undefined ? undefined : clone(extraData) });
     if (this.undoStack.length > LIMITS.history) this.undoStack.shift();
     this.redoStack.length = 0;
     this._emit('history', { canUndo: true, canRedo: false });
+    return true;
   }
 
   _travelHistory(source, destination, currentExtraData, type) {
@@ -428,9 +440,9 @@ export class Simulation {
     return [...this.state.tools[this.state.activeTool].position];
   }
 
-  _scopeFraming(intentTarget=this._scopeIntentTarget()) {
+  _scopeFraming(intentTarget=this._scopeIntentTarget(),projection={}) {
     const s=this.state.scope;
-    return resolveScopeFraming({...s,intentTarget,initialTargets:TOOL_IDS.map(id=>this.state.tools[id].position),aspect:this.viewAspect,minimumDepth:LIMITS.scopeDepth[0],maximumDepth:LIMITS.scopeDepth[1]});
+    return resolveScopeFraming({...s,...projection,intentTarget,fovDegrees:s.fov,cooperativeFovDegrees:s.fov,initialTargets:TOOL_IDS.map(id=>this.state.tools[id].position),aspect:this.viewAspect,minimumDepth:LIMITS.scopeDepth[0],maximumDepth:LIMITS.scopeDepth[1]});
   }
 
   /** A depth command sets a persistent working-distance offset, rather than
@@ -494,7 +506,7 @@ export class Simulation {
   moveToolTo(position, id = this.state.selected, {checkpoint = false, label = '定位器械'} = {}) {
     if (!validVector(position)) throw new TypeError('Tool position requires three finite values.');
     if (this.state.paused) return {changed: false, limited: false};
-    if (checkpoint) this.checkpoint(label, this.getExtraData?.());
+    if (checkpoint) this.checkpoint(label, ()=>this.getExtraData?.());
     return this._moveTool(sub(position, this._tool(id).position), id);
   }
 
@@ -507,7 +519,7 @@ export class Simulation {
     const index = typeof axis === 'string' ? AXES[axis] : axis;
     if (![0, 1, 2].includes(index) || !finite(sign) || !finite(step) || step < 0) throw new TypeError('Nudge requires an axis, finite direction and nonnegative step.');
     if (this.state.paused) return false;
-    this.checkpoint('微调位移', this.getExtraData?.());
+    this.checkpoint('微调位移', ()=>this.getExtraData?.());
     if (id === 'scope') {
       if (index === 2) this._manualScopeDepth(-sign*step,this.state.scope.follow?this._scopeFraming():null);
       else {
@@ -555,7 +567,7 @@ export class Simulation {
 
   homeTools() {
     if (this.state.paused) return false;
-    this.checkpoint('器械回中', this.getExtraData?.());
+    this.checkpoint('器械回中', ()=>this.getExtraData?.());
     this.state.tools = initialState().tools;
     this.state.collision=collisionState(this.state.tools);
     this._emit('home');
@@ -595,7 +607,7 @@ export class Simulation {
     const jaw = axisInput(keys, 'KeyV', 'KeyC');
     const scopeInsertion = axisInput(keys, 'BracketRight', 'BracketLeft');
     const moving = Boolean(x || y || z || pitch || yaw || roll || scopeInsertion || (jaw && this.state.selected !== 'scope'));
-    if (moving && !this._gesture) this.checkpoint('遥操作位姿', this.getExtraData?.());
+    if (moving && !this._gesture) this.checkpoint('遥操作位姿', ()=>this.getExtraData?.());
     this._gesture = moving;
     const fine = keys.has('ShiftLeft') || keys.has('ShiftRight');
     let changed = false;
@@ -636,9 +648,11 @@ export class Simulation {
       const oldPosition = [...scope.position];
       const oldAim = [...scope.lookAt];
       const direction = smoothDirection(scope.direction, normalize(sub(target, scope.port), scope.direction), time, scope.up);
+      const projection={direction,cameraUp:scopeUpForDirection(scope,direction).cameraUp};
+      framing=this._scopeFraming(intentTarget,projection);
       if(manualDepth){
         this._manualScopeDepth(manualDepth,framing);
-        framing=this._scopeFraming(intentTarget);
+        framing=this._scopeFraming(intentTarget,projection);
       }else if(framing){
         const nextDepth=advanceScopeDepth(scope.depth,framing.depthTarget,time);
         // Retraction is always permitted. Do not advance toward a new field

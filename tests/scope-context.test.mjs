@@ -130,3 +130,15 @@ test('same-epoch simulation restore replaces cached field and last-viewed specim
   assert.equal(makeScopeContext(sim,tissue,interaction,5).surfaceTarget,null);
   assert.equal(makeScopeContext(sim,tissue,interaction,5).heldSpecimen.id,'b','without a retained ID the documented last available specimen is selected');
 });
+
+test('grasp following leaves an armed but parked right cutter when the left hand carries its specimen',()=>{
+  const {sim,tissue,interaction,addPiece}=fixture();addPiece('carried',true);
+  interaction.grasp={kind:'fragment',fragmentId:'carried'};sim.setCutting(true);sim.setScopeFollow(true,'grasp');
+  sim.select('right');let context=makeScopeContext(sim,tissue,interaction,0);assert.equal(context.operating,true);
+  sim.setScopeContext(context);sim.update(.02);
+  nearVector(sim.state.scope.target,sim.state.tools.left.position.map((v,i)=>(v+sim.state.tools.right.position[i])/2));
+  sim.select('left');context=makeScopeContext(sim,tissue,interaction,1);
+  assert.equal(context.operating,false);assert.equal(sim.state.cutting,true,'the B switch may stay armed without defining the view');
+  sim.setScopeContext(context);sim.update(.02);nearVector(sim.state.scope.target,sim.state.tools.left.position);
+  interaction.grasp={kind:'tissue'};context=makeScopeContext(sim,tissue,interaction,2);assert.equal(context.operating,false);
+});

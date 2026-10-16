@@ -68,7 +68,8 @@ test('a failed worker cut can retry at the same blade pose without a movement wo
     f.tissue._enqueue=async operation=>{if(fail){fail=false;throw new Error('transient regression worker failure');}return f.enqueue(operation);};
     const interaction=new InteractionController(f.sim,f.tissue,{toolBlade:()=>({segments:[{a,b}],jaw:0})});
     await assert.rejects(interaction.update(1/60),/transient regression worker failure/);
-    assert.equal(interaction.cuttingBusy,false);
+    assert.equal(interaction.cuttingBusy,true,'a failed legitimate blade sample remains pending for retry');
+    assert.ok(interaction.metrics.pendingCutSamples>0);
     await interaction.update(1/60);
     assert.ok(f.tissue.removedVolumeMm3>0&&f.requests>0);
   }finally{f.tissue.dispose();}
