@@ -1,6 +1,6 @@
 import {instrumentPose,instrumentCapsules} from './instrument-pose.js';
 import {sourceInstrumentContact,sweepInstrument,sourceSegmentDistance} from './instrument-contact.js';
-import {SCOPE_FRAMING,resolveScopeFraming,advanceScopeDepth,validOrganBounds} from './scope-framing.js';
+import {SCOPE_FRAMING,resolveScopeFraming,resolveInitialScopeFraming,advanceScopeDepth,validOrganBounds} from './scope-framing.js';
 
 /**
  * Deterministic kinematic controls for the browser demonstration.
@@ -105,7 +105,7 @@ const INITIAL_TOOLS = Object.freeze({
 const SCOPE_PORT = Object.freeze([0, 1.18, .14]);
 
 function initialState() {
-  const target = [...INITIAL_TOOLS.left.position];
+  const target = INITIAL_TOOLS.left.position.map((v,i)=>(v+INITIAL_TOOLS.right.position[i])*.5);
   const dx = target[0] - SCOPE_PORT[0];
   const dy = target[1] - SCOPE_PORT[1];
   const dz = target[2] - SCOPE_PORT[2];
@@ -116,7 +116,7 @@ function initialState() {
     scope: {
       port: [...SCOPE_PORT], position: [0, 0, 0], target, lookAt: [...target],
       depth: clamp(Math.hypot(dx,dy,dz)-SCOPE_FRAMING.workingDistance,...LIMITS.scopeDepth), yaw: Math.atan2(dx, -dz), pitch: Math.atan2(-dy, Math.hypot(dx, dz)),
-      roll: 0, fov: SCOPE_FRAMING.defaultFov, follow: true, followMode: 'active', graspTarget: null, operating: false,
+      roll: 0, fov: SCOPE_FRAMING.defaultFov, follow: true, followMode: 'midpoint', startupOverview:true, startupFovUserSet:false, graspTarget: null, operating: false,
       direction: normalize([dx, dy, dz]), up: [0, 1, 0], cameraUp: [0, 1, 0],
       viewMode:'field',depthBias:0,surfaceTarget:null,fieldAnchor:null,organBounds:null,heldSpecimen:null,
       framingSource:null,framingLimited:false,targetWorkingDistance:SCOPE_FRAMING.workingDistance,autoDepthTarget:null,intentTarget:[...target],
@@ -128,8 +128,18 @@ function initialState() {
     const pose=instrumentPose(state.tools[id]);state.tools[id].alignment=pose.alignment;state.tools[id].shaftDirection=pose.shaftDirection;
   }
   state.collision=collisionState(state.tools);
-  updateScopePose(state);
+  prepareInitialScopeState(state,1);
   return state;
+}
+
+function prepareInitialScopeState(state,aspect){
+  const s=state.scope,framed=resolveInitialScopeFraming({port:s.port,targets:TOOL_IDS.map(id=>state.tools[id].position),aspect,
+    minimumDepth:LIMITS.scopeDepth[0],maximumDepth:LIMITS.scopeDepth[1]});
+  s.target=[...framed.target];s.intentTarget=[...framed.target];s.depth=framed.depthTarget;if(!s.startupFovUserSet)s.fov=framed.recommendedFov;
+  s.direction=[...framed.direction];s.up=[...framed.up];s.roll=0;
+  s.yaw=Math.atan2(s.direction[0],-s.direction[2]);s.pitch=Math.atan2(-s.direction[1],Math.hypot(s.direction[0],s.direction[2]));
+  s.framingSource=framed.source;s.framingLimited=framed.framingLimited;s.targetWorkingDistance=framed.workingDistance;s.autoDepthTarget=framed.depthTarget;
+  updateScopePose(state,s.direction);
 }
 
 function scopeDirection(scope) {
@@ -246,6 +256,8 @@ export class Simulation {
     if (s.graspTarget != null && !validVector(s.graspTarget)) throw new TypeError('Invalid scope grasp target.');
     s.graspTarget ??= null;
     s.operating = Boolean(s.operating);
+    s.startupOverview=Boolean(s.startupOverview);
+    s.startupFovUserSet=Boolean(s.startupFovUserSet);
     s.fov ??= SCOPE_FRAMING.defaultFov;
     if(!finite(s.fov)||s.fov<SCOPE_FRAMING.minimumFov||s.fov>SCOPE_FRAMING.maximumFov)throw new TypeError('Invalid scope optical FOV.');
     s.viewMode??='field';s.depthBias??=0;s.surfaceTarget??=null;s.fieldAnchor??=s.surfaceTarget?[...s.surfaceTarget]:null;
@@ -258,7 +270,14 @@ export class Simulation {
       (s.heldSpecimen!==null&&(!validVector(s.heldSpecimen.position)||!finite(s.heldSpecimen.radius)||s.heldSpecimen.radius<0)))throw new TypeError('Invalid scope anatomical framing snapshot.');
     state.elapsed = Math.max(0, state.elapsed);
     state.collision=collisionState(state.tools);
+    const savedCamera=Object.fromEntries(['position','lookAt','direction','up','cameraUp'].filter(key=>validVector(s[key])).map(key=>[key,[...s[key]]]));
+    const savedWorkingDistance=s.actualWorkingDistance;
     updateScopePose(state);
+    // Preserve an already consistent camera snapshot exactly. Re-evaluating
+    // atan2/sin at reset's symmetric midpoint otherwise adds tiny drift to
+    // histories; inconsistent/missing legacy derived vectors stay canonical.
+    for(const [key,value]of Object.entries(savedCamera))if(vectorDistance(value,s[key])<1e-10)s[key]=value;
+    if(finite(savedWorkingDistance)&&Math.abs(savedWorkingDistance-s.actualWorkingDistance)<1e-10)s.actualWorkingDistance=savedWorkingDistance;
     this.state = state;
     this._gesture = false;
     this._previousKeys.clear();
@@ -297,6 +316,7 @@ export class Simulation {
 
   reset() {
     this.state = initialState();
+    prepareInitialScopeState(this.state,this.viewAspect);
     this.undoStack.length = this.redoStack.length = 0;
     this._previousKeys.clear();
     this._gesture = false;
@@ -336,7 +356,16 @@ export class Simulation {
     if (!followModes.includes(mode)) throw new RangeError('Scope follow mode must be active, midpoint or grasp.');
     this.state.scope.follow = Boolean(value);
     this.state.scope.followMode = mode;
+    this.state.scope.startupOverview=false;
     this._emit('scope-follow', { follow: this.state.scope.follow, mode });
+  }
+
+  /** Apply the initial two-tip framing immediately after reset/viewport setup,
+   * before displaying a frame. Explicitly chosen follow modes are preserved. */
+  prepareInitialScopeView(aspect=this.viewAspect){
+    if(!finite(aspect)||aspect<=0)throw new TypeError('Initial scope view needs a positive aspect.');
+    this.viewAspect=aspect;if(!this.state.scope.startupOverview)return false;
+    prepareInitialScopeState(this.state,aspect);this._preparedInitialScope=this.state.scope;this._preparedInitialAspect=aspect;return true;
   }
 
   /** Mouse view rotation changes the real RCM scope direction, not a detached
@@ -352,11 +381,12 @@ export class Simulation {
     if(!finite(logScale))throw new TypeError('Scope optical zoom requires a finite scale.');
     if(this.state.paused)return false;
     const s=this.state.scope,next=clamp(s.fov*Math.exp(clamp(logScale,-4,4)),SCOPE_FRAMING.minimumFov,SCOPE_FRAMING.maximumFov);
-    if(next===s.fov)return false;s.fov=next;return true;
+    if(next===s.fov)return false;s.fov=next;if(s.startupOverview)s.startupFovUserSet=true;return true;
   }
 
   homeScopeView() {
     if(this.state.paused)return false;
+    if(this.state.scope.startupOverview){this.state.scope.startupFovUserSet=false;return this.prepareInitialScopeView();}
     const s=this.state.scope,direction=normalize(sub(this._scopeIntentTarget(),s.port),s.direction);
     s.fov=SCOPE_FRAMING.defaultFov;s.roll=0;s.up=perpendicularUp(direction,[0,1,0]);
     s.yaw+=wrapAngle(Math.atan2(direction[0],-direction[2])-s.yaw);
@@ -370,7 +400,10 @@ export class Simulation {
     if(organBounds!==undefined&&organBounds!==null&&!validOrganBounds(organBounds))throw new TypeError('Organ bounds require finite min/max world coordinates.');
     if(heldSpecimen!==undefined&&heldSpecimen!==null&&(!validVector(heldSpecimen.position)||!finite(heldSpecimen.radius)||heldSpecimen.radius<0))throw new TypeError('Held specimen requires a finite world position and nonnegative radius.');
     if(viewAspect!==undefined&&(!finite(viewAspect)||viewAspect<=0))throw new TypeError('Scope view aspect requires a finite positive width/height ratio.');
-    if(viewAspect!==undefined)this.viewAspect=viewAspect;
+    if(viewAspect!==undefined){
+      this.viewAspect=viewAspect;
+      if(this.state.scope.startupOverview&&!this.state.paused&&(this._preparedInitialScope!==this.state.scope||this._preparedInitialAspect!==viewAspect))this.prepareInitialScopeView(viewAspect);
+    }
     this.state.scope.graspTarget = graspTarget === null ? null : [...graspTarget];
     this.state.scope.operating = Boolean(operating);
     if(surfaceTarget!==undefined){
@@ -384,7 +417,7 @@ export class Simulation {
   setScopeViewMode(mode) {
     if(!['field','specimen'].includes(mode))throw new RangeError('Scope view mode must be field or specimen.');
     if(this.state.scope.viewMode===mode)return false;
-    this.state.scope.viewMode=mode;this.state.scope.depthBias=0;
+    this.state.scope.viewMode=mode;this.state.scope.depthBias=0;this.state.scope.startupOverview=false;
     this._emit('scope-view',{viewMode:mode});return true;
   }
 
@@ -397,7 +430,7 @@ export class Simulation {
 
   _scopeFraming(intentTarget=this._scopeIntentTarget()) {
     const s=this.state.scope;
-    return resolveScopeFraming({...s,intentTarget,aspect:this.viewAspect,minimumDepth:LIMITS.scopeDepth[0],maximumDepth:LIMITS.scopeDepth[1]});
+    return resolveScopeFraming({...s,intentTarget,initialTargets:TOOL_IDS.map(id=>this.state.tools[id].position),aspect:this.viewAspect,minimumDepth:LIMITS.scopeDepth[0],maximumDepth:LIMITS.scopeDepth[1]});
   }
 
   /** A depth command sets a persistent working-distance offset, rather than
@@ -444,7 +477,10 @@ export class Simulation {
     const pose=instrumentPose(next);tool.shaftDirection=pose.shaftDirection;tool.alignment=pose.alignment;
     tool.wrist = [...next.wrist];
     tool.jaw = next.jaw;
-    if(changed)this.state.activeTool=id;
+    if(changed){
+      this.state.activeTool=id;
+      if(this.state.scope.startupOverview){this.state.scope.startupOverview=false;this.state.scope.followMode='active';this.state.scope.depthBias=0;}
+    }
     this.state.collision=collisionState(this.state.tools,limited&&reason==='instrument-contact',id,reason);
     const clearance=this.state.collision.clearance;
     if (limited && this._limitCooldown <= 0) {

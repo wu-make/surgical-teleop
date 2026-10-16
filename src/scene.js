@@ -9,6 +9,7 @@ import {buildOperatingRoom} from './operating-room.js';
 
 const V=new THREE.Vector3(), Y=new THREE.Vector3(0,1,0), Q=new THREE.Quaternion();
 const BASE=import.meta.env?.BASE_URL??'/';
+const nominalJointAngle=name=>name.endsWith('_shoulder_pitch_joint')?.8:name.endsWith('_shoulder_roll_joint')?(name.startsWith('left_')?.2:-.2):name.endsWith('_elbow_joint')?1.1:0;
 const material=(color,metalness=0,roughness=.5)=>new THREE.MeshStandardMaterial({color,metalness,roughness});
 const steel=material('#c7d0d2',.95,.23), steelDark=material('#607178',.85,.3), black=material('#142024',.25,.4);
 function mesh(geometry,mat,parent){const m=new THREE.Mesh(geometry,mat);m.castShadow=true;m.receiveShadow=true;parent?.add(m);return m;}
@@ -64,7 +65,7 @@ export class SurgicalScene{
     this.robotModel=gltf.scene;this.robotMetadata=meta;
     for(const j of meta.joints){const node=gltf.scene.getObjectByName(j.name);if(!node||j.type==='fixed')continue;node.userData.rest=node.quaternion.clone();node.userData.angle=0;node.userData.axis=new THREE.Vector3(...j.axis);node.userData.limit=j.limit||j.limits||{lower:-Math.PI,upper:Math.PI};this.joints.push(node);}
     // Nominal stable posture. The original manufacturer's mesh and joint frames are retained.
-    for(const side of ['left','right']){this.setJoint(side+'_shoulder_pitch_joint',.8);this.setJoint(side+'_shoulder_roll_joint',side==='left'?.2:-.2);this.setJoint(side+'_elbow_joint',1.1);}
+    for(const node of this.joints)this.setJoint(node.name,nominalJointAngle(node.name));
     this.handMarkers={};this.handQuaternions={left:new THREE.Quaternion(),right:new THREE.Quaternion()};for(const side of['left','right']){const hand=gltf.scene.getObjectByName(side+'_rubber_hand');if(hand){const marker=new THREE.Object3D();marker.name=side+'_Measured_Palm_Grip_Frame';marker.position.fromArray(G1_GRIP[side]);hand.add(marker);this.handMarkers[side]=marker;}}
     this.robotLoaded=true;return meta;
   }
@@ -128,7 +129,20 @@ export class SurgicalScene{
   resize(){const w=this.stage.clientWidth,h=this.stage.clientHeight;if(w<1||h<1)return;this.renderer.setSize(w,h,false);this.overviewCamera.aspect=w/h;this.overviewCamera.updateProjectionMatrix();this.endoCamera.aspect=w/h;this.endoCamera.updateProjectionMatrix();}
   setMode(mode){this.mode=mode;this.controls.enabled=mode==='overview';}
   get scopeAspect(){const area=this.mode==='endo'?this.stage:this.mini;if(area===this.stage)return Math.max(1,area.clientWidth)/Math.max(1,area.clientHeight);const bounds=area.getBoundingClientRect();return Math.max(1,bounds.width)/Math.max(1,bounds.height);}
-  home(){this.overviewCamera.position.set(1.68,2.02,-1.92);this.controls.target.set(0,1.20,.18);this.controls.update();}
+  home(){const damping=this.controls.enableDamping;this.controls.enableDamping=false;this.controls.update();this.overviewCamera.position.set(1.68,2.02,-1.92);this.controls.target.set(0,1.20,.18);this.controls.update();this.controls.enableDamping=damping;}
+  /** Reset is a deliberate offscreen relocation, distinct from undo/history
+   * cache invalidation. Start every source joint from the same seed, then solve
+   * to the reset tools before rendering; no stale arm pose survives this call. */
+  resetPresentation(state,{settleFrames=20}={}){
+    this.releaseKinematicGuard();
+    for(const node of this.joints??[])this.setJoint(node.name,nominalJointAngle(node.name));
+    this.robot?.updateMatrixWorld(true);this.assemblies?.resetPresentation();
+    this.armErrors??={left:0,right:0};this.armErrors.left=this.armErrors.right=0;
+    this.conceptDecoupled=false;
+    for(let frame=0;frame<Math.max(1,Math.min(120,settleFrames));frame++)this.update(state,.05);
+    if(this.controls&&this.overviewCamera)this.home();
+    return {armErrors:{...this.armErrors},scopeArmError:this.assemblies?.scopeArmError??0};
+  }
   // Kept for reset/history compatibility. Rendering never rewrites a tool pose.
   releaseKinematicGuard(){this.acceptedArmPoses={};this.kinematicLimited=false;this._armIK=null;this.assemblies?.resetPose();}
   guardArmTargets(){this.kinematicLimited=false;return false;}

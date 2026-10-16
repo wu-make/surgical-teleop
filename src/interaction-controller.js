@@ -3,30 +3,38 @@ import {LOCAL_TRACTION} from './tissue-worker.js';
 
 const copy = value => value == null ? null : structuredClone(value);
 const localPoint = (tissue, point) => tissue.group.worldToLocal(new THREE.Vector3(...point));
+const contactState=()=>({left:false,right:false,leftFragmentId:null,rightDepthMm:0,cutting:false,bladeContact:false,bladeDistanceMm:null,bladeSource:null,cutContactPointWorld:null,cutStatus:'disabled',cutReason:'按 B 开启剪切模式'});
+const finitePoint=point=>point?.isVector3?point.toArray().every(Number.isFinite):Array.isArray(point)&&point.length===3&&point.every(Number.isFinite);
+const asVector=point=>point?.isVector3?point.clone():new THREE.Vector3(...point);
 
 /** Shared interaction path for manual input and the optional guided example. */
 export class InteractionController {
-  constructor(sim, tissue, { onMessage = () => {}, onEvent = () => {}, toolDirection, toolQuaternion } = {}) {
+  constructor(sim, tissue, { onMessage = () => {}, onEvent = () => {}, toolDirection, toolQuaternion,toolBlade } = {}) {
     this.sim = sim;
     this.tissue = tissue;
     this.onMessage = onMessage;
     this.onEvent = onEvent;
     this.toolDirection = toolDirection;
     this.toolQuaternion = toolQuaternion;
+    this.toolBlade=toolBlade;
     this.grasp = null;
     this.relaxing = null;
     this.cuttingBusy = false;
     this.lastCut = null;
-    this.contact = { left: false, right: false, rightDepthMm: 0, cutting: false };
+    this.contact = contactState();
     this._generation = 0;
     this._fragmentRebaseId = null;
     this.requiresReopen=false;
+    this._cutTask=null;
+    this._clock=0;this._noMaterialAttempt=null;
+    this._bladeContactCache=null;
   }
 
   snapshot() { return { version: 3, tissue: this.tissue.snapshot(), grasp: copy(this.grasp), relaxing: copy(this.relaxing),requiresReopen:this.requiresReopen }; }
 
   async restore(data) {
     const generation = ++this._generation;
+    this._cutTask=null;this.cuttingBusy=false;this.contact=contactState();this._noMaterialAttempt=null;this._bladeContactCache=null;
     this._fragmentRebaseId=null;
     this.lastCut = null;
     this.relaxing = null;
@@ -63,6 +71,43 @@ export class InteractionController {
     this.grasp = null;
     if (immediate) { this.relaxing = null; this.tissue.setGrasp(null); }
     this.onEvent('release', {kind:released?.kind??'tissue',fragmentId:released?.fragmentId??null});
+  }
+
+  /** Cancel controller continuations before resetting/restoring the tissue.
+   * A late worker reply cannot recapture tissue, rewrite feedback, or clear a
+   * newer cut's busy flag. TissueVolume.reset owns worker-epoch invalidation. */
+  reset(){
+    ++this._generation;this._cutTask=null;this.cuttingBusy=false;this.lastCut=null;this._noMaterialAttempt=null;this._bladeContactCache=null;
+    this.release(true);this.contact=contactState();
+  }
+  invalidate(){this.reset();}
+
+  _setCutStatus(status,reason){this.contact.cutStatus=status;this.contact.cutReason=reason;}
+
+  _bladeGeometry(){
+    const supplied=this.toolBlade?.('right'),segments=[];
+    for(const segment of supplied?.segments??[]){
+      if(!finitePoint(segment.a)||!finitePoint(segment.b))continue;
+      const worldA=asVector(segment.a),worldB=asVector(segment.b);
+      if(worldA.distanceToSquared(worldB)<1e-16)continue;
+      segments.push({a:this.tissue.group.worldToLocal(worldA.clone()),b:this.tissue.group.worldToLocal(worldB.clone()),worldA,worldB});
+    }
+    if(segments.length)return {segments,source:supplied.source??'source-CAD-blade',jaw:supplied.jaw};
+    const tip=localPoint(this.tissue,this.sim.state.tools.right.position);
+    const quaternion=this.toolQuaternion?.('right');let direction,source;
+    if(quaternion?.isQuaternion||(Array.isArray(quaternion)&&quaternion.length===4)){
+      direction=new THREE.Vector3(0,0,1).applyQuaternion(this._toolQuaternionLocal('right'));source='tip-orientation-fallback';
+    }else if(this.toolDirection?.('right')){
+      direction=this.toolDirection('right').clone().applyQuaternion(this.tissue.group.getWorldQuaternion(new THREE.Quaternion()).invert()).normalize();source='tip-direction-fallback';
+    }else{direction=new THREE.Vector3(0,0,1).applyQuaternion(this._toolQuaternionLocal('right'));source='kinematic-fallback';}
+    const a=tip.clone().addScaledVector(direction,-.008),b=tip;
+    return {segments:[{a,b,worldA:this.tissue.group.localToWorld(a.clone()),worldB:this.tissue.group.localToWorld(b.clone())}],source};
+  }
+
+  _sameCut(signature,previous=this.lastCut){
+    if(!previous||previous.deformation!==signature.deformation||previous.segments.length!==signature.segments.length||Math.abs(previous.jaw-signature.jaw)>.002||previous.quaternion.angleTo(signature.quaternion)>.0001)return false;
+    if(previous.wrist.some((v,i)=>Math.abs(v-signature.wrist[i])>.0001))return false;
+    return previous.segments.every((segment,i)=>segment.a.distanceTo(signature.segments[i].a)<.00055&&segment.b.distanceTo(signature.segments[i].b)<.00055);
   }
 
   _toolQuaternionLocal(side = 'left') {
@@ -174,7 +219,9 @@ export class InteractionController {
   }
 
   async update(dt, { clutched = false } = {}) {
-    if (!this.tissue.ready || this.sim.state.paused) return;
+    if(!this.tissue.ready){this._setCutStatus('loading','正在加载真实组织');return;}
+    if(this.sim.state.paused){this._setCutStatus('paused','仿真已暂停，请继续后剪切');return;}
+    if(Number.isFinite(dt)&&dt>0)this._clock+=Math.min(.1,dt);
     this.updateGrasp(dt);
     this.tissue.updateFragments?.(dt);
     const { left, right } = this.sim.state.tools;
@@ -185,33 +232,61 @@ export class InteractionController {
     const distance = this.tissue.contactDistance?.(point,.0032)??this.tissue.sampleDistance(point);
     this.contact.left = leftDistance < .006||leftFragmentId!=null;
     this.contact.leftFragmentId=leftFragmentId;
-    this.contact.right = distance < .0032;
+    const blade=this._bladeGeometry();
+    const contactKey=[this.tissue._contactRevision??0,this.tissue._epoch??0,this.tissue._cuts?.length??0,...blade.segments.flatMap(segment=>[...segment.a.toArray(),...segment.b.toArray()])].join(',');
+    let hits;
+    if(this._bladeContactCache?.key===contactKey)hits=this._bladeContactCache.hits;
+    else{
+      hits=blade.segments.map(segment=>this.tissue.contactSegment?.(segment.a,segment.b,.0032)??
+        {contact:Math.min(this.tissue.sampleDistance(segment.a),this.tissue.sampleDistance(segment.b))<=.0032,distance:Infinity});
+      this._bladeContactCache={key:contactKey,hits};
+    }
+    const hit=hits.find(value=>value.contact);
+    this.contact.right = !!hit;
+    this.contact.bladeContact=!!hit;this.contact.bladeSource=blade.source;
+    this.contact.bladeDistanceMm=hit&&Number.isFinite(hit.distance)?hit.distance*1000:null;
+    this.contact.cutContactPointWorld=hit?.point?this.tissue.group.localToWorld(hit.point.clone()).toArray():null;
     this.contact.rightDepthMm = Number.isFinite(distance) ? -distance * 1000 : 0;
     this.contact.cutting = false;
-    if (!this.sim.state.cutting || right.jaw > .22 || clutched) { this.lastCut = null; return; }
-    if (this.cuttingBusy || this.tissue.busy) return;
-    const deformation = this.tissue.graspMetrics?.displacement ?? this.grasp?.displacement ?? [0, 0, 0];
-    if (this.lastCut && point.distanceTo(this.lastCut.point) < .00055 &&
-        new THREE.Vector3(...deformation).distanceTo(this.lastCut.deformation) < .00055) return;
-    // A closed curved shear cuts along its distal blade, not at a detached dot.
-    const direction = this.toolDirection?.('right')?.clone() ??
-      new THREE.Vector3(...right.position).sub(new THREE.Vector3(...right.port)).normalize();
-    const inverse = this.tissue.group.getWorldQuaternion(new THREE.Quaternion()).invert();
-    direction.applyQuaternion(inverse).normalize();
-    const bladeBack = point.clone().addScaledVector(direction, -.008);
-    const bladeDistance=this.tissue.contactDistance?.(bladeBack,.0032)??this.tissue.sampleDistance(bladeBack);
-    if (distance > .0032 && bladeDistance > .0032) return;
-    this.lastCut = { point: point.clone(), deformation: new THREE.Vector3(...deformation) };
+    if(!this.sim.state.cutting){this.lastCut=null;this._noMaterialAttempt=null;this._setCutStatus('disabled','按 B 开启剪切模式');return;}
+    // Source CAD getters may expose the joint angle in radians. The command
+    // remains the normalized [0,1] jaw input used by all closure controls.
+    const jaw=right.jaw;
+    if(jaw>.22){this.lastCut=null;this._noMaterialAttempt=null;this._setCutStatus('jaw-open','右剪尚未闭合，请选右剪后按 C');return;}
+    if(clutched){this.lastCut=null;this._setCutStatus('clutched','松开空格离合后继续剪切');return;}
+    if(this.cuttingBusy||this.tissue.busy){this._setCutStatus('busy','正在更新真实切面，请稍候');return;}
+    if(!hit){this._setCutStatus('no-contact','实际剪刃尚未碰到组织，请移动或旋转右剪贴近薄片');return;}
+    const signature={segments:blade.segments.map(({a,b})=>({a:a.clone(),b:b.clone()})),jaw,wrist:[...right.wrist],quaternion:this._toolQuaternionLocal('right'),
+      deformation:JSON.stringify(this.tissue._deformation??this.tissue.graspMetrics??null),point:point.clone()};
+    if(this._sameCut(signature)){this._setCutStatus('already-cut','此处已切开，请沿组织连接继续移动右剪');return;}
+    if(this._noMaterialAttempt&&this._sameCut(signature,this._noMaterialAttempt.signature)&&this._clock<this._noMaterialAttempt.until){this._setCutStatus('no-material','当前剪刃位置未检出可切组织，请稍移刃口或旋转后重试');return;}
+    const task={generation:this._generation};this._cutTask=task;
     this.cuttingBusy = true;
     this.contact.cutting = true;
+    this._setCutStatus('cutting','实际剪刃接触组织，正在更新切面');
     try {
-      const generation=this._generation;
       const before = this.tissue.removedVolumeMm3;
-      await this.tissue.cutSegment(bladeBack, point, .0024);
-      if(generation!==this._generation)return;
+      const touching=blade.segments.filter((segment,i)=>hits[i].contact);
+      let result;
+      if(this.tissue.cutSegments)result=await this.tissue.cutSegments(touching,.0024);
+      else for(const segment of touching)result=await this.tissue.cutSegment(segment.a,segment.b,.0024);
+      if(task.generation!==this._generation||this._cutTask!==task)return;
       this._reconcileDetachedGrasp();
-      if (this.tissue.removedVolumeMm3 > before) this.onEvent('cut', { volumeMm3: this.tissue.removedVolumeMm3 });
-    } finally { this.cuttingBusy = false; }
+      const removed=this.tissue.removedVolumeMm3>before+1e-8||result?.removedMm3>1e-8||(!Number.isFinite(before)&&result?.changed);
+      if(removed){this.lastCut=signature;this._noMaterialAttempt=null;this._setCutStatus('cut','已真实切除组织，沿连接处继续剪切可切离');this.onEvent('cut',{volumeMm3:this.tissue.removedVolumeMm3});}
+      else{
+        this.lastCut=null;
+        const attempts=this._noMaterialAttempt&&this._sameCut(signature,this._noMaterialAttempt.signature)?this._noMaterialAttempt.count+1:1;
+        this._noMaterialAttempt={signature,count:attempts,until:this._clock+(attempts>=2?.18:0)};
+        this._setCutStatus(['history-limit','not-ready'].includes(result?.reason)?'blocked':'no-material',result?.reason==='history-limit'?'切割记录已到上限，请导出后重置':'剪刃附近未检出可移除组织，请调整刃角度后重试');
+      }
+    }catch(error){
+      if(task.generation!==this._generation||this._cutTask!==task)return;
+      this.lastCut=null;this._noMaterialAttempt=null;this._setCutStatus('retry','切面更新失败，可在当前位置重试');
+      throw error;
+    }finally{
+      if(this._cutTask===task){this.cuttingBusy=false;this._cutTask=null;this.contact.cutting=false;}
+    }
   }
 
   get metrics() {

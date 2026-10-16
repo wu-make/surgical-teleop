@@ -187,14 +187,44 @@ export function distanceToSegment(point, start, end) {
 }
 
 export function validateCut(cut) {
-  const start = cut.a ?? cut.point, end = cut.b ?? start;
+  let segments;
+  if(cut.segments!==undefined){
+    if(!Array.isArray(cut.segments)||!cut.segments.length||cut.segments.length>64)throw new Error('A cutting stroke requires 1–64 finite blade segments.');
+    segments=cut.segments.map(segment=>{
+      const a=segment.a,b=segment.b??a;
+      if(!Array.isArray(a)||!Array.isArray(b)||a.length!==3||b.length!==3||![...a,...b].every(Number.isFinite))throw new Error('Cut points must be finite three-component coordinates');
+      if(Math.hypot(...b.map((v,i)=>v-a[i]))>.5)throw new Error('Cut segment exceeds the supported workspace');
+      return {a:[...a],b:[...b]};
+    });
+  }
+  const start = cut.a ?? cut.point ?? segments?.[0].a, end = cut.b ?? segments?.[0].b ?? start;
   if (!Array.isArray(start) || !Array.isArray(end) || start.length !== 3 || end.length !== 3 || [...start, ...end].some(v => !Number.isFinite(v))) throw new Error('Cut points must be finite three-component coordinates');
   if (!Number.isFinite(cut.radius) || cut.radius <= 0 || cut.radius > 0.05) throw new Error('Cut radius must be positive and at most 50 mm');
   if (Math.hypot(...end.map((v, i) => v - start[i])) > 0.5) throw new Error('Cut segment exceeds the supported workspace');
   const result = { a: [...start], b: [...end], radius: cut.radius };
+  if(segments)result.segments=segments;
   const deformation = normalizeDeformation(cut.deformation);
   if (deformation) result.deformation = deformation;
   return result;
+}
+
+/** A CAD curve is retained as an exact union of its sampled blade capsules.
+ * Material-to-display mapping is evaluated once per voxel, not once per jaw
+ * segment. Single-segment historical strokes retain their original format. */
+export function distanceToCut(point,cut){
+  if(!cut.segments)return distanceToSegment(point,cut.a,cut.b);
+  let distance=Infinity;
+  for(const segment of cut.segments)distance=Math.min(distance,distanceToSegment(point,segment.a,segment.b));
+  return distance;
+}
+
+export function cutBounds(cut,padding=0){
+  const low=[Infinity,Infinity,Infinity],high=[-Infinity,-Infinity,-Infinity];
+  for(const segment of cut.segments??[cut])for(let axis=0;axis<3;axis++){
+    low[axis]=Math.min(low[axis],segment.a[axis]-padding,segment.b[axis]-padding);
+    high[axis]=Math.max(high[axis],segment.a[axis]+padding,segment.b[axis]+padding);
+  }
+  return {low,high};
 }
 
 export function allChunkKeys(state) {
@@ -212,8 +242,12 @@ export function applyCapsuleCut(state, input) {
   // also enclose curved inverse images of long straight display-space strokes.
   const displacement = cut.deformation?.displacement ?? [0, 0, 0];
   const padding = cut.radius + margin;
-  const lower = cut.a.map((v, axis) => clamp(Math.floor((Math.min(v, cut.b[axis]) - Math.max(0, displacement[axis]) - padding - meta.origin[axis]) / meta.spacing[axis]), 0, meta.dims[axis] - 1));
-  const upper = cut.a.map((v, axis) => clamp(Math.ceil((Math.max(v, cut.b[axis]) - Math.min(0, displacement[axis]) + padding - meta.origin[axis]) / meta.spacing[axis]), 0, meta.dims[axis] - 1));
+  const bounds=cutBounds(cut,padding);
+  const lower = bounds.low.map((v, axis) => clamp(Math.floor((v-Math.max(0,displacement[axis])-meta.origin[axis])/meta.spacing[axis]),0,meta.dims[axis]-1));
+  const upper = bounds.high.map((v, axis) => clamp(Math.ceil((v-Math.min(0,displacement[axis])-meta.origin[axis])/meta.spacing[axis]),0,meta.dims[axis]-1));
+  const boundedSegments=cut.segments?.map(segment=>({segment,
+    low:segment.a.map((v,axis)=>clamp(Math.floor((Math.min(v,segment.b[axis])-Math.max(0,displacement[axis])-padding-meta.origin[axis])/meta.spacing[axis]),0,meta.dims[axis]-1)),
+    high:segment.a.map((v,axis)=>clamp(Math.ceil((Math.max(v,segment.b[axis])-Math.min(0,displacement[axis])+padding-meta.origin[axis])/meta.spacing[axis]),0,meta.dims[axis]-1))}));
   let removedMm3 = 0, changedSamples = 0, removedNodes = 0;
   const point = [0, 0, 0];
   const changedBounds = [[Infinity, Infinity, Infinity], [-Infinity, -Infinity, -Infinity]];
@@ -221,8 +255,16 @@ export function applyCapsuleCut(state, input) {
     point[0] = meta.origin[0] + x * meta.spacing[0]; point[1] = meta.origin[1] + y * meta.spacing[1]; point[2] = meta.origin[2] + z * meta.spacing[2];
     const index = nodeIndex(meta, x, y, z);
     // Difference: organ \ cutter = max(organSignedDistance, -cutterSignedDistance).
-    const displayPoint = cut.deformation ? deformPoint(point, cut.deformation) : point;
-    const value = Math.fround(Math.max(field[index], cut.radius - distanceToSegment(displayPoint, cut.a, cut.b)));
+    let displayPoint,distance=Infinity;
+    if(boundedSegments){
+      for(const entry of boundedSegments){
+        if(x<entry.low[0]||x>entry.high[0]||y<entry.low[1]||y>entry.high[1]||z<entry.low[2]||z>entry.high[2])continue;
+        displayPoint??=cut.deformation?deformPoint(point,cut.deformation):point;
+        distance=Math.min(distance,distanceToSegment(displayPoint,entry.segment.a,entry.segment.b));
+      }
+      if(distance===Infinity)continue;
+    }else{displayPoint=cut.deformation?deformPoint(point,cut.deformation):point;distance=distanceToCut(displayPoint,cut);}
+    const value = Math.fround(Math.max(field[index], cut.radius-distance));
     if (value <= field[index]) continue;
     const wasInside = field[index] < 0;
     removedMm3 += (occupancy(field[index], state.bandWidth) - occupancy(value, state.bandWidth)) * state.voxelMm3;

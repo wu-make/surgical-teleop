@@ -1,6 +1,25 @@
 import * as THREE from 'three';
 
 const boxDistanceSquared=(p,b)=>Math.max(b[0]-p.x,0,p.x-b[3])**2+Math.max(b[1]-p.y,0,p.y-b[4])**2+Math.max(b[2]-p.z,0,p.z-b[5])**2;
+const boxesDistanceSquared=(a,b)=>Math.max(b[0]-a[3],a[0]-b[3],0)**2+Math.max(b[1]-a[4],a[1]-b[4],0)**2+Math.max(b[2]-a[5],a[2]-b[5],0)**2;
+
+function closestSegments(a,b,c,d,p,q){
+  const u=new THREE.Vector3().subVectors(b,a),v=new THREE.Vector3().subVectors(d,c),r=new THREE.Vector3().subVectors(a,c);
+  const aa=u.lengthSq(),ee=v.lengthSq(),f=v.dot(r);let s=0,t=0;
+  if(aa<=1e-20&&ee<=1e-20){p.copy(a);q.copy(c);return;}
+  if(aa<=1e-20)t=THREE.MathUtils.clamp(f/ee,0,1);
+  else{
+    const cc=u.dot(r);
+    if(ee<=1e-20)s=THREE.MathUtils.clamp(-cc/aa,0,1);
+    else{
+      const bb=u.dot(v),denominator=aa*ee-bb*bb;
+      if(denominator>1e-20)s=THREE.MathUtils.clamp((bb*f-cc*ee)/denominator,0,1);
+      t=(bb*s+f)/ee;
+      if(t<0){t=0;s=THREE.MathUtils.clamp(-cc/aa,0,1);}else if(t>1){t=1;s=THREE.MathUtils.clamp((bb-cc)/aa,0,1);}
+    }
+  }
+  p.copy(a).addScaledVector(u,s);q.copy(c).addScaledVector(v,t);
+}
 
 /** Chunk-local triangle hierarchy. Topology is built once; only bounds refit
  * when that chunk's displayed positions change. Queries never scan the whole
@@ -63,6 +82,31 @@ class SurfaceIndex {
     }
     return result;
   }
+  nearestSegment(start,end,maximum){
+    this.refit();let best=maximum*maximum,result=null;
+    const direction=new THREE.Vector3().subVectors(end,start),length=direction.length(),ray=new THREE.Ray(start,length?direction.clone().divideScalar(length):new THREE.Vector3(0,0,1));
+    const bounds=[Math.min(start.x,end.x),Math.min(start.y,end.y),Math.min(start.z,end.z),Math.max(start.x,end.x),Math.max(start.y,end.y),Math.max(start.z,end.z)];
+    const triangle=new THREE.Triangle(),blade=new THREE.Vector3(),surface=new THREE.Vector3(),hit=new THREE.Vector3(),normal=new THREE.Vector3();
+    const p=this.positions,indices=this.indices,stack=[this.root];
+    const accept=()=>{
+      const squared=blade.distanceToSquared(surface);if(squared>best)return;
+      best=squared;triangle.getNormal(normal);
+      result={point:blade.clone(),surface:surface.clone(),normal:normal.clone(),distance:Math.sqrt(best),
+        t:length?THREE.MathUtils.clamp(new THREE.Vector3().subVectors(blade,start).dot(direction)/(length*length),0,1):0};
+    };
+    while(stack.length){
+      const node=stack.pop();if(boxesDistanceSquared(bounds,node.bounds)>best)continue;
+      if(!node.triangles){stack.push(node.left,node.right);continue;}
+      for(const id of node.triangles){
+        triangle.a.fromBufferAttribute(p,indices[id*3]);triangle.b.fromBufferAttribute(p,indices[id*3+1]);triangle.c.fromBufferAttribute(p,indices[id*3+2]);
+        if(length&&ray.intersectTriangle(triangle.a,triangle.b,triangle.c,false,hit)&&hit.distanceTo(start)<=length+1e-10){blade.copy(hit);surface.copy(hit);accept();return result;}
+        blade.copy(start);triangle.closestPointToPoint(start,surface);accept();
+        blade.copy(end);triangle.closestPointToPoint(end,surface);accept();
+        for(const [a,b] of [[triangle.a,triangle.b],[triangle.b,triangle.c],[triangle.c,triangle.a]]){closestSegments(start,end,a,b,blade,surface);accept();}
+      }
+    }
+    return result;
+  }
 }
 
 const indices=new WeakMap();
@@ -74,6 +118,20 @@ export function closestParentSurface(meshes,point,margin){
     let index=indices.get(geometry);if(!index){index=new SurfaceIndex(geometry);indices.set(geometry,index);}
     const candidate=index.nearest(point,best);if(!candidate)continue;
     best=candidate.distanceTo(point);result=candidate;
+  }
+  return result;
+}
+
+/** The complete blade may cross tissue even when both ends are in air. */
+export function closestParentSegment(meshes,start,end,margin){
+  let result=null,best=margin;
+  const bounds=[Math.min(start.x,end.x),Math.min(start.y,end.y),Math.min(start.z,end.z),Math.max(start.x,end.x),Math.max(start.y,end.y),Math.max(start.z,end.z)];
+  for(const mesh of meshes){
+    const geometry=mesh.geometry,box=geometry.boundingBox;
+    if(!geometry.index?.count||boxesDistanceSquared(bounds,[box.min.x,box.min.y,box.min.z,box.max.x,box.max.y,box.max.z])>best*best)continue;
+    let index=indices.get(geometry);if(!index){index=new SurfaceIndex(geometry);indices.set(geometry,index);}
+    const candidate=index.nearestSegment(start,end,best);if(!candidate)continue;
+    result=candidate;best=candidate.distance;if(best<1e-10)break;
   }
   return result;
 }

@@ -1,8 +1,8 @@
 import * as THREE from 'three';
-import { validateCut, normalizeMetadata, distanceToSegment, nodeIndex, normalizeDeformation, deformationWeight, deformationMinimumScale, LOCAL_TRACTION, deformPoint, inverseDeformPoint } from './tissue-worker.js';
+import { validateCut, normalizeMetadata, distanceToCut, cutBounds, nodeIndex, normalizeDeformation, deformationWeight, deformationMinimumScale, LOCAL_TRACTION, deformPoint, inverseDeformPoint } from './tissue-worker.js';
 import { createTissueMaterial } from './tissue-material.js';
 import { TissueFragments } from './tissue-fragments.js';
-import {closestParentSurface} from './tissue-contact.js';
+import {closestParentSurface,closestParentSegment} from './tissue-contact.js';
 
 const vectorArray = point => Array.isArray(point) ? [...point] : [point.x, point.y, point.z];
 const copyCuts = cuts => cuts.map(cut => validateCut(cut));
@@ -43,6 +43,7 @@ export class TissueVolume {
     this._restoringFragmentPoses = null;
     this._contactQueryCache=new Map();
     this._contactHistoryScale=1;this._contactHasDeformedCuts=false;
+    this._contactRevision=0;
   }
 
   async load(urlbase = './assets/liver-volume') {
@@ -66,16 +67,29 @@ export class TissueVolume {
 
   cut(point, radius) { return this.cutSegment(point, point, radius); }
 
-  cutSegment(start, end, radius) {
+  cutSegment(start, end, radius) {return this.cutSegments([{a:start,b:end}],radius);}
+
+  cutSegments(segments,radius){
     if (!this.ready || this._disposed) return Promise.resolve({ changed: false, removedMm3: 0, reason: 'not-ready' });
-    let primitive;
-    try { primitive = validateCut({ a: vectorArray(start), b: vectorArray(end), radius, deformation: this._deformation }); }
+    if(!segments?.length)return Promise.resolve({changed:false,removedMm3:0,reason:'no-blade'});
+    let primitives;
+    try {
+      const points=segments.map(segment=>({a:vectorArray(segment.a),b:vectorArray(segment.b)}));
+      primitives=[validateCut({...points[0],...(points.length>1?{segments:points}:{}),radius,deformation:this._deformation})];
+    }
     catch (error) { return Promise.reject(error); }
-    const previous = this._cuts.at(-1);
-    if (previous && primitive.radius === previous.radius && JSON.stringify(primitive) === JSON.stringify(previous)) return Promise.resolve({ changed: false, removedMm3: 0, removedVolumeMm3: this.removedVolumeMm3 });
-    if (this._cuts.length >= 50000) return Promise.resolve({ changed: false, removedMm3: 0, reason: 'history-limit' });
-    this._cuts.push(primitive);
-    return this._enqueue({ type: 'cut', cuts: [primitive] });
+    if(!primitives.length)return Promise.resolve({changed:false,removedMm3:0,reason:'no-blade'});
+    const key=JSON.stringify(primitives);
+    if(this._lastCompletedCut?.key===key&&this._lastCompletedCut.changed)return Promise.resolve({changed:false,removedMm3:0,reason:'already-cut',removedVolumeMm3:this.removedVolumeMm3});
+    if(this._cuts.length+primitives.length>50000)return Promise.resolve({changed:false,removedMm3:0,reason:'history-limit'});
+    const epoch=this._epoch,before=this.removedVolumeMm3;this._cuts.push(...primitives);
+    return this._enqueue({type:'cut',cuts:primitives}).then(result=>{
+      const removed=result.removedMm3>1e-8||this.removedVolumeMm3>before+1e-8||(!Number.isFinite(before)&&result.changed);
+      if(epoch===this._epoch)this._lastCompletedCut={key,changed:!!removed};return result;
+    },error=>{
+      if(epoch===this._epoch){const failed=new Set(primitives);this._cuts=this._cuts.filter(cut=>!failed.has(cut));this._lastCompletedCut=null;}
+      throw error;
+    });
   }
 
   snapshot() { return { version: 2, cuts: copyCuts(this._cuts), deformation: this._deformation ? normalizeDeformation(this._deformation) : null,
@@ -88,6 +102,7 @@ export class TissueVolume {
     this._epoch++;
     for (const command of this._commands.splice(0)) command.resolve({ changed: false, cancelled: true });
     this._cuts = copyCuts(cuts);
+    this._lastCompletedCut=null;
     this._restoringFragmentPoses = new Map((snapshot.fragments ?? []).map(piece => [piece.id, structuredClone(piece)]));
     this.setGrasp(snapshot.deformation ?? null);
     return this._enqueue({ type: 'restore', cuts, separations: structuredClone(snapshot.separations ?? []) });
@@ -128,6 +143,22 @@ export class TissueVolume {
     const result=this._parentContact(coordinates,margin,raw);
     if(result)return (raw<0?-1:1)*result.distance;
     return raw<0?raw*this._contactMinimumScale():Infinity;
+  }
+
+  /** Complete displayed-space blade contact. point is on the blade, surface
+   * is on the parent, and t is the blade interpolation fraction. */
+  contactSegment(start,end,margin=.0032){
+    const a=vectorArray(start),b=vectorArray(end),miss={contact:false,distance:Infinity,point:null,surface:null,t:null,inside:false};
+    if(a.length!==3||b.length!==3||![...a,...b,margin].every(Number.isFinite)||margin<=0)return miss;
+    const from=new THREE.Vector3(...a),to=new THREE.Vector3(...b);
+    const steps=this._meshes.size?2:Math.max(2,Math.ceil(from.distanceTo(to)/Math.min(.00075,margin*.5)));
+    for(let i=0;i<=steps;i++){
+      const t=i/steps,point=from.clone().lerp(to,t),raw=this.sampleDistance(point);
+      if(raw<0)return {contact:true,distance:raw*this._contactMinimumScale(),point,surface:null,t,inside:true};
+      if(!this._meshes.size){const distance=this.contactDistance(point,margin);if(distance<=margin)return {contact:true,distance,point,surface:null,t,inside:false};}
+    }
+    const closest=closestParentSegment(this._meshes.values(),from,to,margin);
+    return closest?{...closest,contact:true,inside:false}:miss;
   }
 
   _contactMinimumScale(){
@@ -194,7 +225,7 @@ export class TissueVolume {
       if (canSkipBox(squaredDistanceToBox(displayed, group.low, group.high), distance)) { this._queryStats.skippedGroups++; continue; }
       for (const entry of group.entries) {
         if (distance >= entry.cut.radius || canSkipBox(squaredDistanceToBox(displayed, entry.low, entry.high), distance)) { this._queryStats.skippedCutters++; continue; }
-        distance = Math.max(distance, entry.cut.radius - distanceToSegment(displayed, entry.cut.a, entry.cut.b));
+        distance = Math.max(distance, entry.cut.radius - distanceToCut(displayed,entry.cut));
         this._queryStats.evaluatedCutters++;
       }
     }
@@ -216,7 +247,7 @@ export class TissueVolume {
         group = { deformation, minimumScale, entries: [], low: [Infinity, Infinity, Infinity], high: [-Infinity, -Infinity, -Infinity], referenceLow: [Infinity, Infinity, Infinity], referenceHigh: [-Infinity, -Infinity, -Infinity] };
         this._cutGroupMap.set(key, group); this._cutGroups.push(group);
       }
-      const low = cut.a.map((v, axis) => Math.min(v, cut.b[axis]) - cut.radius), high = cut.a.map((v, axis) => Math.max(v, cut.b[axis]) + cut.radius);
+      const {low,high}=cutBounds(cut,cut.radius);
       const delta = deformation?.displacement ?? [0, 0, 0];
       for (let axis = 0; axis < 3; axis++) {
         group.low[axis] = Math.min(group.low[axis], low[axis]); group.high[axis] = Math.max(group.high[axis], high[axis]);
@@ -275,6 +306,7 @@ export class TissueVolume {
     }
     if (JSON.stringify(next) === JSON.stringify(this._deformation)) return true;
     this._deformation = next;
+    this._contactRevision++;
     this._contactQueryCache.clear();
     this._affectedVertices = 0;
     for (const mesh of this._meshes.values()) this._affectedVertices += this._applyDeformation(mesh);
@@ -464,6 +496,7 @@ export class TissueVolume {
   }
 
   _replaceChunk(chunk) {
+    this._contactRevision++;
     this._contactQueryCache.clear();
     const previous = this._meshes.get(chunk.key);
     if (previous?.geometry.userData.deformed) this._affectedVertices -= previous.geometry.userData.deformationCache?.activeCount ?? 0;

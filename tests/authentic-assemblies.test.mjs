@@ -163,6 +163,43 @@ test('repeated production CAD updates do not advance a committed near-port frame
   }
 });
 
+test('source curved blade paths follow both actual jaw matrices and exclude the hinge and empty TCP', () => {
+  const state=new Simulation().state;
+  for(const opening of [0,.1,.6,1]){
+    state.tools.right.jaw=opening;state.tools.right.wrist=[.53,-.42,8*Math.PI+.31];assembly.update(state,1/60);
+    const blade=assembly.toolBlade('right'),tool=assembly.tools.right;
+    assert.equal(blade.source,'source-CAD-curved-jaw');assert.equal(blade.segments.length,12);
+    let index=0;
+    for(const profile of tool.bladeProfiles){
+      assert.equal(profile.points.length,7);
+      assert.ok(profile.points.every(p=>p.y>=.0028-1e-12&&p.y<.0131),'do not treat round hinge or empty TCP as a blade');
+      assert.ok(profile.points.at(-1).z-profile.points[0].z>.0005,'source curve must remain three dimensional');
+      for(let i=1;i<profile.points.length;i++){
+        assert.ok(blade.segments[index].a.distanceTo(profile.points[i-1].clone().applyMatrix4(profile.link.matrixWorld))<1e-10);
+        assert.ok(blade.segments[index].b.distanceTo(profile.points[i].clone().applyMatrix4(profile.link.matrixWorld))<1e-10);
+        index++;
+      }
+    }
+    const frozen=blade.segments.map(s=>({a:s.a.clone(),b:s.b.clone()}));
+    state.tools.right.wrist[2]+=.2;assembly.update(state,1/60);assembly.toolBlade('right');
+    blade.segments.forEach((s,i)=>{assert.ok(s.a.equals(frozen[i].a));assert.ok(s.b.equals(frozen[i].b));});
+  }
+  assert.equal(assembly.toolBlade('left').segments.length,0);
+});
+
+test('physical presentation reset restores the Z1 seed while history invalidation preserves existing joints',()=>{
+  const state=new Simulation().state;assembly.resetPresentation();assembly.update(state,.05);
+  const canonical=assembly.scopeArm.chain.map(j=>j.angle);
+  state.scope.position=[.05,1.13,-.02];
+  for(let i=0;i<40;i++)assembly.update(state,.05);
+  const moved=assembly.scopeArm.chain.map(j=>j.angle);assert.notDeepEqual(moved,canonical);
+  assembly.resetPose();assert.deepEqual(assembly.scopeArm.chain.map(j=>j.angle),moved,'undo cache invalidation must not reset physical joints');
+  assembly.resetPresentation();
+  assert.deepEqual(assembly.scopeArm.chain.map(j=>j.angle),[0,1.4,-1.8,.35,0,0]);
+  assembly.update(new Simulation().state,.05);
+  assert.deepEqual(assembly.scopeArm.chain.map(j=>j.angle),canonical,'reset must solve from the same initial seed');
+});
+
 test('disposing source assemblies removes them and tolerates repeated disposal', () => {
   assembly.dispose();
   assembly.dispose();

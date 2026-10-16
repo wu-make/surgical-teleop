@@ -6,6 +6,44 @@ import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.j
 const BASE = import.meta.env?.BASE_URL ?? '/';
 const Z = new THREE.Vector3(0, 0, 1);
 const clamp = THREE.MathUtils.clamp;
+const SCOPE_ARM_SEED = Object.freeze([0, 1.4, -1.8, .35, 0, 0]);
+
+// Geometry-derived opposing blade boundaries, beyond the round hinge. Each
+// station lies on an actual source triangle/plane intersection. The GLB has no
+// labelled clinical cutting edge: these finite polylines follow its visible
+// opposed jaw boundaries rather than an invented line through the empty TCP.
+function sourceBladeProfile(group,linkName,side){
+  const link=group.getObjectByName(linkName);if(!link)return [];
+  group.updateWorldMatrix(true,true);
+  const inverse=link.matrixWorld.clone().invert(),triangles=[],matrix=new THREE.Matrix4();
+  let maximumY=-Infinity;
+  link.traverse(node=>{
+    if(!node.isMesh)return;
+    matrix.multiplyMatrices(inverse,node.matrixWorld);
+    const positions=node.geometry.attributes.position,index=node.geometry.index;
+    const pointAt=i=>new THREE.Vector3().fromBufferAttribute(positions,i).applyMatrix4(matrix);
+    for(let i=0;i<(index?.count??positions.count);i+=3){
+      const triangle=[0,1,2].map(offset=>pointAt(index?index.getX(i+offset):i+offset));
+      maximumY=Math.max(maximumY,...triangle.map(p=>p.y));triangles.push(triangle);
+    }
+  });
+  const minimumY=.0028;if(maximumY<=minimumY)return [];
+  const profile=[];
+  for(let station=0;station<=6;station++){
+    const y=minimumY+(maximumY-minimumY)*station/6;let best=null;
+    const consider=p=>{if(!best||side*p.x>side*best.x)best=p;};
+    for(const triangle of triangles){
+      if(y<Math.min(...triangle.map(p=>p.y))-1e-12||y>Math.max(...triangle.map(p=>p.y))+1e-12)continue;
+      for(let edge=0;edge<3;edge++){
+        const a=triangle[edge],b=triangle[(edge+1)%3],da=a.y-y,db=b.y-y;
+        if(Math.abs(da)<1e-12)consider(a.clone());
+        if(da*db<0)consider(a.clone().lerp(b,da/(da-db)));
+      }
+    }
+    if(best)profile.push(best);
+  }
+  return profile;
+}
 
 // The source G1 rubber hands have fixed, slightly curved fingers. A strapped
 // palm saddle supplies the mechanical grip; source fingers are never animated.
@@ -194,6 +232,19 @@ class Instrument {
     this.rcmFeasible = true;
     this.coupler = makeToolCoupler(this.group, assembly.name === 'needle-driver' ? '#5faaa9' : '#c3a46b');
     this.proximalGrip = makeProximalGrip(this.group, assembly.name === 'needle-driver' ? 'left' : 'right', assembly.name === 'needle-driver' ? '#5faaa9' : '#c3a46b');
+    this.bladeProfiles=assembly.name==='scissors'?[
+      {link:this.group.getObjectByName('jaw_1_link'),points:sourceBladeProfile(this.group,'jaw_1_link',1)},
+      {link:this.group.getObjectByName('jaw_2_link'),points:sourceBladeProfile(this.group,'jaw_2_link',-1)},
+    ]:[];
+  }
+
+  blade(){
+    const segments=[];
+    for(const profile of this.bladeProfiles){
+      const points=profile.points.map(point=>point.clone().applyMatrix4(profile.link.matrixWorld));
+      for(let i=1;i<points.length;i++)segments.push({a:points[i-1],b:points[i]});
+    }
+    return {segments,source:'source-CAD-curved-jaw',jaw:this.joints.get('jaw')?.angle??0};
   }
 
   update(state) {
@@ -305,7 +356,13 @@ class ScopeArm {
     this.baseTarget = new THREE.Vector3();
     this.frameBounds = null;
     // Source q2 and q3 have one-sided limits; start inside their valid ranges.
-    [0, 1.4, -1.8, .35, 0, 0].forEach((q, i) => setJoint(this, `joint${i + 1}`, q));
+    SCOPE_ARM_SEED.forEach((q, i) => setJoint(this, `joint${i + 1}`, q));
+  }
+
+  resetPresentation(){
+    this.frameBounds=null;SCOPE_ARM_SEED.forEach((q,i)=>setJoint(this,`joint${i+1}`,q));
+    this.initialized=false;this.accumulated=0;this.recoveryPose=null;this.recoveryCooldown=0;this.stallTime=0;this.recoveries=0;
+    this.error=Infinity;this.lastTarget.set(Infinity,Infinity,Infinity);this.mount.updateWorldMatrix(true,true);
   }
 
   solve(target, passes, maximumStep = .18) {
@@ -381,6 +438,7 @@ class ScopeArm {
   }
 
   update(target, dt) {
+    if(this.initialized&&!this.recoveryPose&&this.error<.0002&&this.lastTarget.distanceToSquared(target)<1e-14){this.accumulated=0;return;}
     const elapsed = Math.min(.1, Math.max(0, dt || 0));
     this.accumulated += elapsed;
     this.recoveryCooldown = Math.max(0, this.recoveryCooldown - elapsed);
@@ -475,6 +533,7 @@ export async function loadAssemblies(scene) {
     handGripQuaternions: { left: new THREE.Quaternion(), right: new THREE.Quaternion() },
     toolRCMErrors: { left: 0, right: 0 },
     toolRCMFeasible: { left: true, right: true },
+    toolBlade(side){return tools[side]?.blade()??{segments:[],source:'source-CAD-curved-jaw',jaw:0};},
     connectionModes: { left: 'direct', right: 'direct' },
     conceptDecoupled: false,
     resetPose() {
@@ -482,6 +541,13 @@ export async function loadAssemblies(scene) {
       scopeArm.initialized=false;scopeArm.recoveryPose=null;
       scopeArm.accumulated=0;scopeArm.frameBounds=null;scopeArm.stallTime=0;scopeArm.recoveryCooldown=0;
       for(const connection of Object.values(handConnections))connection.initialized=false;
+    },
+    resetPresentation(){
+      result.resetPose();scopeArm.resetPresentation();result.scopeArmError=0;result.conceptDecoupled=false;
+      for(const [side,connection]of Object.entries(handConnections)){
+        connection.clevis.rotation.set(0,0,0);connection.initialized=false;
+        connection.line.visible=connection.controller.visible=false;result.connectionModes[side]='direct';
+      }
     },
     connectHands(positions, errors, quaternions) {
       result.conceptDecoupled = false;

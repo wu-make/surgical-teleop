@@ -35,7 +35,7 @@ function mouseFixture(){
 }
 
 test('active following keeps the actual moving TCP centred every frame despite stale mother and specimen anchors',()=>{
-  const sim=new Simulation();sim.setScopeContext(context());sim.select('left');settle(sim);
+  const sim=new Simulation();sim.setScopeFollow(true,'active');sim.setScopeContext(context());sim.select('left');settle(sim);
   centred(sim);
   let moved=0;
   for(const key of ['KeyA','KeyQ','KeyW']){
@@ -90,7 +90,7 @@ test('manual canvas dragging controls RCM yaw/pitch with one history gesture and
 });
 
 test('wheel optical zoom works with automatic following without moving the physical lens or its centred TCP',()=>{
-  const f=mouseFixture(),{canvas,sim,navigation}=f;sim.setScopeContext(context());settle(sim);
+  const f=mouseFixture(),{canvas,sim,navigation}=f;sim.setScopeFollow(true,'active');sim.setScopeContext(context());settle(sim);
   const position=[...sim.state.scope.position],depth=sim.state.scope.depth;
   canvas.emit('wheel',{deltaY:-120});assert.ok(sim.state.scope.fov<55);centred(sim);assert.equal(f.focused,1);
   nearVector(sim.state.scope.position,position);near(sim.state.scope.depth,depth);
@@ -126,7 +126,8 @@ test('manual navigation and optical zoom validate inputs, home/reset restore def
   assert.throws(()=>sim.navigateScope(NaN,0),TypeError);assert.throws(()=>sim.zoomScope(Infinity),TypeError);assert.deepEqual(sim.snapshot(),before);
   sim.navigateScope(.4,-.25);sim.zoomScope(-.3);const depth=sim.state.scope.depth;
   sim.homeScopeView();near(sim.state.scope.fov,55);near(sim.state.scope.roll,0);near(sim.state.scope.depth,depth);
-  const ray=new THREE.Vector3(...sim.state.scope.direction),target=new THREE.Vector3(...sim.state.tools[sim.state.activeTool].position).sub(new THREE.Vector3(...sim.state.scope.port)).normalize();
+  const midpoint=sim.state.tools.left.position.map((v,i)=>(v+sim.state.tools.right.position[i])*.5);
+  const ray=new THREE.Vector3(...sim.state.scope.direction),target=new THREE.Vector3(...midpoint).sub(new THREE.Vector3(...sim.state.scope.port)).normalize();
   assert.ok(ray.angleTo(target)<1e-7);
   sim.setScopeFollow(true);const auto=sim.snapshot();assert.equal(sim.navigateScope(.1,.1),false);assert.deepEqual(sim.snapshot(),auto);
   sim.reset();near(sim.state.scope.fov,55);

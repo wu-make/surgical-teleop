@@ -111,6 +111,7 @@ test('automatic scope centres free-space tips above and below its port, then fre
   let seed = 9071;
   const random = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
   const s = new Simulation();
+  s.setScopeFollow(true,'active');
   for (let i = 0; i < 24; i++) {
     const id = i % 2 ? 'left' : 'right';
     const tool = s.state.tools[id];
@@ -588,9 +589,10 @@ const anatomicalContext = () => ({
   heldSpecimen:{id:'cap-1',position:[-.03,1.09,.035],radius:.007},
 });
 
-test('initial laparoscope working distance frames a local organ patch at 55 degrees', () => {
+test('initial laparoscope working distance frames both tips and a local organ patch at 55 degrees', () => {
   const s=new Simulation(),camera=s.state.scope;
-  near(camera.actualWorkingDistance,.065);
+  assert.ok(camera.actualWorkingDistance>=.065&&camera.actualWorkingDistance<.07);
+  assert.equal(camera.followMode,'midpoint');assert.equal(camera.startupOverview,true);
   near(Math.hypot(...sub(camera.position,camera.port)),camera.depth);
   const visibleHeight=2*camera.actualWorkingDistance*Math.tan(55*Math.PI/360);
   const oldVisibleHeight=2*.11*Math.tan(60*Math.PI/360);
@@ -617,6 +619,7 @@ test('following a held specimen preserves its selected control target instead of
 
 test('anatomical framing preserves active, midpoint and cooperative grasp intentions', () => {
   const s=new Simulation(),context=anatomicalContext(),grasp=[-.04,1.06,-.02];
+  s.setScopeFollow(true,'active');
   s.setScopeContext({...context,graspTarget:grasp});
   s.select('right');s.update(.02);
   nearVector(s.state.scope.intentTarget,s.state.tools.right.position);
@@ -631,6 +634,7 @@ test('anatomical framing preserves active, midpoint and cooperative grasp intent
 
 test('explicit specimen framing fits its real bounds around the selected TCP and keeps that target when absent', () => {
   const s=new Simulation(),context=anatomicalContext();
+  s.setScopeFollow(true,'active');
   s.setScopeContext(context);s.setScopeViewMode('specimen');hold(s,[],6,.02);
   nearVector(s.state.scope.target,s.state.tools[s.state.activeTool].position);
   assert.equal(s.state.scope.framingSource,'specimen');
@@ -752,6 +756,7 @@ test('unreachable narrow-view framing reports best effort at the physical retrac
 
 test('live viewport aspect is validated atomically and stays independent of undo, restore and reset',()=>{
   const s=new Simulation(),context=anatomicalContext();context.heldSpecimen.radius=.014;
+  s.setScopeFollow(true,'active');
   context.heldSpecimen.position=[...s.state.tools.left.position];
   s.setScopeContext({...context,viewAspect:1});s.setScopeViewMode('specimen');hold(s,[],4);
   const before=s.snapshot();s.checkpoint('display context');s.setScopeContext({viewAspect:.462});hold(s,[],4);

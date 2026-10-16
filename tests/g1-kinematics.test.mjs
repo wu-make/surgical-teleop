@@ -219,3 +219,28 @@ test('reset compatibility releases display history without changing the tool sta
   assert.equal(scene.guardArmTargets(state), false);
   assert.deepEqual(state, before);
 });
+
+test('complete presentation reset deterministically restores both genuine G1 arms, tools and scope',()=>{
+  const scene=fixture(),sim=new Simulation();scene.assemblies=instruments;
+  scene.armTargets={left:new THREE.Vector3(),right:new THREE.Vector3()};scene.handPositions={left:new THREE.Vector3(),right:new THREE.Vector3()};
+  scene.portMeshes=[new THREE.Object3D(),new THREE.Object3D(),new THREE.Object3D()];
+  scene.endoCamera=new THREE.PerspectiveCamera(55,1,.003,5);scene.scopeLight=new THREE.SpotLight();scene.scopeLight.target=new THREE.Object3D();
+  scene.controls={update(){},target:new THREE.Vector3(),enableDamping:true};scene.overviewCamera=new THREE.PerspectiveCamera();
+  sim.prepareInitialScopeView(.462);scene.resetPresentation(sim.state);
+  const joints=scene.joints.map(j=>j.userData.angle),scopeJoints=instruments.scopeArm.chain.map(j=>j.angle);
+  const tips=Object.fromEntries(['left','right'].map(side=>[side,instruments.toolTipPositions[side].clone()]));
+  const hands=Object.fromEntries(['left','right'].map(side=>[side,scene.handPositions[side].clone()]));
+  for(let frame=0;frame<90;frame++){
+    const state=sim.state;state.tools.left.position=[.20,1.04,-.10];state.tools.right.position=[-.15,1.15,.15];
+    state.tools.left.wrist=[1.2,-.5,4];state.tools.right.wrist=[-.7,.9,-3];state.scope.position=[.07,1.13,-.05];scene.update(state,.05);
+  }
+  assert.notDeepEqual(scene.joints.map(j=>j.userData.angle),joints);
+  sim.reset();sim.prepareInitialScopeView(.462);scene.resetPresentation(sim.state);
+  assert.deepEqual(scene.joints.map(j=>j.userData.angle),joints,'both arms must return to the exact initial IK solution');
+  assert.deepEqual(instruments.scopeArm.chain.map(j=>j.angle),scopeJoints,'Z1 must not retain a previous recovery pose');
+  for(const side of ['left','right']){
+    assert.ok(instruments.toolTipPositions[side].distanceTo(tips[side])<1e-10);
+    assert.ok(scene.handPositions[side].distanceTo(hands[side])<1e-10);
+    assert.ok(scene.armErrors[side]<.0003);assert.equal(instruments.connectionModes[side],'direct');
+  }
+});

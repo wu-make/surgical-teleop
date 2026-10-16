@@ -397,3 +397,33 @@ test('new local-flow cuts, displayed contact and undo replay all reference the s
   tissue.setGrasp(null);assert.equal(tissue.contains(reference),false,'the real cut stays in the mother material after release');
   tissue.dispose();
 });
+
+test('a full curved-blade union is voxel-identical to all original capsule segments and replays as one stroke',()=>{
+  const sequential=sphereVolume(41,.0015,.024),union=createVolumeState(sequential.meta,sequential.base,sequential.chunkSize);
+  const deformation=normalizeDeformation({model:'local-flow',local:[0,0,.024],displacement:[.004,0,.026]}),segments=[];
+  for(const side of [-1,1])for(let i=0;i<6;i++){
+    const p=k=>deformPoint([-.008+k*.0025,side*.0012,.017+.00008*k*k],deformation);
+    segments.push({a:p(i),b:p(i+1)});
+  }
+  // Nonadjacent, noncollinear pieces force the union's overall AABB to contain
+  // points outside every individual legacy traversal domain.
+  segments.push({a:deformPoint([.013,-.012,-.004],deformation),b:deformPoint([-.008,-.012,-.004],deformation)},
+    {a:deformPoint([-.014,.016,.001],deformation),b:deformPoint([-.014,.016,.012],deformation)});
+  let removal=0;
+  for(const segment of segments)removal+=applyCapsuleCut(sequential,{...segment,radius:.0024,deformation}).removedMm3;
+  const result=applyCapsuleCut(union,{segments,radius:.0024,deformation});
+  assert.deepEqual(union.field,sequential.field,'curve and both opposing blades are preserved exactly, not simplified or widened');
+  assert.ok(Math.abs(result.removedMm3-removal)<1e-8);
+  assert.equal(union.cuts.length,1);assert.equal(union.cuts[0].segments.length,segments.length);
+  const source=union.field.slice();resetVolume(union,union.cuts.slice());assert.deepEqual(union.field,source);
+  const grouped=new TissueVolume(),old=new TissueVolume();
+  for(const tissue of [grouped,old]){tissue.metadata=union.meta;tissue._baseField=union.base;tissue.setGrasp(deformation);}
+  grouped._cuts=union.cuts;old._cuts=sequential.cuts;
+  for(let i=0;i<500;i++){
+    const reference=[Math.sin(i*.73)*.027,Math.cos(i*.31)*.023,Math.sin(i*.41)*.023],point=deformPoint(reference,deformation);
+    assert.ok(Math.abs(grouped.sampleDistance(point)-old.sampleDistance(point))<1e-9,'query bounds/index include every curved segment');
+  }
+  const snapshot=grouped.snapshot();assert.equal(snapshot.cuts[0].segments.length,segments.length);
+  snapshot.cuts[0].segments[0].a[0]=100;assert.notEqual(grouped._cuts[0].segments[0].a[0],100);
+  grouped.dispose();old.dispose();
+});
