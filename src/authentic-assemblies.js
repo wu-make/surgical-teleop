@@ -1,9 +1,39 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 
 const BASE = import.meta.env?.BASE_URL ?? '/';
 const Z = new THREE.Vector3(0, 0, 1);
 const clamp = THREE.MathUtils.clamp;
+
+const displayMaterial = (color, metalness = .65, roughness = .35) => new THREE.MeshStandardMaterial({ color, metalness, roughness });
+function detail(parent, geometry, material, position = [0, 0, 0]) {
+  const object = new THREE.Mesh(geometry, material);
+  object.position.set(...position);
+  object.castShadow = object.receiveShadow = true;
+  object.layers.set(0);
+  parent.add(object);
+  return object;
+}
+
+// These visible quick-change fixtures are explicitly custom interface parts.
+// None of the manufacturer's robot, wrist, shaft or jaw geometry is stretched.
+function makeToolCoupler(parent, color) {
+  const group = new THREE.Group();
+  group.name = 'Concept_Custom_Quick_Change_Instrument_Coupler';
+  parent.add(group);
+  const alloy = displayMaterial('#a8b4b5', .78, .3), dark = displayMaterial('#1b2529', .18, .5);
+  detail(group, new RoundedBoxGeometry(.034, .039, .051, 2, .004), dark, [0, 0, -.022]);
+  const sleeve = detail(group, new THREE.CylinderGeometry(.012, .013, .029, 24), alloy, [0, 0, .013]);
+  sleeve.rotation.x = Math.PI / 2;
+  for (const z of [-.045, .027]) detail(group, new THREE.TorusGeometry(.013, .0017, 8, 28), alloy, [0, 0, z]);
+  detail(group, new THREE.TorusGeometry(.0134, .0012, 8, 28), displayMaterial(color, .22, .42), [0, 0, .021]);
+  for (const x of [-.012, .012]) for (const y of [-.015, .015]) {
+    const screw = detail(group, new THREE.CylinderGeometry(.0017, .0017, .002, 8), alloy, [x, y, -.048]);
+    screw.rotation.x = Math.PI / 2;
+  }
+  return group;
+}
 
 async function asset(loader, name) {
   const [modelResponse, metadataResponse] = await Promise.all([
@@ -24,8 +54,8 @@ async function asset(loader, name) {
     else object.layers.enable(1);
     // Reuse the source material; source dimensions and mesh topology are unchanged.
     if (name !== 'z1') {
-      object.material.roughness = .25;
-      object.material.metalness = .86;
+      object.material.roughness = .32;
+      object.material.metalness = .78;
     }
   });
   const joints = new Map();
@@ -41,14 +71,17 @@ async function asset(loader, name) {
 }
 
 const rotation = new THREE.Quaternion();
-function setJoint(assembly, name, angle) {
+function setJoint(assembly, name, angle, unrestricted = false) {
   const joint = assembly.joints.get(name);
   if (!joint || joint.specification.type === 'fixed') return;
   const limit = joint.specification.limit;
-  joint.angle = clamp(angle, limit?.lower ?? -Math.PI, limit?.upper ?? Math.PI);
+  if (!Number.isFinite(angle)) return;
+  joint.angle = unrestricted ? angle : clamp(angle, limit?.lower ?? -Math.PI, limit?.upper ?? Math.PI);
   const frameLimit = assembly.frameBounds?.get(name);
   if (frameLimit) joint.angle = clamp(joint.angle, frameLimit.lower, frameLimit.upper);
-  joint.node.quaternion.copy(joint.rest).multiply(rotation.setFromAxisAngle(joint.axis, joint.angle));
+  // Reduce only the rendered phase to retain precision after many full turns.
+  const phase = Math.atan2(Math.sin(joint.angle), Math.cos(joint.angle));
+  joint.node.quaternion.copy(joint.rest).multiply(rotation.setFromAxisAngle(joint.axis, phase));
 }
 
 /**
@@ -61,6 +94,8 @@ class Instrument {
     Object.assign(this, assembly);
     this.tipNode = this.group.getObjectByName('tool_tip_link');
     this.tipPosition = new THREE.Vector3();
+    this.cuttingDirection = new THREE.Vector3(0, 0, 1);
+    this.tipQuaternion = new THREE.Quaternion();
     this.handlePosition = new THREE.Vector3();
     this.shaftDirection = new THREE.Vector3();
     this.rcmError = 0;
@@ -73,12 +108,18 @@ class Instrument {
     this.compensation = new THREE.Quaternion();
     this.inverseRoot = new THREE.Matrix4();
     this.scratch = new THREE.Vector3();
+    this.previousDirection = new THREE.Vector3(0, 0, -1);
+    this.transport = new THREE.Quaternion();
+    this.nextAlignment = new THREE.Quaternion();
+    this.initialized = false;
+    this.rcmFeasible = true;
+    this.coupler = makeToolCoupler(this.group, assembly.name === 'needle-driver' ? '#5faaa9' : '#c3a46b');
   }
 
   update(state) {
-    setJoint(this, 'roll', state.wrist[2]);
-    setJoint(this, 'wrist_pitch', state.wrist[0]);
-    setJoint(this, 'wrist_yaw', state.wrist[1]);
+    setJoint(this, 'roll', state.wrist[2], true);
+    setJoint(this, 'wrist_pitch', state.wrist[0], true);
+    setJoint(this, 'wrist_yaw', state.wrist[1], true);
     // The source instrument defines symmetric mimic joints at ± half jaw angle.
     const opening = clamp(state.jaw, 0, 1) * 1.1;
     setJoint(this, 'jaw', opening);
@@ -92,17 +133,34 @@ class Instrument {
     this.delta.subVectors(this.desired, this.port);
     const distanceSquared = this.delta.lengthSq();
     const perpendicularSquared = this.localTip.x ** 2 + this.localTip.y ** 2;
-    // The simulated minimum insertion is 65 mm; source wrists offset under 30 mm.
-    // This guard keeps malformed imported states finite without changing mesh scale.
+    // A bent rigid wrist cannot intersect a port closer than its lateral offset.
+    // In this singular region keep the TCP exact, retain continuous orientation,
+    // and report the RCM mismatch; never reject or rewrite the user's command.
+    this.rcmFeasible = distanceSquared + 1e-12 >= perpendicularSquared;
     const axialDistance = Math.sqrt(Math.max(1e-10, distanceSquared - perpendicularSquared));
     this.localFromPort.set(this.localTip.x, this.localTip.y, axialDistance).normalize();
-    this.alignment.setFromUnitVectors(Z, this.delta.normalize());
+    if (distanceSquared > 1e-12) {
+      this.delta.normalize();
+      if (!this.initialized) this.alignment.setFromUnitVectors(Z, this.delta);
+      else {
+        this.nextAlignment.copy(this.alignment).premultiply(this.transport.setFromUnitVectors(this.previousDirection, this.delta));
+        const singularBlend = THREE.MathUtils.smoothstep(Math.sqrt(distanceSquared), .003, .020);
+        this.alignment.slerp(this.nextAlignment, singularBlend);
+      }
+      this.previousDirection.copy(Z).applyQuaternion(this.alignment);
+      this.initialized = true;
+    } else if (!this.initialized) {
+      this.alignment.setFromUnitVectors(Z, this.previousDirection);
+      this.initialized = true;
+    }
     this.compensation.setFromUnitVectors(this.localFromPort, Z);
     this.group.quaternion.copy(this.alignment).multiply(this.compensation);
     this.scratch.copy(this.localTip).applyQuaternion(this.group.quaternion);
     this.group.position.copy(this.desired).sub(this.scratch);
     this.group.updateWorldMatrix(true, true);
     this.tipNode.getWorldPosition(this.tipPosition);
+    this.tipNode.getWorldQuaternion(this.tipQuaternion);
+    this.cuttingDirection.copy(Z).applyQuaternion(this.tipQuaternion).normalize();
     this.handlePosition.copy(this.group.position);
     this.shaftDirection.copy(Z).applyQuaternion(this.group.quaternion);
     this.scratch.subVectors(this.port, this.group.position);
@@ -119,6 +177,10 @@ class Scope {
     this.handlePosition = new THREE.Vector3();
     this.desired = new THREE.Vector3();
     this.direction = new THREE.Vector3();
+    this.previousDirection = new THREE.Vector3(0, -1, 0);
+    this.transport = new THREE.Quaternion();
+    this.alignment = new THREE.Quaternion();
+    this.initialized = false;
     this.supportPosition = new THREE.Vector3();
     this.offset = new THREE.Vector3(...assembly.metadata.tipPositionAtZero);
     this.scratch = new THREE.Vector3();
@@ -127,8 +189,14 @@ class Scope {
 
   update(state) {
     this.desired.fromArray(state.position);
-    this.direction.fromArray(state.port).sub(this.desired).negate().normalize();
-    this.group.quaternion.setFromUnitVectors(Z, this.direction)
+    this.direction.fromArray(state.port).sub(this.desired).negate();
+    if (this.direction.lengthSq() < 1e-12) this.direction.copy(this.previousDirection);
+    else this.direction.normalize();
+    if (!this.initialized) this.alignment.setFromUnitVectors(Z, this.direction);
+    else this.alignment.premultiply(this.transport.setFromUnitVectors(this.previousDirection, this.direction));
+    this.previousDirection.copy(this.direction);
+    this.initialized = true;
+    this.group.quaternion.copy(this.alignment)
       .multiply(this.roll.setFromAxisAngle(Z, state.roll));
     this.group.position.copy(this.desired).sub(this.scratch.copy(this.offset).applyQuaternion(this.group.quaternion));
     this.group.updateWorldMatrix(true, true);
@@ -150,13 +218,15 @@ class ScopeArm {
     this.mount.rotation.x = -Math.PI / 2;
     this.mount.add(this.group);
     scene.add(this.mount);
-    const plate = new THREE.Mesh(
-      new THREE.BoxGeometry(.10, .045, .065),
-      new THREE.MeshStandardMaterial({ color: '#677a7e', metalness: .85, roughness: .3 }),
-    );
-    plate.name = 'Custom_Chest_Plate';
-    plate.position.y = -.012;
-    this.mount.add(plate);
+    const alloy = displayMaterial('#8f9ea1', .78, .32), dark = displayMaterial('#263336', .2, .56);
+    detail(this.mount, new RoundedBoxGeometry(.14, .014, .12, 2, .005), dark, [0, -.09, 0]).name = 'Custom_Chest_Backplate';
+    detail(this.mount, new RoundedBoxGeometry(.105, .012, .085, 2, .004), alloy).name = 'Custom_Z1_Baseplate';
+    for (const x of [-.047, .047]) for (const z of [-.034, .034]) {
+      detail(this.mount, new THREE.CylinderGeometry(.006, .006, .086, 12), alloy, [x, -.047, z]);
+      detail(this.mount, new THREE.CylinderGeometry(.004, .004, .004, 8), dark, [x, .008, z]);
+    }
+    const flange = detail(this.mount, new THREE.TorusGeometry(.034, .003, 8, 32), dark, [0, .008, 0]);
+    flange.rotation.x = Math.PI / 2;
     this.end = new THREE.Object3D();
     this.end.name = 'Custom_Endoscope_Coupler_TCP';
     this.end.position.set(.027, 0, 0);
@@ -309,6 +379,27 @@ export async function loadAssemblies(scene) {
   const scope = new Scope(scopeAsset);
   const scopeArm = new ScopeArm(armAsset, scene);
   scene.add(tools.left.group, tools.right.group, scope.group);
+  const connections = new THREE.Group();
+  connections.name = 'Concept_Virtual_Master_Slave_Connections';
+  scene.add(connections);
+  const handConnections = {};
+  for (const [side, color] of [['left', '#5eaaa9'], ['right', '#b9a06f']]) {
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+    const line = new THREE.Line(geometry, new THREE.LineDashedMaterial({ color, transparent: true, opacity: .6, dashSize: .012, gapSize: .009, depthWrite: false }));
+    line.name = `Concept_${side}_Virtual_Teleoperation_Link`;
+    line.layers.set(0);
+    const controller = detail(connections, new THREE.TorusGeometry(.014, .0024, 8, 24), displayMaterial(color, .28, .4));
+    controller.name = `Concept_${side}_Master_Grip_Indicator`;
+    line.visible = controller.visible = false;
+    connections.add(line);
+    handConnections[side] = { line, controller };
+  }
+  const scopeCollar = new THREE.Group();
+  scopeCollar.name = 'Custom_Universal_Endoscope_Shaft_Clamp';
+  scene.add(scopeCollar);
+  detail(scopeCollar, new THREE.TorusGeometry(.0065, .002, 8, 28), displayMaterial('#879b9d', .78, .3));
+  detail(scopeCollar, new RoundedBoxGeometry(.014, .011, .016, 2, .002), displayMaterial('#28373a', .2, .52), [.011, 0, 0]);
   let disposed = false;
   const result = {
     loaded: true,
@@ -319,23 +410,54 @@ export async function loadAssemblies(scene) {
     scopeHandlePosition: scope.handlePosition,
     scopeSupportPosition: scope.supportPosition,
     toolTipPositions: { left: tools.left.tipPosition, right: tools.right.tipPosition },
+    toolDirections: { left: tools.left.cuttingDirection, right: tools.right.cuttingDirection },
     toolHandlePositions: { left: tools.left.handlePosition, right: tools.right.handlePosition },
     toolRCMErrors: { left: 0, right: 0 },
+    toolRCMFeasible: { left: true, right: true },
+    connectionModes: { left: 'direct', right: 'direct' },
+    conceptDecoupled: false,
+    resetPose() {
+      tools.left.initialized=tools.right.initialized=scope.initialized=false;
+      scopeArm.initialized=false;scopeArm.recoveryPose=null;
+    },
+    connectHands(positions, errors) {
+      result.conceptDecoupled = false;
+      for (const side of ['left', 'right']) {
+        const connection = handConnections[side], hand = positions[side];
+        const virtual = (errors[side] ?? 0) > .012;
+        result.connectionModes[side] = virtual ? 'virtual' : 'direct';
+        result.conceptDecoupled ||= virtual;
+        connection.line.visible = connection.controller.visible = virtual;
+        if (!hand) continue;
+        const handle = tools[side].handlePosition;
+        const attribute = connection.line.geometry.attributes.position;
+        attribute.setXYZ(0, hand.x, hand.y, hand.z);
+        attribute.setXYZ(1, handle.x, handle.y, handle.z);
+        attribute.needsUpdate = true;
+        connection.line.computeLineDistances();
+        connection.line.geometry.computeBoundingSphere();
+        connection.controller.position.copy(hand);
+        connection.controller.quaternion.copy(tools[side].group.quaternion);
+      }
+    },
     update(state, dt = 1 / 60) {
       if (disposed) return;
       for (const side of ['left', 'right']) {
         tools[side].update(state.tools[side]);
         result.toolRCMErrors[side] = tools[side].rcmError;
+        result.toolRCMFeasible[side] = tools[side].rcmFeasible;
       }
       scope.update(state.scope);
       scopeArm.update(scope.supportPosition, dt);
       result.scopeArmError = scopeArm.error;
+      scopeCollar.position.copy(scope.supportPosition);
+      scopeCollar.quaternion.setFromUnitVectors(Z, scope.direction);
     },
     dispose() {
       if (disposed) return;
       disposed = true;
       const geometries = new Set(), materials = new Set();
-      for (const group of [tools.left.group, tools.right.group, scope.group, scopeArm.mount]) {
+      for (const group of [tools.left.group, tools.right.group, scope.group, scopeArm.mount, connections, scopeCollar]) {
         group.removeFromParent();
         group.traverse(object => {
           if (object.geometry) geometries.add(object.geometry);

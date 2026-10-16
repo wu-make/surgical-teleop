@@ -19,6 +19,60 @@ export function normalizeMetadata(input) {
 export function nodeIndex(meta, x, y, z) { return x + meta.dims[0] * (y + meta.dims[1] * z); }
 export function occupancy(distance, width) { return clamp(0.5 - distance / width, 0, 1); }
 
+/** Compact C2 displacement field. Radius/offset bounds keep its Jacobian
+ * positive, allowing contact and cutting to use the same inverse as rendering.
+ * This is an interactive geometric model, not a calibrated constitutive law. */
+export function normalizeDeformation(input) {
+  if (!input) return null;
+  const local = input.local ?? input.point, displacement = input.displacement ?? input.delta;
+  if (!Array.isArray(local) || !Array.isArray(displacement) || local.length !== 3 || displacement.length !== 3 || [...local, ...displacement].some(v => !Number.isFinite(v))) throw new Error('Invalid tissue deformation');
+  const length = Math.hypot(...displacement);
+  if (!Number.isFinite(length) || !Number.isFinite(length * 3.2)) throw new Error('Tissue deformation exceeds the numeric range');
+  if (length < 1e-10) return null;
+  const delta = [...displacement];
+  const radius = Math.max(clamp(Number.isFinite(input.radius) ? input.radius : 0.065, 0.02, 0.2), 3.2 * Math.hypot(...delta));
+  return { local: [...local], displacement: delta, radius };
+}
+
+export function deformationWeight(point, deformation) {
+  if (!deformation) return { weight: 0, gradient: [0, 0, 0] };
+  const offset = point.map((v, axis) => v - deformation.local[axis]);
+  const distance = Math.hypot(...offset), r = distance / deformation.radius;
+  if (r >= 1) return { weight: 0, gradient: [0, 0, 0] };
+  const t = 1 - r;
+  const derivativeOverDistance = -20 * t * t * t / (deformation.radius * deformation.radius);
+  return { weight: t ** 4 * (4 * r + 1), gradient: offset.map(v => v * derivativeOverDistance) };
+}
+
+export function deformPoint(point, deformation) {
+  if (!deformation) return [...point];
+  const { weight } = deformationWeight(point, deformation);
+  return point.map((v, axis) => v + deformation.displacement[axis] * weight);
+}
+
+export function inverseDeformPoint(point, deformation) {
+  if (!deformation) return [...point];
+  const result = [...point], delta = deformation.displacement;
+  for (let i = 0; i < 20; i++) {
+    const { weight, gradient } = deformationWeight(result, deformation);
+    const error = result.map((v, axis) => v + delta[axis] * weight - point[axis]);
+    if (Math.hypot(...error) < 1e-10) break;
+    const denominator = 1 + gradient.reduce((sum, v, axis) => sum + v * delta[axis], 0);
+    const projection = gradient.reduce((sum, v, axis) => sum + v * error[axis], 0) / denominator;
+    for (let axis = 0; axis < 3; axis++) result[axis] -= error[axis] - delta[axis] * projection;
+  }
+  return result;
+}
+
+export function deformNormal(normal, gradient, displacement) {
+  // J = I + displacement * grad(w)^T; inverse-transpose via Sherman-Morrison.
+  const denominator = 1 + gradient.reduce((sum, v, axis) => sum + v * displacement[axis], 0);
+  const projection = normal.reduce((sum, v, axis) => sum + v * displacement[axis], 0) / denominator;
+  const result = normal.map((v, axis) => v - gradient[axis] * projection);
+  const length = Math.hypot(...result) || 1;
+  return result.map(v => v / length);
+}
+
 export function createVolumeState(metadata, values, chunkSize = 16) {
   const meta = normalizeMetadata(metadata);
   const length = meta.dims.reduce((a, b) => a * b, 1);
@@ -45,7 +99,10 @@ export function validateCut(cut) {
   if (!Array.isArray(start) || !Array.isArray(end) || start.length !== 3 || end.length !== 3 || [...start, ...end].some(v => !Number.isFinite(v))) throw new Error('Cut points must be finite three-component coordinates');
   if (!Number.isFinite(cut.radius) || cut.radius <= 0 || cut.radius > 0.05) throw new Error('Cut radius must be positive and at most 50 mm');
   if (Math.hypot(...end.map((v, i) => v - start[i])) > 0.5) throw new Error('Cut segment exceeds the supported workspace');
-  return { a: [...start], b: [...end], radius: cut.radius };
+  const result = { a: [...start], b: [...end], radius: cut.radius };
+  const deformation = normalizeDeformation(cut.deformation);
+  if (deformation) result.deformation = deformation;
+  return result;
 }
 
 export function allChunkKeys(state) {
@@ -57,10 +114,14 @@ export function allChunkKeys(state) {
 
 export function applyCapsuleCut(state, input) {
   const cut = validateCut(input);
-  const { meta, field, base } = state;
+  const { meta, field } = state;
   const margin = 2.5 * Math.max(...meta.spacing);
-  const lower = cut.a.map((v, axis) => clamp(Math.floor((Math.min(v, cut.b[axis]) - cut.radius - margin - meta.origin[axis]) / meta.spacing[axis]), 0, meta.dims[axis] - 1));
-  const upper = cut.a.map((v, axis) => clamp(Math.ceil((Math.max(v, cut.b[axis]) + cut.radius + margin - meta.origin[axis]) / meta.spacing[axis]), 0, meta.dims[axis] - 1));
+  // Since x_display = x_material + displacement*w and 0<=w<=1, these bounds
+  // also enclose curved inverse images of long straight display-space strokes.
+  const displacement = cut.deformation?.displacement ?? [0, 0, 0];
+  const padding = cut.radius + margin;
+  const lower = cut.a.map((v, axis) => clamp(Math.floor((Math.min(v, cut.b[axis]) - Math.max(0, displacement[axis]) - padding - meta.origin[axis]) / meta.spacing[axis]), 0, meta.dims[axis] - 1));
+  const upper = cut.a.map((v, axis) => clamp(Math.ceil((Math.max(v, cut.b[axis]) - Math.min(0, displacement[axis]) + padding - meta.origin[axis]) / meta.spacing[axis]), 0, meta.dims[axis] - 1));
   let removedMm3 = 0, changedSamples = 0;
   const point = [0, 0, 0];
   const changedBounds = [[Infinity, Infinity, Infinity], [-Infinity, -Infinity, -Infinity]];
@@ -68,7 +129,8 @@ export function applyCapsuleCut(state, input) {
     point[0] = meta.origin[0] + x * meta.spacing[0]; point[1] = meta.origin[1] + y * meta.spacing[1]; point[2] = meta.origin[2] + z * meta.spacing[2];
     const index = nodeIndex(meta, x, y, z);
     // Difference: organ \ cutter = max(organSignedDistance, -cutterSignedDistance).
-    const value = Math.fround(Math.max(field[index], cut.radius - distanceToSegment(point, cut.a, cut.b)));
+    const displayPoint = cut.deformation ? deformPoint(point, cut.deformation) : point;
+    const value = Math.fround(Math.max(field[index], cut.radius - distanceToSegment(displayPoint, cut.a, cut.b)));
     if (value <= field[index]) continue;
     removedMm3 += (occupancy(field[index], state.bandWidth) - occupancy(value, state.bandWidth)) * state.voxelMm3;
     field[index] = value;
@@ -106,15 +168,15 @@ function nodeGradient(state, x, y, z) {
 
 function surfaceColor(point, originalDistance, width) {
   const noise = 0.93 + 0.045 * Math.sin(point[0] * 492 + Math.sin(point[2] * 341)) + 0.025 * Math.sin(point[1] * 713 - point[2] * 427);
-  const cut = clamp((-originalDistance - width * 0.55) / (width * 1.5), 0, 1);
-  return [(0.25 + 0.16 * cut) * noise, (0.038 + 0.035 * cut) * noise, (0.026 + 0.026 * cut) * noise];
+  const cut = clamp((-originalDistance - width * 0.3) / (width * 1.1), 0, 1);
+  return [(0.19 + 0.14 * cut) * noise, (0.027 + 0.027 * cut) * noise, (0.018 + 0.024 * cut) * noise];
 }
 
 export function polygonizeChunk(state, key) {
   const [cx, cy, cz] = key.split(',').map(Number);
   const { meta, field, base, chunkSize } = state;
   const first = [cx, cy, cz].map(v => v * chunkSize), last = first.map((v, axis) => Math.min(v + chunkSize, meta.dims[axis] - 1));
-  const positions = [], normals = [], colors = [], indices = [], vertexIndices = new Map();
+  const positions = [], normals = [], colors = [], cutMasks = [], indices = [], vertexIndices = new Map();
   const corners = new Array(8), samples = new Array(8), originals = new Array(8), gradientCache = new Map();
   const gradient = (x, y, z) => { const index = nodeIndex(meta, x, y, z); let result = gradientCache.get(index); if (!result) { result = nodeGradient(state, x, y, z); gradientCache.set(index, result); } return result; };
   function emitTriangle(a, b, c) {
@@ -128,7 +190,7 @@ export function polygonizeChunk(state, key) {
       let index = vertexIndices.get(vertex.key);
       if (index === undefined) {
         index = positions.length / 3; vertexIndices.set(vertex.key, index);
-        positions.push(...vertex.p); normals.push(...vertex.n); colors.push(...vertex.c);
+        positions.push(...vertex.p); normals.push(...vertex.n); colors.push(...vertex.c); cutMasks.push(vertex.cutMask);
       }
       indices.push(index);
     }
@@ -153,7 +215,7 @@ export function polygonizeChunk(state, key) {
         const normal = ga.map((v, axis) => v + (gb[axis] - v) * t), length = Math.hypot(...normal) || 1;
         const original = originals[ia] + (originals[ib] - originals[ia]) * t;
         const nodeA = nodeIndex(meta, ...corners[ia]), nodeB = nodeIndex(meta, ...corners[ib]);
-        intersections.push({ key: nodeA < nodeB ? `${nodeA}:${nodeB}` : `${nodeB}:${nodeA}`, p, n: normal.map(v => v / length), c: surfaceColor(p, original, state.bandWidth) });
+        intersections.push({ key: nodeA < nodeB ? `${nodeA}:${nodeB}` : `${nodeB}:${nodeA}`, p, n: normal.map(v => v / length), c: surfaceColor(p, original, state.bandWidth), cutMask: clamp((-original - state.bandWidth * 0.3) / (state.bandWidth * 1.1), 0, 1) });
       }
       if (intersections.length === 3) emitTriangle(...intersections);
       else if (intersections.length === 4) {
@@ -168,7 +230,7 @@ export function polygonizeChunk(state, key) {
       }
     }
   }
-  return { key, positions: new Float32Array(positions), normals: new Float32Array(normals), colors: new Float32Array(colors), indices: new Uint32Array(indices) };
+  return { key, positions: new Float32Array(positions), normals: new Float32Array(normals), colors: new Float32Array(colors), cutMasks: new Float32Array(cutMasks), indices: new Uint32Array(indices) };
 }
 
 function buildChunks(state, keys) { return [...keys].map(key => polygonizeChunk(state, key)); }
@@ -191,7 +253,7 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
         resetVolume(state, data.cuts ?? []);
         chunks = buildChunks(state, allChunkKeys(state));
       } else throw new Error(`Unknown tissue operation: ${data.type}`);
-      const transfer = chunks.flatMap(chunk => [chunk.positions.buffer, chunk.normals.buffer, chunk.colors.buffer, chunk.indices.buffer]);
+      const transfer = chunks.flatMap(chunk => [chunk.positions.buffer, chunk.normals.buffer, chunk.colors.buffer, chunk.cutMasks.buffer, chunk.indices.buffer]);
       self.postMessage({ id: data.id, epoch: data.epoch, type: data.type, chunks, statistics: statistics(state), changedSamples, removedMm3 }, transfer);
     } catch (error) { self.postMessage({ id: data.id, epoch: data.epoch, error: error.message }); }
   };

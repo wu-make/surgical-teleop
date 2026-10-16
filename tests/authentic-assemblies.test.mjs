@@ -78,6 +78,43 @@ test('scope source tip stays exact and genuine Z1 supports the shaft across full
   }
 });
 
+test('all instrument rotation axes allow many complete turns without clipping or stretching CAD', () => {
+  const state = new Simulation().state;
+  const scales = new Map();
+  for(const tool of Object.values(assembly.tools))tool.group.traverse(node=>scales.set(node,node.scale.clone()));
+  for(let i=0;i<100;i++){
+    state.tools.left.wrist=[i*.33,-i*.27,i*.91];
+    state.tools.right.wrist=[-i*.41,i*.39,-i*.75];
+    assembly.update(state,1/60);
+    for(const side of ['left','right']){
+      const tool=assembly.tools[side];
+      for(const [name,index] of [['wrist_pitch',0],['wrist_yaw',1],['roll',2]]){
+        assert.equal(tool.joints.get(name).angle,state.tools[side].wrist[index]);
+      }
+      assert.ok(tool.tipPosition.distanceTo(new THREE.Vector3(...state.tools[side].position))<1e-7);
+      tool.group.traverse(node=>assert.ok(node.scale.equals(scales.get(node))));
+    }
+  }
+});
+
+test('passing through the RCM singularity preserves exact commands and finite continuous poses', () => {
+  const state=new Simulation().state;
+  state.tools.left.wrist=[1.8,-2.7,17*Math.PI];
+  let previous=null;
+  for(let i=-20;i<=20;i++){
+    state.tools.left.position=state.tools.left.port.map((v,axis)=>v+(axis===2?i*.0001:0));
+    const command=structuredClone(state.tools.left);
+    assembly.update(state,1/60);
+    const tool=assembly.tools.left;
+    assert.deepEqual(state.tools.left,command);
+    assert.ok(tool.tipPosition.distanceTo(new THREE.Vector3(...command.position))<1e-7);
+    assert.ok(tool.group.position.toArray().every(Number.isFinite));
+    assert.ok(tool.group.quaternion.toArray().every(Number.isFinite));
+    if(previous)assert.ok(tool.group.quaternion.angleTo(previous)<.05,'near-port orientation must not flip');
+    previous=tool.group.quaternion.clone();
+  }
+});
+
 test('disposing source assemblies removes them and tolerates repeated disposal', () => {
   assembly.dispose();
   assembly.dispose();

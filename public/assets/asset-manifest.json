@@ -5,8 +5,8 @@
       "sha256": "15a3f92a37899fe1bbb79efa32335f7b52c721facc97eb1a6ac6bc1b5993169b"
     },
     "ATTRIBUTION.md": {
-      "bytes": 7339,
-      "sha256": "aad1098b26dc52c2dc880bc2160cac1fbd2a92bd5416def562dd3f9b34ccdbfb"
+      "bytes": 8497,
+      "sha256": "109adab0b051e8c61677c7887737cbb8a34dd8c40aaa3392938951fa071a1ec6"
     },
     "BODYPARTS3D-LICENSE-original.txt": {
       "bytes": 729,
@@ -35,6 +35,14 @@
     "g1.glb": {
       "bytes": 6934064,
       "sha256": "602c1c7f1ecae8a409c26310cb0c9d625f78ee2d88153edd1949f87e7fcf85a5"
+    },
+    "hepatobiliary-context.glb": {
+      "bytes": 653312,
+      "sha256": "45b3e835db09368a7bec8cdb9e1098255bb31f36b4456d5d7811aea0245e9a4f"
+    },
+    "hepatobiliary-context.json": {
+      "bytes": 2813,
+      "sha256": "081eecea1cd2c8892c3a5115adb7277f4ea8306162f7d8f00001a53f7ab89aa8"
     },
     "liver-volume.bin": {
       "bytes": 7317516,

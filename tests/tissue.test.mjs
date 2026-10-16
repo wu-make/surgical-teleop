@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createVolumeState, applyCapsuleCut, resetVolume, polygonizeChunk, allChunkKeys, nodeIndex } from '../src/tissue-worker.js';
+import fs from 'node:fs';
+import { createVolumeState, applyCapsuleCut, resetVolume, polygonizeChunk, allChunkKeys, nodeIndex, normalizeDeformation, deformationWeight, deformPoint, inverseDeformPoint, deformNormal } from '../src/tissue-worker.js';
 import { TissueVolume } from '../src/tissue.js';
 
 function sphereVolume(n = 25, spacing = 0.0015, radius = 0.013) {
@@ -148,5 +149,176 @@ test('a reset invalidates in-flight cuts so late worker results cannot overwrite
   await resetting;
   assert.deepEqual(tissue.snapshot().cuts, []);
   assert.equal(tissue.busy, false);
+  tissue.dispose();
+});
+
+test('large three-dimensional traction remains invertible and transforms normals consistently', () => {
+  const deformation = normalizeDeformation({ local: [0.01, 0.02, -0.01], displacement: [0.018, -0.007, 0.026], radius: 0.035 });
+  for (let i = 0; i < 500; i++) {
+    const point = [Math.sin(i * 3.1) * 0.08, Math.cos(i * 1.7) * 0.07, Math.sin(i * 0.91) * 0.06];
+    const displayed = deformPoint(point, deformation), restored = inverseDeformPoint(displayed, deformation);
+    assert.ok(Math.hypot(...point.map((v, axis) => v - restored[axis])) < 1e-8);
+    const { gradient } = deformationWeight(point, deformation);
+    const normal = deformNormal([0, 0, 1], gradient, deformation.displacement);
+    const tangent = [1, 0, 0].map((v, axis) => v + deformation.displacement[axis] * gradient[0]);
+    assert.ok(Math.abs(normal.reduce((sum, v, axis) => sum + v * tangent[axis], 0)) < 1e-10);
+  }
+});
+
+test('grasping lifts real geometry, updates contact, and returns exactly on release', () => {
+  const source = sphereVolume(), tissue = new TissueVolume();
+  tissue.metadata = source.meta; tissue._baseField = source.base;
+  for (const key of allChunkKeys(source)) tissue._replaceChunk(polygonizeChunk(source, key));
+  const anchor = tissue.findGraspPoint([0, 0, 0.016], 0.005);
+  assert.ok(anchor && Math.abs(anchor.z - 0.013) < 0.00015);
+  assert.ok(anchor.normal.z > 0.99);
+  assert.equal(tissue.findGraspPoint([0, 0, 0.04], 0.008), null, 'air cannot be grasped');
+  const pristine = [...tissue._meshes.values()].map(mesh => mesh.geometry.attributes.position.array.slice());
+  tissue.setGrasp(anchor, { x: 0.002, y: 0, z: 0.014 });
+  assert.ok(tissue.graspMetrics.affectedVertices > 100);
+  const movedAnchor = deformPoint(anchor.toArray(), tissue._deformation);
+  assert.ok(Math.abs(tissue.sampleDistance(movedAnchor)) < 0.00015);
+  let lifted = 0;
+  for (const mesh of tissue._meshes.values()) {
+    const position = mesh.geometry.attributes.position.array;
+    for (let i = 2; i < position.length; i += 3) if (position[i] > 0.025) lifted++;
+  }
+  assert.ok(lifted > 10, 'vertices visibly lift by more than 12 mm, not a shader-only effect');
+  tissue.setGrasp(null);
+  [...tissue._meshes.values()].forEach((mesh, i) => assert.deepEqual(mesh.geometry.attributes.position.array, pristine[i]));
+  tissue.dispose();
+});
+
+test('cutting held tissue removes the displayed material and leaves the same defect after release', () => {
+  const source = sphereVolume(), tissue = new TissueVolume();
+  tissue.metadata = source.meta; tissue._baseField = source.base;
+  const deformation = normalizeDeformation({ local: [0, 0, 0.013], displacement: [0.002, 0, 0.012], radius: 0.05 });
+  const materialPoint = [0, 0, 0.0105], displayed = deformPoint(materialPoint, deformation);
+  const cut = { a: displayed, b: displayed.map((v, axis) => v + (axis === 2 ? 0.009 : 0)), radius: 0.0035, deformation };
+  const result = applyCapsuleCut(source, cut);
+  assert.ok(result.removedMm3 > 30);
+  tissue._cuts = source.cuts;
+  tissue.setGrasp(deformation);
+  assert.equal(tissue.contains(displayed), false, 'the current displayed tip sits in the actual cut cavity');
+  assert.equal(tissue.contains(deformPoint([0.007, 0, 0.007], deformation)), true, 'surrounding held material remains');
+  let freshVertices = 0;
+  for (const key of result.dirty) {
+    const mesh = polygonizeChunk(source, key);
+    freshVertices += [...mesh.cutMasks].filter(value => value > 0.5).length;
+    tissue._replaceChunk(mesh);
+  }
+  assert.ok(freshVertices > 10, 'newly exposed three-dimensional cut walls carry fresh parenchyma material');
+  tissue.setGrasp(null);
+  assert.equal(tissue.contains(materialPoint), false, 'defect follows material when traction is released');
+  const replay = source.field.slice(), removal = source.removedVolumeMm3;
+  resetVolume(source, [cut]);
+  assert.deepEqual(source.field, replay);
+  assert.equal(source.removedVolumeMm3, removal);
+  tissue.dispose();
+});
+
+test('the delivered anatomical liver supports a surface grasp and a visibly open resection stroke', () => {
+  const metadata = JSON.parse(fs.readFileSync(new URL('../public/assets/liver-volume.json', import.meta.url), 'utf8'));
+  const bytes = fs.readFileSync(new URL('../public/assets/liver-volume.bin', import.meta.url));
+  const values = new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
+  const tissue = new TissueVolume(); tissue.metadata = metadata; tissue._baseField = values;
+  const anchor = tissue.findGraspPoint([-0.025, 0.015, 0.075], 0.008);
+  assert.ok(anchor, 'the actual source surface, not a proxy ellipsoid, is graspable');
+  const deformation = normalizeDeformation({ local: anchor.toArray(), displacement: [-0.003, 0, 0.02], radius: 0.07 });
+  const source = createVolumeState(metadata, values), points = [];
+  for (let x = -0.04; x < 0.0401; x += 0.01) {
+    const surface = tissue.findGraspPoint([x, 0.015, 0.074], 0.008);
+    assert.ok(surface);
+    points.push(surface.toArray());
+  }
+  let removed = 0;
+  for (let i = 1; i < points.length; i++) {
+    const cut = { a: deformPoint(points[i - 1], deformation), b: deformPoint(points[i], deformation), radius: 0.0045, deformation };
+    removed += applyCapsuleCut(source, cut).removedMm3;
+  }
+  assert.ok(removed > 1800 && removed < 4500, 'the sweep removes a clearly visible millilitre-scale groove');
+  tissue._cuts = source.cuts; tissue.setGrasp(deformation);
+  for (const point of points.slice(1, -1)) assert.equal(tissue.contains(deformPoint(point, deformation)), false, 'the original exterior has a real open defect');
+  tissue.setGrasp(null);
+  for (const point of points.slice(1, -1)) assert.equal(tissue.contains(point), false, 'the resection persists after releasing the left grasper');
+  resetVolume(source);
+  assert.deepEqual(source.field, values);
+  tissue.dispose();
+});
+
+test('traction beyond 40 mm and 100 mm has no hidden displacement cap', () => {
+  const source = sphereVolume(), tissue = new TissueVolume();
+  tissue.metadata = source.meta; tissue._baseField = source.base;
+  for (const key of allChunkKeys(source)) tissue._replaceChunk(polygonizeChunk(source, key));
+  const anchor = [0, 0, 0.013];
+  for (const displacement of [[0.055, 0, 0.03], [0.16, 0.08, -0.03]]) {
+    tissue.setGrasp({ local: anchor, displacement, radius: 0.04 });
+    assert.deepEqual(tissue.graspMetrics.displacement, displacement);
+    const displayedAnchor = deformPoint(anchor, tissue._deformation);
+    assert.ok(Math.hypot(...displayedAnchor.map((v, axis) => v - anchor[axis] - displacement[axis])) < 1e-12);
+    assert.ok(Math.abs(tissue.sampleDistance(displayedAnchor)) < 0.00015);
+    for (const reference of [anchor, [0.005, 0.002, 0.01], [-0.009, 0, 0.004]]) {
+      const restored = inverseDeformPoint(deformPoint(reference, tissue._deformation), tissue._deformation);
+      assert.ok(Math.hypot(...restored.map((v, axis) => v - reference[axis])) < 1e-8);
+    }
+    for (const mesh of tissue._meshes.values()) {
+      const positions = mesh.geometry.attributes.position;
+      for (let i = 0; i < positions.count; i++) {
+        const p = { x: positions.getX(i), y: positions.getY(i), z: positions.getZ(i) };
+        assert.ok(mesh.geometry.boundingBox.containsPoint(p), 'moved geometry stays inside its updated raycast bounds');
+      }
+    }
+  }
+  tissue.setGrasp(null); tissue.dispose();
+});
+
+test('cut bounding-box acceleration matches exhaustive deformed CSG distance queries', () => {
+  const source = sphereVolume(), tissue = new TissueVolume(), baseline = new TissueVolume();
+  for (const instance of [tissue, baseline]) { instance.metadata = source.meta; instance._baseField = source.base; }
+  for (let i = 0; i < 160; i++) {
+    const group = Math.floor(i / 32);
+    const deformation = normalizeDeformation({ local: [0, 0, 0.012], displacement: [group * 0.002, 0, group * 0.005], radius: 0.055 });
+    const a = deformPoint([Math.sin(i * 0.7) * 0.01, Math.cos(i * 0.43) * 0.007, 0.009], deformation);
+    tissue._cuts.push({ a, b: a.map((v, axis) => v + (axis === 2 ? 0.004 : 0)), radius: 0.0016, ...(deformation ? { deformation } : {}) });
+  }
+  const current = normalizeDeformation({ local: [0, 0, 0.013], displacement: [0.004, 0, 0.02], radius: 0.065 });
+  tissue.setGrasp(current); baseline.setGrasp(current);
+  for (let i = 0; i < 700; i++) {
+    const reference = [Math.sin(i * 0.71) * 0.017, Math.cos(i * 0.37) * 0.017, Math.sin(i * 0.29) * 0.017];
+    const displayed = deformPoint(reference, tissue._deformation);
+    let expected = baseline.sampleDistance(displayed);
+    for (const cut of tissue._cuts) {
+      const p = deformPoint(reference, cut.deformation);
+      const dx = cut.b[0] - cut.a[0], dy = cut.b[1] - cut.a[1], dz = cut.b[2] - cut.a[2];
+      const t = Math.max(0, Math.min(1, ((p[0] - cut.a[0]) * dx + (p[1] - cut.a[1]) * dy + (p[2] - cut.a[2]) * dz) / (dx * dx + dy * dy + dz * dz)));
+      const distance = Math.hypot(p[0] - cut.a[0] - t * dx, p[1] - cut.a[1] - t * dy, p[2] - cut.a[2] - t * dz);
+      expected = Math.max(expected, cut.radius - distance);
+    }
+    assert.ok(Math.abs(tissue.sampleDistance(displayed) - expected) < 1e-9, 'broadphase does not alter signed-distance values');
+  }
+  assert.ok(tissue.queryMetrics.evaluatedCutters < 700 * 160 * 0.2, 'most remote cutters are skipped safely');
+  tissue._cuts = [];
+  assert.equal(tissue.contains(deformPoint([0, 0, 0.009], current)), true, 'restored history clears its old acceleration index');
+  tissue.dispose(); baseline.dispose();
+});
+
+test('continuous radius growth reuses radial caches and keeps exact visible traction', () => {
+  const source = sphereVolume(), tissue = new TissueVolume();
+  tissue.metadata = source.meta; tissue._baseField = source.base;
+  for (const key of allChunkKeys(source)) tissue._replaceChunk(polygonizeChunk(source, key));
+  const anchor = [0, 0, 0.013];
+  tissue.setGrasp({ local: anchor, displacement: [0, 0, 0.024] });
+  const builds = tissue.deformationMetrics.cacheBuilds;
+  for (let step = 1; step <= 100; step++) tissue.setGrasp({ local: anchor, displacement: [0, 0, 0.024 + step * 0.00016] });
+  assert.equal(tissue.deformationMetrics.cacheBuilds, builds, 'growing the support radius must not rescan the source on each frame');
+  assert.ok(tissue.deformationMetrics.radiusUpdates > builds);
+  for (const mesh of tissue._meshes.values()) {
+    assert.equal(mesh.geometry.attributes.position.usage, 35040, 'frequently rewritten vertices use STREAM_DRAW');
+    const rest = mesh.geometry.userData.restPositions, positions = mesh.geometry.attributes.position.array;
+    for (let i = 0; i < rest.length; i += 27) {
+      const expected = deformPoint([...rest.slice(i, i + 3)], tissue._deformation);
+      assert.ok(Math.hypot(...expected.map((v, axis) => v - positions[i + axis])) < 1e-8);
+    }
+  }
   tissue.dispose();
 });

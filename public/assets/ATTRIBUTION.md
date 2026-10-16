@@ -33,6 +33,12 @@ These public CAD descriptions are visual references for the selected robot model
 
 This is anatomical reference geometry from one model, not patient-specific imaging. Surface detail, histology, vessels, ducts, tumor locations, bleeding, thermal spread, and validated tissue mechanics are not contained in this source mesh. Any added lesion or internal vessel display is a separate demonstration layer.
 
+### Registered hepatobiliary context and display adaptation
+
+`hepatobiliary-context.glb` adds the reference gallbladder (`FMA7202.stl`, 13,846 source triangles), common hepatic artery (`FMA14771.stl`, 808), stomach (`FMA7148.stl`, 9,384) and duodenum (`FMA7206.stl`, 11,950) from the same mirror revision and source anatomical frame. `scripts/prepare-context-anatomy.py` applies exactly the liver's recorded source-to-local matrix, without fitting invented vessel branches. Its companion JSON records each structure, dimensions, transform and checksum. These anatomical derivatives retain **CC BY-SA 2.1 Japan** and the DBCLS attribution above. Neighbouring organs provide registered context; only the liver has interactive volumetric resection.
+
+Runtime traction now changes real vertices and analytic normals using an invertible compact geometric displacement, including contact and material-coordinate cutting. The capsule mottling, microscopic-scale surface variation and freshly exposed parenchyma appearance are procedural rendering choices, not measured histology or a patient-specific scan. No clinically calibrated material mechanics are supplied.
+
 ## Surgical instruments and endoscope
 
 - Publisher: da Vinci Research Kit (dVRK), Johns Hopkins research community.

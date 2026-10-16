@@ -105,51 +105,38 @@ test('all seven G1 arm joints on each side clamp to the manufacturer limits', ()
   }
 });
 
-test('production reach guard accepts a local move and restores an unreachable tool and all seven joints', () => {
+test('free instrument commands remain untouched when the genuine G1 cannot reach them', () => {
   const scene = fixture(), state = new Simulation().state;
   scene.assemblies = instruments;
   instruments.update(state, 1 / 60);
   settle(scene, instruments.toolHandlePositions);
-  assert.equal(scene.guardArmTargets(state), false);
-  state.tools.left.position[0] += .002;
-  instruments.update(state, 1 / 60);
-  settle(scene, instruments.toolHandlePositions, 20);
-  assert.equal(scene.guardArmTargets(state), false);
-  const accepted = structuredClone(state.tools.left);
-  const acceptedRight = structuredClone(state.tools.right);
-  const angles = scene.acceptedArmPoses.left.joints.map(pair => [...pair]);
-  assert.equal(angles.length, 7);
-  assert.deepEqual(scene.acceptedArmPoses.left.tool, accepted);
-
-  state.tools.left.position = constrainToolPosition([.165, 1.165, .145], state.tools.left.port);
+  state.tools.left.position = [1.5, 1.8, -1.2];
+  state.tools.left.wrist = [9 * Math.PI, -7 * Math.PI, 12 * Math.PI];
+  const command = structuredClone(state);
   instruments.update(state, 1 / 60);
   for (const side of ['left', 'right']) scene.solveArm(side, instruments.toolHandlePositions[side]);
-  assert.ok(scene.armErrors.left > .0025, 'test must exercise an actually unreachable CAD handle');
-  assert.equal(scene.guardArmTargets(state), true);
-  assert.deepEqual(state.tools.left, accepted);
-  assert.deepEqual(state.tools.right, acceptedRight);
-  for (const [name, angle] of angles) {
-    const joint = scene.robotModel.getObjectByName(name);
-    assert.equal(joint.userData.angle, angle);
-    assert.ok(joint.quaternion.toArray().every(Number.isFinite));
-  }
-  assert.ok(scene.armErrors.left < .0025);
-  assert.ok(scene.armErrors.right < .0025);
-  assert.ok(instruments.toolTipPositions.left.distanceTo(new THREE.Vector3(...accepted.position)) < 1e-7);
+  assert.ok(scene.armErrors.left > .1);
+  const angles = scene.joints.map(joint => joint.userData.angle);
+  assert.equal(scene.guardArmTargets(state), false);
+  assert.deepEqual(state, command, 'rendering must never restore or restrict tool commands');
+  assert.deepEqual(scene.joints.map(joint => joint.userData.angle), angles);
+  assert.equal(scene.kinematicLimited, false);
+  assert.ok(instruments.toolTipPositions.left.distanceTo(new THREE.Vector3(...state.tools.left.position)) < 1e-7);
+  const hands = { left: new THREE.Vector3(), right: new THREE.Vector3() };
+  for (const side of ['left', 'right']) scene.handMarkers[side].getWorldPosition(hands[side]);
+  instruments.connectHands(hands, scene.armErrors);
+  assert.equal(instruments.connectionModes.left, 'virtual');
+  assert.equal(instruments.conceptDecoupled, true);
+  scene.robot.traverse(node => assert.ok(node.quaternion.toArray().every(Number.isFinite)));
 });
 
-test('releasing the production reach guard lets a reset or history pose settle again', () => {
+test('reset compatibility releases display history without changing the tool state', () => {
   const scene = fixture(), state = new Simulation().state;
   scene.assemblies = instruments;
-  instruments.update(state, 1 / 60);
-  settle(scene, instruments.toolHandlePositions);
-  scene.guardArmTargets(state);
-  assert.ok(scene.acceptedArmPoses.left);
+  const before = structuredClone(state);
+  scene.acceptedArmPoses = { left: { tool: { position: [99, 99, 99] } } };
   scene.releaseKinematicGuard();
   assert.deepEqual(scene.acceptedArmPoses, {});
-  instruments.update(state, 1 / 60);
-  settle(scene, instruments.toolHandlePositions, 3);
   assert.equal(scene.guardArmTargets(state), false);
-  assert.deepEqual(scene.acceptedArmPoses.left.tool, state.tools.left);
-  assert.ok(scene.joints.every(joint => Number.isFinite(joint.userData.angle)));
+  assert.deepEqual(state, before);
 });

@@ -1,8 +1,12 @@
 import * as THREE from 'three';
-import { validateCut, normalizeMetadata, distanceToSegment, nodeIndex } from './tissue-worker.js';
+import { validateCut, normalizeMetadata, distanceToSegment, nodeIndex, normalizeDeformation, deformPoint, inverseDeformPoint } from './tissue-worker.js';
+import { createTissueMaterial } from './tissue-material.js';
 
 const vectorArray = point => Array.isArray(point) ? [...point] : [point.x, point.y, point.z];
-const copyCuts = cuts => cuts.map(cut => ({ a: [...cut.a], b: [...cut.b], radius: cut.radius }));
+const copyCuts = cuts => cuts.map(cut => validateCut(cut));
+const squaredDistanceToBox = (p, low, high) => Math.max(low[0] - p[0], 0, p[0] - high[0]) ** 2 + Math.max(low[1] - p[1], 0, p[1] - high[1]) ** 2 + Math.max(low[2] - p[2], 0, p[2] - high[2]) ** 2;
+// An outside bounding-box distance is a lower bound on distance to its solid.
+const canSkipBox = (squaredDistance, currentDistance, scale = 1) => squaredDistance > 0 && (currentDistance >= 0 || squaredDistance * scale * scale >= currentDistance * currentDistance);
 
 /** A real sampled organ volume; the worker alone owns and modifies its SDF. */
 export class TissueVolume {
@@ -17,21 +21,20 @@ export class TissueVolume {
     this.error = null;
     this._meshes = new Map();
     this._cuts = [];
+    this._cutGroups = [];
+    this._cutGroupMap = new Map();
+    this._indexedCuts = this._cuts;
+    this._indexedCutCount = 0;
+    this._queryStats = { queries: 0, mappedGroups: 0, evaluatedCutters: 0, skippedGroups: 0, skippedCutters: 0 };
     this._commands = [];
     this._epoch = 0;
     this._sequence = 0;
     this._inFlight = null;
     this._disposed = false;
-    this._grasp = { point: { value: new THREE.Vector3() }, delta: { value: new THREE.Vector3() }, radius: { value: 0.035 } };
-    this.material = new THREE.MeshPhysicalMaterial({ vertexColors: true, roughness: 0.37, metalness: 0, clearcoat: 0.22, clearcoatRoughness: 0.27, envMapIntensity: 0.75 });
-    this.material.onBeforeCompile = shader => {
-      shader.uniforms.tissueGraspPoint = this._grasp.point;
-      shader.uniforms.tissueGraspDelta = this._grasp.delta;
-      shader.uniforms.tissueGraspRadius = this._grasp.radius;
-      shader.vertexShader = 'uniform vec3 tissueGraspPoint;\nuniform vec3 tissueGraspDelta;\nuniform float tissueGraspRadius;\n' + shader.vertexShader;
-      shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nfloat graspWeight = max(0.0, 1.0 - distance(position, tissueGraspPoint) / tissueGraspRadius);\ntransformed += tissueGraspDelta * graspWeight * graspWeight;');
-    };
-    this.material.customProgramCacheKey = () => 'tissue-grasp-v1';
+    this._deformation = null;
+    this._affectedVertices = 0;
+    this._deformationStats = { cacheBuilds: 0, radiusUpdates: 0, movedVertices: 0 };
+    this.material = createTissueMaterial();
   }
 
   async load(urlbase = './assets/liver-volume') {
@@ -58,16 +61,16 @@ export class TissueVolume {
   cutSegment(start, end, radius) {
     if (!this.ready || this._disposed) return Promise.resolve({ changed: false, removedMm3: 0, reason: 'not-ready' });
     let primitive;
-    try { primitive = validateCut({ a: vectorArray(start), b: vectorArray(end), radius }); }
+    try { primitive = validateCut({ a: vectorArray(start), b: vectorArray(end), radius, deformation: this._deformation }); }
     catch (error) { return Promise.reject(error); }
     const previous = this._cuts.at(-1);
-    if (previous && primitive.radius === previous.radius && [...primitive.a, ...primitive.b].every((v, i) => v === [...previous.a, ...previous.b][i])) return Promise.resolve({ changed: false, removedMm3: 0, removedVolumeMm3: this.removedVolumeMm3 });
+    if (previous && primitive.radius === previous.radius && JSON.stringify(primitive) === JSON.stringify(previous)) return Promise.resolve({ changed: false, removedMm3: 0, removedVolumeMm3: this.removedVolumeMm3 });
     if (this._cuts.length >= 50000) return Promise.resolve({ changed: false, removedMm3: 0, reason: 'history-limit' });
     this._cuts.push(primitive);
     return this._enqueue({ type: 'cut', cuts: [primitive] });
   }
 
-  snapshot() { return { version: 1, cuts: copyCuts(this._cuts) }; }
+  snapshot() { return { version: 1, cuts: copyCuts(this._cuts), deformation: this._deformation ? normalizeDeformation(this._deformation) : null }; }
 
   async restore(snapshot) {
     if (!this.ready || this._disposed) return { changed: false, reason: 'not-ready' };
@@ -76,7 +79,7 @@ export class TissueVolume {
     this._epoch++;
     for (const command of this._commands.splice(0)) command.resolve({ changed: false, cancelled: true });
     this._cuts = copyCuts(cuts);
-    this._grasp.delta.value.set(0, 0, 0);
+    this.setGrasp(snapshot.deformation ?? null);
     return this._enqueue({ type: 'restore', cuts });
   }
 
@@ -85,7 +88,13 @@ export class TissueVolume {
   /** Continuous local distance to the current organ; useful for contact gating. */
   sampleDistance(point) {
     if (!this._baseField) return Infinity;
-    const p = vectorArray(point), meta = this.metadata;
+    const display = vectorArray(point);
+    if (display.some(v => !Number.isFinite(v))) return Infinity;
+    return this._sampleReferenceDistance(inverseDeformPoint(display, this._deformation));
+  }
+
+  _sampleReferenceDistance(p) {
+    const meta = this.metadata;
     if (p.some(v => !Number.isFinite(v))) return Infinity;
     const grid = p.map((v, axis) => (v - meta.origin[axis]) / meta.spacing[axis]);
     if (grid.some((v, axis) => v < 0 || v > meta.dims[axis] - 1)) return Infinity;
@@ -96,21 +105,188 @@ export class TissueVolume {
       const weight = (x ? fraction[0] : 1 - fraction[0]) * (y ? fraction[1] : 1 - fraction[1]) * (z ? fraction[2] : 1 - fraction[2]);
       distance += weight * this._baseField[nodeIndex(meta, low[0] + x, low[1] + y, low[2] + z)];
     }
-    for (const cut of this._cuts) distance = Math.max(distance, cut.radius - distanceToSegment(p, cut.a, cut.b));
+    this._ensureCutIndex();
+    this._queryStats.queries++;
+    for (const group of this._cutGroups) {
+      if (canSkipBox(squaredDistanceToBox(p, group.referenceLow, group.referenceHigh), distance, group.minimumScale)) { this._queryStats.skippedGroups++; continue; }
+      const displayed = group.deformation ? deformPoint(p, group.deformation) : p;
+      this._queryStats.mappedGroups++;
+      if (canSkipBox(squaredDistanceToBox(displayed, group.low, group.high), distance)) { this._queryStats.skippedGroups++; continue; }
+      for (const entry of group.entries) {
+        if (distance >= entry.cut.radius || canSkipBox(squaredDistanceToBox(displayed, entry.low, entry.high), distance)) { this._queryStats.skippedCutters++; continue; }
+        distance = Math.max(distance, entry.cut.radius - distanceToSegment(displayed, entry.cut.a, entry.cut.b));
+        this._queryStats.evaluatedCutters++;
+      }
+    }
     return distance;
   }
+
+  _ensureCutIndex() {
+    if (this._indexedCuts !== this._cuts || this._indexedCutCount > this._cuts.length) {
+      this._cutGroups = []; this._cutGroupMap.clear(); this._indexedCuts = this._cuts; this._indexedCutCount = 0;
+    }
+    while (this._indexedCutCount < this._cuts.length) {
+      const cut = this._cuts[this._indexedCutCount++], deformation = cut.deformation;
+      const key = deformation ? [...deformation.local, ...deformation.displacement, deformation.radius].join(',') : 'rest';
+      let group = this._cutGroupMap.get(key);
+      if (!group) {
+        const minimumScale = deformation ? 1 - 2.109375 * Math.hypot(...deformation.displacement) / deformation.radius : 1;
+        group = { deformation, minimumScale, entries: [], low: [Infinity, Infinity, Infinity], high: [-Infinity, -Infinity, -Infinity], referenceLow: [Infinity, Infinity, Infinity], referenceHigh: [-Infinity, -Infinity, -Infinity] };
+        this._cutGroupMap.set(key, group); this._cutGroups.push(group);
+      }
+      const low = cut.a.map((v, axis) => Math.min(v, cut.b[axis]) - cut.radius), high = cut.a.map((v, axis) => Math.max(v, cut.b[axis]) + cut.radius);
+      const delta = deformation?.displacement ?? [0, 0, 0];
+      for (let axis = 0; axis < 3; axis++) {
+        group.low[axis] = Math.min(group.low[axis], low[axis]); group.high[axis] = Math.max(group.high[axis], high[axis]);
+        group.referenceLow[axis] = Math.min(group.referenceLow[axis], low[axis] - Math.max(0, delta[axis]));
+        group.referenceHigh[axis] = Math.max(group.referenceHigh[axis], high[axis] - Math.min(0, delta[axis]));
+      }
+      group.entries.push({ cut, low, high });
+    }
+  }
+
+  get queryMetrics() { return { ...this._queryStats, groups: this._cutGroups.length, cuts: this._cuts.length }; }
 
   contains(point, margin = 0) {
     return this.sampleDistance(point) <= Math.max(0, Number.isFinite(margin) ? margin : 0);
   }
 
-  // Small, reversible display deformation for grasper traction. It never edits
-  // the source volume or pretends to be a calibrated tissue mechanics solver.
+  /** Projects a nearby displayed point onto the actual current volume surface.
+   * Returns a Vector3 with a .normal Vector3, or null when not near tissue. */
+  findGraspPoint(point, margin = 0.008) {
+    if (!this._baseField || !point || !Number.isFinite(margin) || margin <= 0) return null;
+    const initial = new THREE.Vector3().fromArray(vectorArray(point));
+    const distance = this.sampleDistance(initial);
+    if (!Number.isFinite(distance) || Math.abs(distance) > margin) return null;
+    const surface = initial.clone(), gradient = new THREE.Vector3();
+    const epsilon = Math.min(...this.metadata.spacing) * 0.35;
+    for (let i = 0; i < 12; i++) {
+      const d = this.sampleDistance(surface);
+      for (let axis = 0; axis < 3; axis++) {
+        const low = surface.clone(), high = surface.clone();
+        low.setComponent(axis, low.getComponent(axis) - epsilon); high.setComponent(axis, high.getComponent(axis) + epsilon);
+        gradient.setComponent(axis, (this.sampleDistance(high) - this.sampleDistance(low)) / (2 * epsilon));
+      }
+      const lengthSquared = gradient.lengthSq();
+      if (!Number.isFinite(lengthSquared) || lengthSquared < 1e-9) return null;
+      if (Math.abs(d) < 0.000025) break;
+      surface.addScaledVector(gradient, -d / lengthSquared);
+    }
+    if (!Number.isFinite(this.sampleDistance(surface)) || Math.abs(this.sampleDistance(surface)) > 0.00025 || surface.distanceTo(initial) > margin * 1.8) return null;
+    surface.normal = gradient.normalize();
+    return surface;
+  }
+
+  get graspMetrics() {
+    const deformation = this._deformation;
+    return { active: !!deformation, displacementMm: deformation ? Math.hypot(...deformation.displacement) * 1000 : 0,
+      radiusMm: deformation ? deformation.radius * 1000 : 0, affectedVertices: this._affectedVertices,
+      local: deformation ? [...deformation.local] : null, displacement: deformation ? [...deformation.displacement] : [0, 0, 0],
+      model: 'Invertible compact geometric displacement; not calibrated tissue mechanics' };
+  }
+
+  get deformationMetrics() { return { ...this._deformationStats }; }
+
+  /** Geometry, contact queries, shadows and new cut surfaces share this mapping.
+   * Accepts either (Vector3 anchor, Vector3 displacement) or an options object. */
   setGrasp(point, delta) {
-    if (!point || !delta) { this._grasp.delta.value.set(0, 0, 0); return; }
-    if ([...vectorArray(point), ...vectorArray(delta)].some(v => !Number.isFinite(v))) return;
-    this._grasp.point.value.fromArray(vectorArray(point));
-    this._grasp.delta.value.fromArray(vectorArray(delta)).clampLength(0, 0.025);
+    let next = null;
+    try {
+      if (point && delta) next = normalizeDeformation({ local: vectorArray(point), displacement: vectorArray(delta) });
+      else if (point?.local) next = normalizeDeformation(point);
+    } catch { return false; }
+    if (next) {
+      if (next.radius < 1e6) next.radius = Math.ceil(next.radius * 1000) / 1000;
+      if (this._deformation && next.local.every((v, axis) => v === this._deformation.local[axis])) next.radius = Math.max(next.radius, this._deformation.radius);
+    }
+    if (JSON.stringify(next) === JSON.stringify(this._deformation)) return true;
+    this._deformation = next;
+    this._affectedVertices = 0;
+    for (const mesh of this._meshes.values()) this._affectedVertices += this._applyDeformation(mesh);
+    return true;
+  }
+
+  _applyDeformation(mesh) {
+    const geometry = mesh.geometry, rest = geometry.userData.restPositions, restNormals = geometry.userData.restNormals;
+    const positions = geometry.attributes.position.array, normals = geometry.attributes.normal.array;
+    const deformation = this._deformation;
+    if (!deformation) {
+      if (geometry.userData.deformed) {
+        positions.set(rest); normals.set(restNormals);
+        geometry.attributes.position.clearUpdateRanges(); geometry.attributes.normal.clearUpdateRanges();
+        geometry.attributes.position.needsUpdate = true; geometry.attributes.normal.needsUpdate = true;
+        geometry.userData.deformed = false;
+        geometry.boundingSphere.copy(geometry.userData.restSphere); geometry.boundingBox.copy(geometry.userData.restBox);
+      }
+      return 0;
+    }
+    // Anchor distances are invariant while the forceps move. Reserve a larger
+    // radial domain once, rather than rebuilding it at every 1 mm radius step.
+    const signature = deformation.local.join(',');
+    let cache = geometry.userData.deformationCache;
+    let fullUpdate = false;
+    if (cache?.signature !== signature || cache.capacity < deformation.radius) {
+      this._deformationStats.cacheBuilds++;
+      if (geometry.userData.deformed) { positions.set(rest); normals.set(restNormals); }
+      fullUpdate = !!geometry.userData.deformed;
+      const capacity = Math.max(0.14, deformation.radius * 1.5);
+      const indices = [], distances = [];
+      const box = geometry.userData.restBox, local = deformation.local;
+      const distanceSquared = Math.max(box.min.x - local[0], 0, local[0] - box.max.x) ** 2 + Math.max(box.min.y - local[1], 0, local[1] - box.max.y) ** 2 + Math.max(box.min.z - local[2], 0, local[2] - box.max.z) ** 2;
+      if (distanceSquared < capacity * capacity) {
+        for (let i = 0; i < rest.length; i += 3) {
+          const x = rest[i] - local[0], y = rest[i + 1] - local[1], z = rest[i + 2] - local[2], distance = Math.sqrt(x * x + y * y + z * z);
+          if (distance < capacity) { indices.push(i); distances.push(distance); }
+        }
+      }
+      cache = { signature, capacity, indices: new Uint32Array(indices), distances: new Float32Array(distances), weights: new Float32Array(indices.length), gradients: new Float32Array(indices.length * 3), radius: 0, maximumWeight: 0, activeCount: 0 };
+      geometry.userData.deformationCache = cache;
+    }
+    const [dx, dy, dz] = deformation.displacement;
+    const [ax, ay, az] = deformation.local, radius = deformation.radius, inverseRadius = 1 / radius, inverseRadiusSquared = inverseRadius * inverseRadius;
+    const radiusChanged = cache.radius !== radius;
+    if (radiusChanged) this._deformationStats.radiusUpdates++;
+    let activeCount = 0, maximumWeight = 0, firstChanged = Infinity, lastChanged = -Infinity;
+    for (let j = 0; j < cache.indices.length; j++) {
+      const i = cache.indices[j], gradientIndex = j * 3;
+      let weight = cache.weights[j];
+      if (radiusChanged) {
+        const distance = cache.distances[j];
+        if (distance >= radius) { cache.weights[j] = 0; continue; }
+        const relative = distance * inverseRadius, t = 1 - relative, t2 = t * t;
+        weight = t2 * t2 * (4 * relative + 1);
+        const derivative = -20 * t2 * t * inverseRadiusSquared;
+        cache.weights[j] = weight;
+        cache.gradients[gradientIndex] = (rest[i] - ax) * derivative;
+        cache.gradients[gradientIndex + 1] = (rest[i + 1] - ay) * derivative;
+        cache.gradients[gradientIndex + 2] = (rest[i + 2] - az) * derivative;
+      }
+      if (!weight) continue;
+      activeCount++; maximumWeight = Math.max(maximumWeight, weight);
+      firstChanged = Math.min(firstChanged, i); lastChanged = Math.max(lastChanged, i);
+      const gx = cache.gradients[gradientIndex], gy = cache.gradients[gradientIndex + 1], gz = cache.gradients[gradientIndex + 2];
+      positions[i] = rest[i] + dx * weight; positions[i + 1] = rest[i + 1] + dy * weight; positions[i + 2] = rest[i + 2] + dz * weight;
+      const projection = (restNormals[i] * dx + restNormals[i + 1] * dy + restNormals[i + 2] * dz) / (1 + gx * dx + gy * dy + gz * dz);
+      const nx = restNormals[i] - gx * projection, ny = restNormals[i + 1] - gy * projection, nz = restNormals[i + 2] - gz * projection, length = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+      normals[i] = nx / length; normals[i + 1] = ny / length; normals[i + 2] = nz / length;
+    }
+    cache.radius = radius; cache.maximumWeight = maximumWeight; cache.activeCount = activeCount;
+    this._deformationStats.movedVertices += activeCount;
+    if (activeCount || geometry.userData.deformed) {
+      geometry.attributes.position.clearUpdateRanges(); geometry.attributes.normal.clearUpdateRanges();
+      if (!fullUpdate && activeCount) {
+        geometry.attributes.position.addUpdateRange(firstChanged, lastChanged - firstChanged + 3);
+        geometry.attributes.normal.addUpdateRange(firstChanged, lastChanged - firstChanged + 3);
+      }
+      geometry.attributes.position.needsUpdate = true; geometry.attributes.normal.needsUpdate = true;
+    }
+    if (activeCount || geometry.userData.deformed) {
+      const extent = Math.sqrt(dx * dx + dy * dy + dz * dz) * maximumWeight;
+      geometry.boundingSphere.copy(geometry.userData.restSphere); geometry.boundingSphere.radius += extent;
+      geometry.boundingBox.copy(geometry.userData.restBox).expandByScalar(extent);
+    }
+    geometry.userData.deformed = !!activeCount;
+    return activeCount;
   }
 
   _enqueue(operation) {
@@ -160,21 +336,27 @@ export class TissueVolume {
 
   _replaceChunk(chunk) {
     const previous = this._meshes.get(chunk.key);
+    if (previous?.geometry.userData.deformed) this._affectedVertices -= previous.geometry.userData.deformationCache?.activeCount ?? 0;
     if (previous) { previous.geometry.dispose(); this.group.remove(previous); this._meshes.delete(chunk.key); }
     if (!chunk.positions.length) return;
     const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.BufferAttribute(chunk.positions, 3));
-    geometry.setAttribute('normal', new THREE.BufferAttribute(chunk.normals, 3));
+    geometry.userData.restPositions = chunk.positions;
+    geometry.userData.restNormals = chunk.normals;
+    geometry.setAttribute('position', new THREE.BufferAttribute(chunk.positions.slice(), 3).setUsage(THREE.StreamDrawUsage));
+    geometry.setAttribute('normal', new THREE.BufferAttribute(chunk.normals.slice(), 3).setUsage(THREE.StreamDrawUsage));
     geometry.setAttribute('color', new THREE.BufferAttribute(chunk.colors, 3));
+    geometry.setAttribute('tissueRestPosition', new THREE.BufferAttribute(chunk.positions, 3));
+    geometry.setAttribute('tissueCutMask', new THREE.BufferAttribute(chunk.cutMasks ?? new Float32Array(chunk.positions.length / 3), 1));
     geometry.setIndex(new THREE.BufferAttribute(chunk.indices, 1));
     geometry.computeBoundingSphere();
-    // GPU grasp displacement can extend the rest bounding sphere by 25 mm.
-    geometry.boundingSphere.radius += 0.025;
+    geometry.userData.restSphere = geometry.boundingSphere.clone();
+    geometry.computeBoundingBox(); geometry.userData.restBox = geometry.boundingBox.clone();
     const mesh = new THREE.Mesh(geometry, this.material);
     mesh.name = `liver-chunk-${chunk.key}`;
     mesh.castShadow = true; mesh.receiveShadow = true;
     mesh.layers.enable(1);
     mesh.userData.tissue = true;
+    this._affectedVertices += this._applyDeformation(mesh);
     this.group.add(mesh); this._meshes.set(chunk.key, mesh);
   }
 

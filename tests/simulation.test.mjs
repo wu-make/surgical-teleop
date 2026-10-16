@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Simulation, LIMITS, CONTROL_RATES, constrainToolPosition } from '../src/simulation.js';
+import { Simulation, LIMITS, CONTROL_RATES, constrainToolPosition, integratedControlDistance, instrumentClearance, segmentDistance, toolCollisionShapes } from '../src/simulation.js';
 
 const near = (a, b, e = 1e-9) => assert.ok(Math.abs(a - b) <= e, `${a} ≠ ${b}`);
 const nearVector = (a, b, e = 1e-9) => a.forEach((v, i) => near(v, b[i], e));
@@ -14,12 +14,10 @@ test('translation is time based, diagonal-normalized and precision-scaled', () =
   const a = new Simulation();
   const b = new Simulation();
   const initial = [...a.state.tools.left.position];
-  // Keep the velocity comparison inside the RCM cone; boundary projection is
-  // independently verified below and should not be mistaken for free motion.
-  hold(a, ['KeyD', 'KeyW'], .5, .01);
-  hold(b, ['KeyD', 'KeyW'], .5, .02);
+  hold(a, ['KeyA', 'KeyW'], .5, .01);
+  hold(b, ['KeyA', 'KeyW'], .5, .02);
   nearVector(a.state.tools.left.position, b.state.tools.left.position);
-  near(Math.hypot(...sub(a.state.tools.left.position, initial)), CONTROL_RATES.translation * .5);
+  near(Math.hypot(...sub(a.state.tools.left.position, initial)), integratedControlDistance(0, .5, CONTROL_RATES.translation));
   const fine = new Simulation();
   hold(fine, ['KeyD', 'ShiftRight']);
   near(fine.state.tools.left.position[0] - initial[0], CONTROL_RATES.translation * CONTROL_RATES.fineFactor);
@@ -56,23 +54,20 @@ test('left and right selection controls instruments independently', () => {
   assert.throws(() => s.select('robot'), RangeError);
 });
 
-test('hard workspace, insertion and cone limits withstand extreme targets', () => {
+test('finite positions are free of workspace, insertion and cone limits', () => {
   const s = new Simulation();
   for (const tool of Object.values(s.state.tools)) {
     for (const x of [-100, -.1, .1, 100]) for (const y of [-100, 1.18, 100]) for (const z of [-100, .14, 100]) {
       const result = constrainToolPosition([x, y, z], tool.port);
-      result.forEach((v, i) => {
-        assert.ok(v >= LIMITS.workspace.min[i] - 1e-9 && v <= LIMITS.workspace.max[i] + 1e-9);
-      });
-      const shaft = sub(result, tool.port);
-      const length = Math.hypot(...shaft);
-      assert.ok(length >= LIMITS.insertion[0] - 1e-9 && length <= LIMITS.insertion[1] + 1e-9);
-      assert.ok(Math.acos(-shaft[1] / length) <= LIMITS.shaftCone + 1e-9);
+      nearVector(result, [x,y,z]);
     }
   }
-  hold(s, ['KeyD', 'KeyE', 'KeyS', 'ArrowRight', 'ArrowUp', 'KeyX', 'KeyV'], 100);
+  const result = s.moveToolTo([-3, 4, 5], 'left');
+  assert.equal(result.limited, false);
+  nearVector(s.state.tools.left.position, [-3,4,5]);
+  hold(s, ['ArrowRight', 'ArrowUp', 'KeyX', 'KeyV'], 100);
   const t = s.state.tools.left;
-  t.wrist.forEach((v, i) => assert.ok(Math.abs(v) <= LIMITS.wrist[i]));
+  t.wrist.forEach(v => assert.ok(v > Math.PI * 10));
   assert.equal(t.jaw, 1);
   assert.ok(s.undoStack.length <= LIMITS.history);
 });
@@ -81,7 +76,7 @@ test('scope follows selected tip, preserves RCM, changes depth and accepts manua
   const s = new Simulation();
   s.select('right');
   hold(s, ['KeyD', 'KeyQ'], .6);
-  hold(s, [], 2);
+  hold(s, [], 6);
   nearVector(s.state.scope.target, s.state.tools.right.position);
   const scope = s.state.scope;
   const shaft = sub(scope.position, scope.port);
@@ -106,19 +101,17 @@ test('scope follows selected tip, preserves RCM, changes depth and accepts manua
   nearVector(scope.target, s.state.tools.left.position.map((v, i) => (v + s.state.tools.right.position[i]) / 2));
 });
 
-test('automatic scope centres every reachable corner and seeded random tip, then freezes on pause', () => {
+test('automatic scope centres free-space tips above and below its port, then freezes on pause', () => {
   let seed = 9071;
   const random = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
   const s = new Simulation();
-  for (let i = 0; i < 72; i++) {
+  for (let i = 0; i < 24; i++) {
     const id = i % 2 ? 'left' : 'right';
     const tool = s.state.tools[id];
-    const desired = i < 8
-      ? LIMITS.workspace.min.map((v, axis) => (i >> axis) & 1 ? LIMITS.workspace.max[axis] : v)
-      : [random() * .6 - .3, .9 + random() * .4, random() * .6 - .3];
+    const desired = [random() * 1.6 - .8, .4 + random() * 1.6, random() * 1.6 - .8];
     tool.position = constrainToolPosition(desired, tool.port);
     s.select(id);
-    hold(s, [], 3);
+    hold(s, [], 10, .02);
     const camera = s.state.scope;
     const forward = sub(camera.lookAt, camera.position);
     const toTarget = sub(tool.position, camera.position);
@@ -145,13 +138,13 @@ test('global bracket depth works with either tool selected and shares clutch, pr
   assert.equal(result.moving, true);
   assert.equal(result.changed, true);
   hold(s, [']'], .48, .02);
-  near(s.state.scope.depth - depth, CONTROL_RATES.scopeDepth * .5);
+  near(s.state.scope.depth - depth, integratedControlDistance(0, .5, CONTROL_RATES.scopeDepth));
   assert.deepEqual(s.state.tools, tools);
   assert.equal(s.undoStack.length, 1);
   assert.deepEqual(s.undoStack[0].extraData, { cuts: ['retained tissue state'] });
   s.update(.01, new Set());
   hold(s, ['BracketLeft', 'ShiftLeft'], .5);
-  near(s.state.scope.depth - depth, CONTROL_RATES.scopeDepth * .5 * (1 - CONTROL_RATES.fineFactor));
+  near(s.state.scope.depth - depth, integratedControlDistance(0, .5, CONTROL_RATES.scopeDepth) - CONTROL_RATES.scopeDepth * .5 * CONTROL_RATES.fineFactor);
   const before = s.snapshot();
   hold(s, ['BracketRight', 'Space']);
   assert.deepEqual(s.snapshot(), before);
@@ -166,7 +159,7 @@ test('combined scope W and bracket insertions do not double the permitted speed'
   s.select('scope');
   const depth = s.state.scope.depth;
   hold(s, ['KeyW', 'BracketRight'], .5);
-  near(s.state.scope.depth - depth, CONTROL_RATES.scopeDepth * .5);
+  near(s.state.scope.depth - depth, integratedControlDistance(0, .5, CONTROL_RATES.scopeDepth));
   hold(s, ['KeyW', 'BracketRight'], 10);
   assert.ok(s.state.scope.depth <= LIMITS.scopeDepth[1]);
   hold(s, ['KeyS', 'BracketLeft'], 10);
@@ -248,7 +241,7 @@ test('invalid timestamps and invalid snapshots never introduce NaN or partially 
   assert.throws(() => s.restore(bad), TypeError);
   assert.deepEqual(s.snapshot(), before);
   s.update(100, new Set(['KeyD']));
-  near(s.state.tools.left.position[0] - before.state.tools.left.position[0], CONTROL_RATES.translation * LIMITS.maxFrameTime);
+  near(s.state.tools.left.position[0] - before.state.tools.left.position[0], integratedControlDistance(0, LIMITS.maxFrameTime, CONTROL_RATES.translation));
 });
 
 test('undo preserves paused safety state and event listeners can unsubscribe', () => {
@@ -265,4 +258,189 @@ test('undo preserves paused safety state and event listeners can unsubscribe', (
   const n = events.length;
   s.reset();
   assert.equal(events.length, n);
+});
+
+test('50 ms taps are submillimetre, long holds accelerate and releasing never coasts', () => {
+  const s = new Simulation(), initial = [...s.state.tools.left.position];
+  hold(s, ['KeyA'], .05);
+  const tap = Math.hypot(...sub(s.state.tools.left.position, initial));
+  assert.ok(tap > .00005 && tap < .0001, `50ms tap ${tap * 1000} mm`);
+  hold(s, ['KeyA'], 1.5);
+  const before = [...s.state.tools.left.position];
+  hold(s, ['KeyA'], .05);
+  assert.ok(Math.hypot(...sub(s.state.tools.left.position, before)) > tap * 15);
+  s.update(.01, new Set());
+  const stopped = structuredClone(s.state.tools);
+  hold(s, [], 1);
+  assert.deepEqual(s.state.tools, stopped);
+});
+
+test('30/60/200 Hz mixed translation and rotation integrate equally without diagonal gain', () => {
+  const a = new Simulation(), b = new Simulation(), single = new Simulation();
+  const initial = [...a.state.tools.left.position];
+  hold(a, ['KeyA', 'KeyW', 'ArrowLeft', 'ArrowUp', 'KeyX'], 1.8, 1/30);
+  hold(b, ['KeyA', 'KeyW', 'ArrowLeft', 'ArrowUp', 'KeyX'], 1.8, 1/200);
+  hold(single, ['KeyA', 'KeyX'], 1.8, 1/60);
+  nearVector(a.state.tools.left.position, b.state.tools.left.position);
+  nearVector(a.state.tools.left.wrist, b.state.tools.left.wrist);
+  near(Math.hypot(...sub(a.state.tools.left.position, initial)), Math.hypot(...sub(single.state.tools.left.position, initial)));
+  near(Math.hypot(...a.state.tools.left.wrist), Math.abs(single.state.tools.left.wrist[2]));
+});
+
+test('continuous swept contact stops long moves at tips and shafts, with immediate reverse escape', () => {
+  const s = new Simulation();
+  const result = s.moveToolTo([.2, 1.108, 0], 'left');
+  assert.equal(result.limited, true);
+  assert.ok(s.state.tools.left.position[0] < s.state.tools.right.position[0]);
+  assert.ok(instrumentClearance(s.state.tools.left, s.state.tools.right) >= -1e-8);
+  const contact = [...s.state.tools.left.position];
+  const tangent = s.moveTool([0, 0, -.01], 'left');
+  assert.equal(tangent.limited, false);
+  near(s.state.tools.left.position[2], contact[2] - .01);
+  const reverse = s.moveTool([-.01, 0, 0], 'left');
+  assert.equal(reverse.limited, false);
+  near(s.state.tools.left.position[0], contact[0] - .01);
+  // An intracorporeal shaft crossing also collides while tips are far apart.
+  const left = {port:[-.08,0,0], position:[.08,-.2,0], jaw:.5};
+  const right = {port:[.08,0,0], position:[-.08,-.2,0], jaw:.5};
+  near(segmentDistance(left.port, left.position, right.port, right.position), 0);
+  assert.ok(instrumentClearance(left, right) < 0);
+  assert.ok(Math.hypot(...sub(left.position, right.position)) > .1);
+  const crossing = s.moveToolTo([.4, 1, -.2], 'left');
+  assert.equal(crossing.limited, true);
+  assert.ok(instrumentClearance(s.state.tools.left, s.state.tools.right) >= -1e-8);
+});
+
+test('keyboard contact cannot tunnel, and contact never blocks continuous wrist or roll', () => {
+  const s = new Simulation();
+  hold(s, ['KeyD'], 5, .05);
+  assert.ok(instrumentClearance(s.state.tools.left, s.state.tools.right) >= -1e-8);
+  const contact = [...s.state.tools.left.position];
+  hold(s, ['KeyX'], 20, .05);
+  nearVector(s.state.tools.left.position, contact);
+  assert.ok(s.state.tools.left.wrist[2] > 14);
+  s.adjustWrist(0, Math.PI * 20, 'left');
+  s.adjustWrist(1, -Math.PI * 16, 'left');
+  const snapshot = s.snapshot();
+  s.restore(snapshot);
+  nearVector(s.state.tools.left.wrist, snapshot.state.tools.left.wrist);
+  hold(s, ['KeyA'], .3);
+  assert.ok(s.state.tools.left.position[0] < contact[0]);
+});
+
+test('legacy overlapping poses can move outward without snapping, and opening jaws respects contact', () => {
+  const s = new Simulation();
+  const imported = s.snapshot();
+  imported.state.tools.left.position = [...imported.state.tools.right.position];
+  s.restore(imported);
+  assert.ok(instrumentClearance(s.state.tools.left, s.state.tools.right) < 0);
+  const original = [...s.state.tools.left.position];
+  assert.equal(s.moveTool([-.08,0,0], 'left').limited, false);
+  near(s.state.tools.left.position[0], original[0] - .08);
+  assert.ok(instrumentClearance(s.state.tools.left, s.state.tools.right) > 0);
+  s.setJaw('left', -5); s.setJaw('right', -5);
+  s.moveToolTo([.2,1.108,0], 'left');
+  const jaw = s.state.tools.left.jaw;
+  s.setJaw('left', 1);
+  assert.ok(s.state.tools.left.jaw >= jaw && s.state.tools.left.jaw < 1);
+  assert.ok(instrumentClearance(s.state.tools.left, s.state.tools.right) >= -1e-8);
+});
+
+test('scope follow switches are angular-speed limited, and parallel-transport up crosses the pole', () => {
+  const s = new Simulation();
+  const snapshot = s.snapshot();
+  snapshot.state.tools.right.position = [.3, 1.5, .25];
+  s.restore(snapshot);
+  const before = [...s.state.scope.direction];
+  s.select('right'); s.update(.02, new Set());
+  const dot = before.reduce((sum,v,i) => sum + v * s.state.scope.direction[i], 0);
+  assert.ok(Math.acos(Math.max(-1,Math.min(1,dot))) <= CONTROL_RATES.followMaxRadiansPerSecond * .02 + 1e-9);
+  s.select('scope'); s.setScopeFollow(false);
+  s.state.scope.pitch = Math.PI/2 - .01; s.adjustWrist(0,0,'scope');
+  let up = [...s.state.scope.cameraUp];
+  for(let i=0;i<40;i++) {
+    s.adjustWrist(0,.001,'scope');
+    assert.ok(up.reduce((sum,v,j)=>sum+v*s.state.scope.cameraUp[j],0) > .999, 'camera up flipped');
+    up = [...s.state.scope.cameraUp];
+  }
+  hold(s, ['KeyX'], 50, .05);
+  assert.ok(s.state.scope.roll > Math.PI * 8);
+  const copy = s.snapshot(); s.restore(copy);
+  near(s.state.scope.roll, copy.state.scope.roll);
+});
+
+test('cooperative scope context chooses grasp or combined cutting work point', () => {
+  const s = new Simulation(), target = [-.04,1.06,-.02];
+  s.setScopeContext({graspTarget:target, operating:false});
+  s.setScopeFollow(true,'grasp'); s.update(.01,new Set());
+  nearVector(s.state.scope.target,target);
+  s.setScopeContext({graspTarget:target, operating:true}); s.update(.01,new Set());
+  nearVector(s.state.scope.target,target.map((v,i)=>(v+s.state.tools.right.position[i])/2));
+  s.setScopeContext(); s.update(.01,new Set());
+  nearVector(s.state.scope.target,s.state.tools.left.position.map((v,i)=>(v+s.state.tools.right.position[i])/2));
+  assert.throws(()=>s.setScopeContext({graspTarget:[NaN,0,0]}),TypeError);
+});
+
+test('complete source-length shafts stay separated by default and detect the known external crossing', () => {
+  const s = new Simulation();
+  assert.ok(instrumentClearance(s.state.tools.left,s.state.tools.right) > .03);
+  for(const id of ['left','right']) {
+    const rod=toolCollisionShapes(s.state.tools[id])[0];
+    near(Math.hypot(...sub(rod.a,rod.b)),LIMITS.shaftLengths[id]);
+  }
+  const crossing=s.snapshot();
+  crossing.state.tools.left.position=[-.18,1.08,0];
+  crossing.state.tools.right.position=[.18,1.08,0];
+  s.restore(crossing);
+  // The ports-to-tips segments diverge and are 160 mm apart. Only their external
+  // extensions intersect: this regression was invisible to the original proxy.
+  assert.ok(segmentDistance(s.state.tools.left.port,s.state.tools.left.position,s.state.tools.right.port,s.state.tools.right.position) > .15);
+  assert.ok(instrumentClearance(s.state.tools.left,s.state.tools.right) < -.005);
+});
+
+test('a nonlinear external handle sweep is stopped even if both requested endpoint poses are clear', () => {
+  const s = new Simulation();
+  assert.equal(s.moveToolTo([-.18,1.08,0],'left').limited,false);
+  assert.equal(s.moveToolTo([.025,1.08,0],'right').limited,false);
+  const far=[.8,1.08,0];
+  const hypothetical={...s.state.tools.right,position:far};
+  assert.ok(instrumentClearance(s.state.tools.left,hypothetical) > .01);
+  const result=s.moveToolTo(far,'right');
+  assert.equal(result.limited,true);
+  assert.ok(s.state.tools.right.position[0] < .18);
+  assert.ok(instrumentClearance(s.state.tools.left,s.state.tools.right) > 0);
+  const contact=[...s.state.tools.right.position];
+  assert.equal(s.moveTool([-.01,0,0],'right').limited,false);
+  near(s.state.tools.right.position[0],contact[0]-.01);
+  assert.equal(s.moveTool([0,0,-.01],'right').limited,false);
+  const position=[...s.state.tools.right.position];
+  s.select('right');hold(s,['KeyX'],20,.05);
+  assert.ok(s.state.tools.right.wrist[2] > 14);
+  nearVector(s.state.tools.right.position,position);
+});
+
+test('traversing the port singularity is finite, preserves exact endpoints and adds no exclusion zone', () => {
+  const s = new Simulation(),snapshot=s.snapshot();
+  snapshot.state.tools.right.position=[3,3,3];
+  snapshot.state.tools.left.position=[-.08,1.18,.10001];
+  s.restore(snapshot);
+  const port=[...s.state.tools.left.port];
+  for(const position of [[-.08,1.18,.09999],port,[-.08001,1.18,.1],[-.08,1.18001,.1]]){
+    const result=s.moveToolTo(position,'left');
+    assert.equal(result.limited,false);
+    nearVector(s.state.tools.left.position,position);
+    nearVector(s.state.tools.left.port,port);
+    for(const shape of toolCollisionShapes(s.state.tools.left))assert.ok([...shape.a,...shape.b].every(Number.isFinite));
+    near(Math.hypot(...s.state.tools.left.shaftDirection),1);
+  }
+});
+
+test('even a submicrometre imported overlap can immediately move apart', () => {
+  const s=new Simulation(),snapshot=s.snapshot();
+  snapshot.state.tools.left.position=[.01020005,1.108,0];
+  s.restore(snapshot);
+  const gap=instrumentClearance(s.state.tools.left,s.state.tools.right);
+  assert.ok(gap<0&&gap>-1e-7);
+  assert.equal(s.moveTool([-.001,0,0],'left').limited,false);
+  assert.ok(instrumentClearance(s.state.tools.left,s.state.tools.right)>0);
 });
