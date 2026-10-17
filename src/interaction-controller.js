@@ -7,6 +7,9 @@ const localPoint = (tissue, point) => tissue.group.worldToLocal(new THREE.Vector
 const contactState=()=>({left:false,right:false,leftFragmentId:null,rightDepthMm:0,cutting:false,bladeContact:false,bladeDistanceMm:null,bladeSource:null,cutContactPointWorld:null,pendingCutSamples:0,pendingCutFrames:0,cutBacklogMm:0,cutStatus:'disabled',cutReason:'按 B 开启剪切模式'});
 const finitePoint=point=>point?.isVector3?point.toArray().every(Number.isFinite):Array.isArray(point)&&point.length===3&&point.every(Number.isFinite);
 const asVector=point=>point?.isVector3?point.clone():new THREE.Vector3(...point);
+// CAD TCP is at the jaws. This is a contact tolerance for the 1.5 mm volume,
+// not a magnetic pickup radius or a claimed material precision.
+const GRASP_CONTACT_MARGIN=.002;
 
 /** Shared interaction path for manual input and the optional guided example. */
 export class InteractionController {
@@ -291,9 +294,12 @@ export class InteractionController {
     if(left.jaw>.32)this.requiresReopen=false;
     this._reconcileDetachedGrasp();
     if (left.jaw > .32 && this.grasp) this.release();
-    if (left.jaw < .16 && !this.grasp && !this.relaxing&&!this.requiresReopen) {
+    if (left.jaw < .16 && !this.grasp&&!this.requiresReopen) {
+      // One capture attempt per actual open/close cycle. A closed empty jaw
+      // cannot acquire tissue later merely by translating through a surface.
+      this.requiresReopen=true;
       const p = localPoint(this.tissue, left.position);
-      const anchor = this.tissue.findGraspPoint(p, .006);
+      const anchor = this.relaxing?null:this.tissue.findGraspPoint(p, GRASP_CONTACT_MARGIN);
       if (anchor) {
         if(anchor.fragmentId!=null)this._attachFragment(anchor.fragmentId,anchor.reference?.toArray?.()??null,{surfaceAnchor:anchor});
         else{
@@ -302,7 +308,7 @@ export class InteractionController {
           this.onEvent('grasp');
           this.onMessage('左钳已夹住肝包膜：按 E 抬起，组织会随钳尖牵拉；V 松开');
         }
-      }
+      }else this.onMessage(this.relaxing?'组织正在回弹，请稍候再张开并闭合左钳':'左钳未夹到组织：先 V 张开，贴近表面后 C 夹持');
     }
     if (this.grasp) this.applyGrasp();
     if ((!this.grasp||this.grasp.kind==='fragment')&&this.relaxing) {
@@ -320,12 +326,12 @@ export class InteractionController {
     this.tissue.updateFragments?.(dt);
     const { left, right } = this.sim.state.tools;
     const leftPoint=localPoint(this.tissue,left.position);
-    const leftDistance = this.tissue.contactDistance?.(leftPoint,.006)??this.tissue.sampleDistance(leftPoint);
-    const leftFragmentId=this.tissue.findFragmentAt?.(leftPoint,.006)??null;
+    const leftDistance = this.tissue.contactDistance?.(leftPoint,GRASP_CONTACT_MARGIN)??this.tissue.sampleDistance(leftPoint);
+    const leftFragmentId=this.tissue.findFragmentAt?.(leftPoint,GRASP_CONTACT_MARGIN)??null;
     const point = localPoint(this.tissue, right.position);
     const pending=this.cuttingBusy||this.tissue.busy;
     const distance = pending?Infinity:(this.tissue.contactDistance?.(point,.0032)??this.tissue.sampleDistance(point));
-    this.contact.left = leftDistance < .006||leftFragmentId!=null;
+    this.contact.left = Math.abs(leftDistance) < GRASP_CONTACT_MARGIN||leftFragmentId!=null;
     this.contact.leftFragmentId=leftFragmentId;
     const blade=this._bladeGeometry();
     const contactKey=[this.tissue._contactRevision??0,this.tissue._epoch??0,this.tissue._cuts?.length??0,...blade.segments.flatMap(segment=>[...segment.a.toArray(),...segment.b.toArray()])].join(',');
@@ -362,7 +368,7 @@ export class InteractionController {
 
   get metrics() {
     return { ...this.contact, grasp: copy(this.grasp), deformation: this.tissue.graspMetrics,
-      cuttingBusy: this.cuttingBusy,heldFragmentId:this.grasp?.kind==='fragment'?this.grasp.fragmentId:null };
+      cuttingBusy: this.cuttingBusy,requiresReopen:this.requiresReopen,heldFragmentId:this.grasp?.kind==='fragment'?this.grasp.fragmentId:null };
   }
 }
 

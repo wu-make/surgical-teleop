@@ -37,6 +37,19 @@ test('a specimen preserves real volume geometry, material coordinates and signed
   tissue.dispose();
 });
 
+test('material ownership does not attach a nearby retained point to the wrong specimen',()=>{
+  const {tissue,descriptor}=fixture();
+  try{
+    tissue.fragments.add(descriptor);
+    assert.equal(tissue.fragmentAtReference([.010,0,0])===null,true,'one millimetre outside a specimen is not part of its material');
+    const shifted={...descriptor,id:'adjacent-piece',center:[.019,0,0],
+      positions:Float32Array.from(descriptor.positions,(v,i)=>v+(i%3===0?.019:0)),
+      volume:{...descriptor.volume,origin:descriptor.volume.origin.map((v,i)=>v+(i===0?.019:0))}};
+    tissue.fragments.add(shifted);
+    assert.equal(tissue.fragmentAtReference([.010,0,0])?.id,shifted.id,'a boundary material anchor belongs to the adjacent component, not the first nearby mesh');
+  }finally{tissue.dispose();}
+});
+
 test('holding and rotating keeps the exact grasp point fixed while the complete specimen moves', () => {
   const { tissue, descriptor } = fixture();
   const piece = tissue.fragments.add(descriptor), anchor = new THREE.Vector3(.009, 0, 0);

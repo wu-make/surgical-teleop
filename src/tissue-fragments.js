@@ -102,7 +102,10 @@ export class TissueFragments {
   }
 
   atReference(point) {
-    for (const piece of this.items.values()) if (sampleFragmentVolume(piece.volume, point) <= .002) return piece;
+    // Material ownership is distinct from displayed jaw contact. A millimetre
+    // proximity shell can transfer a retained anchor to an adjacent fragment.
+    // Only allow float32/interpolation roundoff at its zero-level boundary.
+    for (const piece of this.items.values()) if (sampleFragmentVolume(piece.volume, point) <= 1e-7) return piece;
     return null;
   }
 

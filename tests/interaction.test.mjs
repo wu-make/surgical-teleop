@@ -48,6 +48,43 @@ function raisedWorkbench() {
   return result;
 }
 
+test('a closed empty grasper cannot acquire tissue by moving into it without reopening',async()=>{
+  const {sim,tissue,interaction}=workbench();
+  try{
+    sim.state.tools.left.position=[0,0,.05];
+    await interaction.update(1/60);assert.equal(interaction.grasp,null);
+    sim.state.tools.left.position=[0,0,.0305];
+    await interaction.update(1/60);assert.equal(interaction.grasp,null,'an already closed jaw must not magnetically capture a new surface');
+    assert.equal(interaction.requiresReopen,true);
+    sim.setJaw('left',.8);await interaction.update(1/60);
+    sim.setJaw('left',0);await interaction.update(1/60);
+    assert.equal(interaction.grasp?.kind,'tissue');
+  }finally{tissue.dispose();}
+});
+
+test('closing several millimetres away cannot pull the tissue surface across an air gap',async()=>{
+  const {sim,tissue,interaction}=workbench();
+  try{
+    sim.state.tools.left.position=[0,0,.035];
+    await interaction.update(1/60);
+    assert.equal(interaction.grasp,null,'a 5 mm gap is outside the displayed contact tolerance');
+    assert.equal(interaction.contact.left,false);
+    assert.equal(tissue.graspMetrics.active,false);
+    sim.setJaw('left',.8);await interaction.update(1/60);
+    sim.state.tools.left.position=[0,0,.031];sim.setJaw('left',0);await interaction.update(1/60);
+    assert.equal(interaction.grasp?.kind,'tissue','a fresh closure at the surface still captures');
+  }finally{tissue.dispose();}
+});
+
+test('a jaw deep inside the organ is not reported as surface contact or attached to a distant capsule',async()=>{
+  const {sim,tissue,interaction}=workbench();
+  try{
+    sim.state.tools.left.position=[0,0,0];await interaction.update(1/60);
+    assert.equal(interaction.grasp,null);
+    assert.equal(interaction.contact.left,false,'negative interior SDF alone must not mean a nearby surface');
+  }finally{tissue.dispose();}
+});
+
 test('left traction persists while the selected right shear removes held tissue', async () => {
   const { sim, tissue, interaction } = workbench();
   await interaction.update(1 / 60);
@@ -131,7 +168,9 @@ test('an attached material anchor transfers seamlessly to its disconnected speci
   await interaction.update(1/60);
   sim.state.tools.left.position[2]+=.016;await interaction.update(1/60);
   const reference=new THREE.Vector3(...interaction.grasp.reference);
-  const normal=reference.clone().normalize(),center=reference.clone().addScaledVector(normal,-.005);
+  // Keep the material anchor inside this sampled fixture. An analytic sphere
+  // boundary can lie outside its interpolated finite-grid surface.
+  const normal=reference.clone().normalize(),center=reference.clone().addScaledVector(normal,-.0045);
   const descriptor=specimenDescriptor(center.toArray());descriptor.deformation=structuredClone(tissue._deformation);
   const piece=tissue.fragments.add(descriptor),frozenVertices=piece.mesh.geometry.attributes.position.array.slice();
   const before=piece.position.clone();
@@ -154,7 +193,7 @@ test('an attached material anchor transfers seamlessly to its disconnected speci
 test('a delayed cut result retains the exact material contact when the left hand moved during worker processing',async()=>{
   const {sim,tissue,interaction}=raisedWorkbench();interaction.toolQuaternion=()=>new THREE.Quaternion();
   await interaction.update(1/60);sim.state.tools.left.position[2]+=.012;await interaction.update(1/60);
-  const reference=new THREE.Vector3(...interaction.grasp.reference),center=reference.clone().addScaledVector(reference.clone().normalize(),-.005);
+  const reference=new THREE.Vector3(...interaction.grasp.reference),center=reference.clone().addScaledVector(reference.clone().normalize(),-.0045);
   const descriptor=specimenDescriptor(center.toArray());descriptor.deformation=structuredClone(tissue._deformation);
   const piece=tissue.fragments.add(descriptor),frozenAnchor=tissue.deformPoint(reference).sub(piece.frozenCenter);
   sim.state.tools.left.position[0]+=.006;sim.state.tools.left.position[2]+=.004;
@@ -172,7 +211,7 @@ test('regrasp uses the actual specimen surface, supports local orientation, rele
   tissue.group.rotation.z=.28;tissue.group.updateMatrixWorld(true);
   const descriptor=specimenDescriptor([.05,.055,.01],.005);
   const piece=tissue.fragments.add(descriptor);
-  const surface=new THREE.Vector3(.055,.055,.01),tip=surface.clone().add(new THREE.Vector3(.003,0,0));
+  const surface=new THREE.Vector3(.055,.055,.01),tip=surface.clone().add(new THREE.Vector3(.001,0,0));
   sim.state.tools.left.position=tissue.group.localToWorld(tip.clone()).toArray();
   let worldRotation=tissue.group.getWorldQuaternion(new THREE.Quaternion());
   interaction.toolQuaternion=()=>worldRotation;
@@ -181,7 +220,7 @@ test('regrasp uses the actual specimen surface, supports local orientation, rele
   assert.equal(interaction.contact.leftFragmentId,piece.id);
   assert.equal(tissue.graspMetrics.active,false);
   const contact=new THREE.Vector3(...piece.attachment.anchor).applyQuaternion(piece.quaternion).add(piece.position);
-  assert.ok(contact.distanceTo(tip)<1e-10,'the projected material surface closes the 3 mm jaw gap');
+  assert.ok(contact.distanceTo(tip)<1e-10,'the projected material surface closes only the 1 mm contact tolerance');
   assert.ok(Math.abs(new THREE.Vector3(...piece.attachment.anchor).length()-.005)<.0002,'attachment must use the material surface, not the floating tool point');
   worldRotation=worldRotation.clone().multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1),.7));
   await interaction.update(1/60);
