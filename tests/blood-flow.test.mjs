@@ -55,6 +55,11 @@ test('detached wound cells cease perfusion and frozen undeformed specimens ignor
     t.getFragment=id=>id==='piece'?piece:null;b.nodes[0].fragmentId='piece';t._deformation={local:[0,0,0],displacement:[0,.02,0],radius:.065};
     b.updatePositions();assert(b.nodes[0].display.distanceTo(new THREE.Vector3(.03,.03,0))<1e-12);
     step(60);assert.equal(b.emitted,0);
+    piece.position.x+=.012;piece.quaternion.setFromAxisAngle(new THREE.Vector3(0,0,1),Math.PI/2);b.updatePositions();
+    assert(b.nodes[0].display.distanceTo(new THREE.Vector3(.032,.02,0))<1e-12,'blood moves and rotates with a carried specimen');
+    assert(b.nodes[0].normal.distanceTo(new THREE.Vector3(-1,0,0))<1e-12);
+    t.getFragment=()=>null;t._deformation=null;b.updatePositions();
+    assert(b.nodes[0].display.distanceTo(new THREE.Vector3(0,.01,0))<1e-12,'owner changes invalidate a previous rigid pose');
   }finally{t.dispose();}
 });
 

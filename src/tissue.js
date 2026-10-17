@@ -3,7 +3,7 @@ import { validateCut, normalizeMetadata, distanceToCut, cutBounds, nodeIndex, no
 import { createTissueMaterial } from './tissue-material.js';
 import { TissueFragments } from './tissue-fragments.js';
 import { BloodFlow } from './blood-flow.js';
-import {closestParentSurface,closestParentSegment} from './tissue-contact.js';
+import {closestParentSurface,closestParentSegment,firstParentHit} from './tissue-contact.js';
 
 const vectorArray = point => Array.isArray(point) ? [...point] : [point.x, point.y, point.z];
 const copyCuts = cuts => cuts.map(cut => validateCut(cut));
@@ -131,6 +131,11 @@ export class TissueVolume {
   moveHeldFragment(id, point, quaternion) { return this.fragments.move(id, point, quaternion); }
   releaseFragment(id) { return this.fragments.release(id); }
   updateFragments(dt) { this.fragments.update(dt); }
+  collideBloodDrop(start,end,radius){
+    const crossing=firstParentHit(this._meshes.values(),start,end);if(crossing)return crossing;
+    const surface=closestParentSurface(this._meshes.values(),end,radius+.00005);
+    return surface&&end.clone().sub(surface).dot(surface.normal)<radius?surface:null;
+  }
   get fragmentMetrics() { return this.fragments.metrics; }
 
   /** Continuous local distance to the current organ; useful for contact gating. */

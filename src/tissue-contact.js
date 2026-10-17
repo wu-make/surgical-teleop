@@ -59,6 +59,25 @@ class SurfaceIndex {
     };
     visit(this.root);this.version=this.positions.version;
   }
+  firstHit(start,end){
+    this.refit();
+    const direction=end.clone().sub(start),length=direction.length();if(length<1e-12)return null;
+    direction.divideScalar(length);const ray=new THREE.Ray(start,direction),triangle=new THREE.Triangle(),hit=new THREE.Vector3(),normal=new THREE.Vector3();
+    const bounds=[Math.min(start.x,end.x),Math.min(start.y,end.y),Math.min(start.z,end.z),Math.max(start.x,end.x),Math.max(start.y,end.y),Math.max(start.z,end.z)];
+    let best=length+1e-10,result=null;const stack=[this.root];
+    while(stack.length){
+      const node=stack.pop();if(boxesDistanceSquared(bounds,node.bounds)>0)continue;
+      if(!node.triangles){stack.push(node.left,node.right);continue;}
+      for(const id of node.triangles){
+        triangle.a.fromBufferAttribute(this.positions,this.indices[id*3]);triangle.b.fromBufferAttribute(this.positions,this.indices[id*3+1]);triangle.c.fromBufferAttribute(this.positions,this.indices[id*3+2]);
+        triangle.getNormal(normal);if(normal.dot(direction)>=-1e-12)continue;
+        if(!ray.intersectTriangle(triangle.a,triangle.b,triangle.c,false,hit))continue;
+        const distance=hit.distanceTo(start);if(distance>best)continue;
+        best=distance;result=hit.clone();result.normal=normal.clone();result.travel=distance;
+      }
+    }
+    return result;
+  }
   nearest(point,maximum){
     this.refit();let best=maximum*maximum,result=null;
     const triangle=new THREE.Triangle(),candidate=new THREE.Vector3(),barycentric=new THREE.Vector3(),temporary=new THREE.Vector3();
@@ -110,6 +129,19 @@ class SurfaceIndex {
 }
 
 const indices=new WeakMap();
+/** Earliest inward centre-line crossing, independent of chunk iteration order.
+ * Used together with endpoint sphere overlap for small fluid parcels. */
+export function firstParentHit(meshes,start,end){
+  let result=null,best=start.distanceTo(end)+1e-10;
+  const bounds=[Math.min(start.x,end.x),Math.min(start.y,end.y),Math.min(start.z,end.z),Math.max(start.x,end.x),Math.max(start.y,end.y),Math.max(start.z,end.z)];
+  for(const mesh of meshes){
+    const geometry=mesh.geometry,box=geometry.boundingBox;
+    if(!geometry.index?.count||boxesDistanceSquared(bounds,[box.min.x,box.min.y,box.min.z,box.max.x,box.max.y,box.max.z])>0)continue;
+    let index=indices.get(geometry);if(!index){index=new SurfaceIndex(geometry);indices.set(geometry,index);}
+    const candidate=index.firstHit(start,end);if(candidate&&candidate.travel<best){best=candidate.travel;result=candidate;}
+  }
+  return result;
+}
 export function closestParentSurface(meshes,point,margin){
   let result=null,best=margin;
   for(const mesh of meshes){
