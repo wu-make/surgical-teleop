@@ -1,11 +1,13 @@
 import * as THREE from 'three';
 import {deformPoint,deformNormal,deformationWeight} from './tissue-worker.js';
+import {connectWoundNodes} from './wound-surface.js';
 
 // A bounded, conservative surface-film model. All volumes are mm^3. Rates,
 // mobility and pressure dwell are illustrative, not patient-calibrated values.
 const CELL=.0025,MAX_NODES=320,MAX_DROPS=96;
 const keyOf=p=>p.map(v=>Math.round(v/CELL)).join(':');
-const hash=p=>{let h=2166136261;for(const x of keyOf(p)){h^=x.charCodeAt(0);h=Math.imul(h,16777619);}return(h>>>0)/4294967296;};
+const hashKey=key=>{let h=2166136261;for(let i=0;i<key.length;i++){h^=key.charCodeAt(i);h=Math.imul(h,16777619);}return(h>>>0)/4294967296;};
+const hash=p=>hashKey(keyOf(p));
 const vec=p=>new THREE.Vector3(...p);
 const pointSegment=(p,a,b)=>{const d=b.clone().sub(a),t=THREE.MathUtils.clamp(p.clone().sub(a).dot(d)/Math.max(1e-20,d.lengthSq()),0,1);return p.distanceTo(a.clone().addScaledVector(d,t));};
 const clone=v=>structuredClone(v);
@@ -34,11 +36,20 @@ export class BloodFlow {
   }
   // Rebuild only after an actual CSG result. Fresh exposed faces, not B or a
   // timer, create perfused sources. Adjacent capsule cells allow film spreading.
-  syncSurface({injury=false}={}){
+  syncSurface({injury=false,selection=null}={}){
+    if(selection){this._applySurfaceSelection(selection.nodes,injury,selection.edges);return;}
     const candidates=new Map(),capsule=[];
     const scan=(mesh,fragmentId=null)=>{
       const cached=this._surfaceCache.get(mesh.uuid);if(cached){for(const entry of cached)store(entry);return;}
       const entries=[];
+      const prepared=mesh.geometry.userData.woundSurface;
+      if(prepared){
+        for(const [array,cut]of [[prepared.cuts,true],[prepared.capsule,false]])for(let i=0;i<array.length;i+=8){
+          const reference=Array.from(array.subarray(i,i+3)),restNormal=Array.from(array.subarray(i+3,i+6));
+          const entry={key:keyOf(reference),reference,restNormal,area:array[i+6],sourceArea:cut?array[i+7]:undefined,cut,fragmentId};entries.push(entry);store(entry);
+        }
+        this._surfaceCache.set(mesh.uuid,entries);return;
+      }
       const g=mesh.geometry,p=g.attributes.tissueRestPosition,n=g.userData.materialNormals??g.userData.restNormals??g.attributes.normal.array,mask=g.attributes.tissueCutMask?.array,idx=g.index?.array;
       if(!p||!mask||!idx)return;
       for(let i=0;i<idx.length;i+=3){
@@ -52,12 +63,12 @@ export class BloodFlow {
       }
       this._surfaceCache.set(mesh.uuid,entries);
     };
-    const store=entry=>{if(entry.cut){const old=candidates.get(entry.key),sourceArea=Math.min(6.25,(old?.sourceArea??0)+entry.area);if(!old||old.area<entry.area)candidates.set(entry.key,{...entry,sourceArea});else old.sourceArea=sourceArea;}else capsule.push(entry);};
+    const store=entry=>{entry.seed??=hashKey(entry.key);if(entry.cut){const old=candidates.get(entry.key),sourceArea=Math.min(6.25,(old?.sourceArea??0)+(entry.sourceArea??entry.area));if(!old||old.area<entry.area)candidates.set(entry.key,{...entry,sourceArea});else old.sourceArea=sourceArea;}else capsule.push(entry);};
     const activeMeshes=new Set([...this.tissue._meshes.values(),...[...this.tissue.fragments.items.values()].map(p=>p.mesh)].map(m=>m.uuid));
     for(const id of this._surfaceCache.keys())if(!activeMeshes.has(id))this._surfaceCache.delete(id);
     for(const mesh of this.tissue._meshes.values())scan(mesh);
     for(const piece of this.tissue.fragments.items.values())scan(piece.mesh,piece.id);
-    const cutCells=[...candidates.values()].sort((a,b)=>hash(a.reference)-hash(b.reference)).slice(0,240);
+    const cutCells=[...candidates.values()].sort((a,b)=>a.seed-b.seed).slice(0,240);
     const nearLow=[Infinity,Infinity,Infinity],nearHigh=[-Infinity,-Infinity,-Infinity];
     for(const c of cutCells)for(let i=0;i<3;i++){nearLow[i]=Math.min(nearLow[i],c.reference[i]-.012);nearHigh[i]=Math.max(nearHigh[i],c.reference[i]+.012);}
     let adjacent=0;
@@ -66,14 +77,20 @@ export class BloodFlow {
       if(c.reference.some((v,i)=>v<nearLow[i]||v>nearHigh[i]))continue;
       if(!candidates.has(c.key)&&cutCells.some(n=>n.reference.reduce((s,v,i)=>s+(v-c.reference[i])**2,0)<.000144)){candidates.set(c.key,c);adjacent++;}
     }
-    const previous=new Map(this.nodes.map(n=>[n.key,n])),selected=[...cutCells,...[...candidates.values()].filter(n=>!n.cut).slice(0,MAX_NODES-cutCells.length)];
+    const selected=[...cutCells,...[...candidates.values()].filter(n=>!n.cut).slice(0,MAX_NODES-cutCells.length)];
+    this._applySurfaceSelection(selected,injury);
+  }
+  _applySurfaceSelection(selected,injury,edges=null){
+    const previousNodes=this.nodes,previous=new Map(this.nodes.map(n=>[n.key,n]));
     this.nodes=selected.map(c=>{
       const old=previous.get(c.key),fresh=injury&&c.cut&&(!old?.cut||vec(c.reference).distanceTo(vec(old.reference))>.00025);
       previous.delete(c.key);
-      return {...c,area:6.25,volume:old?.volume??0,clot:fresh||!c.cut?0:(old?.clot??0),injured:c.cut&&(fresh||old?.injured||false),pressure:0};
+      const unchanged=old&&old.fragmentId===c.fragmentId&&old.reference.every((v,i)=>v===c.reference[i])&&old.restNormal.every((v,i)=>v===c.restNormal[i]);
+      const node=unchanged?old:{...c,area:6.25,volume:old?.volume??0};
+      Object.assign(node,{cut:c.cut,sourceArea:c.sourceArea,clot:fresh||!c.cut?0:(old?.clot??0),injured:c.cut&&(fresh||old?.injured||false),pressure:0});return node;
     });
     for(const old of previous.values())if(old.volume>0){const p=old.display??this.displayPoint(old);this.shed(p,old.volume);}
-    this.updatePositions();this.connect();this.render();
+    this.updatePositions();if(this.nodes.length!==previousNodes.length||this.nodes.some((n,i)=>n!==previousNodes[i])){if(edges)this._neighbours=Array.from({length:edges.length/2},(_,i)=>[edges[i*2],edges[i*2+1]]);else this.connect();}this.render();
   }
   displayPoint(n){
     const piece=n.fragmentId!=null?this.tissue.getFragment(n.fragmentId):null;
@@ -95,16 +112,7 @@ export class BloodFlow {
     }
   }
   connect(){
-    this._neighbours=[];
-    const cell=.0047,grid=new Map(),key=(p,x=0,y=0,z=0)=>`${Math.floor(p[0]/cell)+x}:${Math.floor(p[1]/cell)+y}:${Math.floor(p[2]/cell)+z}`;
-    for(let i=0;i<this.nodes.length;i++){
-      const a=this.nodes[i];
-      for(let x=-1;x<=1;x++)for(let y=-1;y<=1;y++)for(let z=-1;z<=1;z++)for(const j of grid.get(key(a.reference,x,y,z))??[]){
-        const b=this.nodes[j],distance=a.reference.reduce((s,v,k)=>s+(v-b.reference[k])**2,0),dot=a.restNormal.reduce((s,v,k)=>s+v*b.restNormal[k],0);
-        if(a.fragmentId===b.fragmentId&&distance<cell*cell&&distance>1e-8&&dot>-.15)this._neighbours.push([j,i]);
-      }
-      const k=key(a.reference);if(!grid.has(k))grid.set(k,[]);grid.get(k).push(i);
-    }
+    this._neighbours=connectWoundNodes(this.nodes);
   }
   shed(position,volume){
     if(volume<=0)return;
@@ -128,7 +136,7 @@ export class BloodFlow {
       n.pressure=THREE.MathUtils.clamp(1-distance/.003,0,1);if(n.pressure>.05&&n.cut)this.pressureContacts++;
       if(n.injured&&n.fragmentId==null){
         n.clot=THREE.MathUtils.clamp(n.clot+h*(n.pressure>.25?n.pressure*.12:-.00015),0,1);
-        const rate=(n.sourceArea??n.area)*.075*(.55+hash(n.reference))*(1-n.clot)**3*(1-.99*n.pressure);
+        const rate=(n.sourceArea??n.area)*.075*(.55+(n.seed??hash(n.reference)))*(1-n.clot)**3*(1-.99*n.pressure);
         const volume=rate*h;n.volume+=volume;this.emitted+=volume;
       }
     }
@@ -150,6 +158,7 @@ export class BloodFlow {
       if(n.volume>limit){const volume=n.volume-limit;n.volume=limit;this.shed(n.display.clone().addScaledVector(n.normal,.0003),volume);}
     }
     const retained=[];
+    if(this.drops.length)this.tissue.prepareBloodContacts?.();
     for(const d of this.drops){
       const p=vec(d.position),v=vec(d.velocity),steps=Math.ceil(h/.008),step=h/steps;
       let deposited=false;
@@ -164,7 +173,7 @@ export class BloodFlow {
         // contact progressively slower as cuts accumulated. The first inward
         // crossing also catches a fast centre line crossing a thin surface.
         const radius=Math.cbrt(d.volume*3/(4*Math.PI))*.001;
-        const surface=this.tissue.collideBloodDrop?.(previous,p,radius);
+        const surface=this.tissue.collideBloodDrop?.(previous,p,radius,true);
         if(surface){p.copy(surface).addScaledVector(surface.normal,radius+.00005);const inward=v.dot(surface.normal);if(inward<0)v.addScaledVector(surface.normal,-inward);v.multiplyScalar(Math.exp(-step*8));}
         if(this.tissue.group.localToWorld(p.clone()).y<.958){this.escaped+=d.volume;deposited=true;break;}
       }
@@ -183,7 +192,7 @@ export class BloodFlow {
         this.film.setColorAt(count,new THREE.Color().setRGB(1-n.clot*.35,.82,.88));count++;
       }
       if(n.cut){
-        const seed=hash(n.reference),tangent=new THREE.Vector3(1,.3,.5).cross(normal).normalize();
+        const seed=n.seed??hash(n.reference),tangent=new THREE.Vector3(1,.3,.5).cross(normal).normalize();
         m.position.copy(n.display).addScaledVector(normal,.00007);m.quaternion.setFromUnitVectors(up,tangent);m.scale.set(.000025,.00020+seed*.00030,.000025);m.updateMatrix();this.fibres.setMatrixAt(fibres++,m.matrix);
       }
     }

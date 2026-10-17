@@ -1,3 +1,4 @@
+import {prepareWoundSurface,selectWoundSurface} from './wound-surface.js';
 // Anatomy is sampled in metres. The field is negative inside the source organ.
 // These exports deliberately have no browser dependencies so the same geometry
 // and CSG code can be checked with Node's test runner.
@@ -592,12 +593,12 @@ export function restoreVolumeWithSeparations(state, cuts = [], separations = [])
   return { fragments, dirty: new Set(allChunkKeys(state)), exclusions: { nodeIndices, positiveValues } };
 }
 
-function buildChunks(state, keys) { return [...keys].map(key => polygonizeChunk(state, key)); }
+function buildChunks(state, keys) { return [...keys].map(key => {const chunk=polygonizeChunk(state,key);chunk.woundSurface=prepareWoundSurface(chunk);return chunk;}); }
 function statistics(state) { return { removedVolumeMm3: state.removedVolumeMm3, totalVolumeMm3: state.totalVolumeMm3, voxelMm: Math.max(...state.meta.spacing) * 1000, cutCount: state.cuts.length,
   fragmentCount: state.fragmentRecords.length, fragmentVolumeMm3: state.fragmentVolumeMm3, topology: { ...state.topologyMetrics } }; }
 
 if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScope) {
-  let state;
+  let state;const woundChunks=new Map(),woundFragments=new Map();
   self.onmessage = ({ data }) => {
     try {
       let chunks, changedSamples = 0, removedMm3 = 0, fragments = [], exclusions = { nodeIndices: new Uint32Array(), positiveValues: new Float32Array() };
@@ -626,10 +627,15 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
         fragments = restored.fragments; exclusions = restored.exclusions;
         chunks = buildChunks(state, allChunkKeys(state));
       } else throw new Error(`Unknown tissue operation: ${data.type}`);
+      if(data.type!=='cut'){woundChunks.clear();woundFragments.clear();}
+      for(const chunk of chunks){woundChunks.delete(chunk.key);if(chunk.positions.length)woundChunks.set(chunk.key,chunk.woundSurface);delete chunk.woundSurface;}
+      for(const fragment of fragments)woundFragments.set(fragment.id,{id:fragment.id,surface:prepareWoundSurface(fragment,true)});
+      const woundSelection=selectWoundSurface(woundChunks.values(),woundFragments.values());
       const transfer = chunks.flatMap(chunk => [chunk.positions.buffer, chunk.normals.buffer, chunk.colors.buffer, chunk.cutMasks.buffer, chunk.indices.buffer]);
-      for (const fragment of fragments) transfer.push(fragment.positions.buffer, fragment.normals.buffer, fragment.colors.buffer, fragment.cutMasks.buffer, fragment.indices.buffer, fragment.volume.values.buffer);
+      for (const fragment of fragments)transfer.push(fragment.positions.buffer, fragment.normals.buffer, fragment.colors.buffer, fragment.cutMasks.buffer, fragment.indices.buffer, fragment.volume.values.buffer);
+      transfer.push(woundSelection.edges.buffer);
       transfer.push(exclusions.nodeIndices.buffer, exclusions.positiveValues.buffer);
-      self.postMessage({ id: data.id, epoch: data.epoch, type: data.type, chunks, statistics: statistics(state), changedSamples, removedMm3, fragments,
+      self.postMessage({ id: data.id, epoch: data.epoch, type: data.type, chunks,woundSelection, statistics: statistics(state), changedSamples, removedMm3, fragments,
         exclusions: { reset: data.type !== 'cut', ...exclusions }, separations: state.separations.map(event => ({ ...event })) }, transfer);
     } catch (error) { self.postMessage({ id: data.id, epoch: data.epoch, error: error.message }); }
   };

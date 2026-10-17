@@ -6,6 +6,7 @@ import {RoundedBoxGeometry} from 'three/addons/geometries/RoundedBoxGeometry.js'
 import {loadAssemblies,G1_GRIP} from './authentic-assemblies.js';
 import {ScopeFeed} from './scope-feed.js';
 import {buildOperatingRoom} from './operating-room.js';
+import {ExactRenderBatches} from './exact-render-batches.js';
 
 const V=new THREE.Vector3(), Y=new THREE.Vector3(0,1,0), Q=new THREE.Quaternion();
 const BASE=import.meta.env?.BASE_URL??'/';
@@ -255,6 +256,14 @@ export class SurgicalScene{
     this.controls.update();
   }
   render(now=0){
+    const renderStart=performance.now();
+    if(this.tissue?.ready&&this.assemblies&&this.robotLoaded&&this.renderer.extensions.has('WEBGL_multi_draw')){
+      this.exactBatches??=new ExactRenderBatches(this.scene);
+      const sources=[];this.room.traverse(m=>{if(m.isMesh)sources.push(m);});
+      for(const mesh of this.tissue?._meshes.values()??[])sources.push(mesh);
+      for(const piece of this.tissue?.fragments.items.values()??[])sources.push(piece.mesh);
+      this.exactBatches.sync(sources);
+    }
     const r=this.renderer,w=this.stage.clientWidth,h=this.stage.clientHeight;
     if(w<1||h<1)return;
     const stageRect=this.stage.getBoundingClientRect(),miniRect=this.mini.getBoundingClientRect();
@@ -264,6 +273,7 @@ export class SurgicalScene{
     this.cavity.children[0].visible=true;this.scene.background=new THREE.Color('#6b4a42');
     this.scene.environmentIntensity=.34;r.toneMappingExposure=1.10;
     this.scopeFeed.capture(r,this.scene,this.endoCamera,this.mode==='endo'?w:mw,this.mode==='endo'?h:mh);
+    const scopeEnd=performance.now(),scopeCalls=r.info.render?.calls??0;
     r.setRenderTarget(null);r.setScissorTest(false);r.setViewport(0,0,w,h);r.clear();
     this.cavity.children[0].visible=false;this.scene.background=new THREE.Color('#c2d0d0');
     this.scene.environmentIntensity=.80;r.toneMappingExposure=1.0;
@@ -276,6 +286,7 @@ export class SurgicalScene{
       this.scopeFeed.blit(r,mx,my,mw,mh);
     }
     r.setScissorTest(false);
+    this.renderTimings={scopeMs:scopeEnd-renderStart,overviewMs:performance.now()-scopeEnd,scopeCalls,overviewCalls:(r.info.render?.calls??0)-scopeCalls,multiDraw:r.extensions?.has?.('WEBGL_multi_draw')??false,batching:this.exactBatches?.metrics};
   }
-  dispose(){this.disposed=true;this.resizeObserver.disconnect();this.controls.dispose();this.env.dispose();this.scene.traverse(o=>{o.geometry?.dispose();if(o.material){for(const m of Array.isArray(o.material)?o.material:[o.material])if(m!==this.scopeFeed.monitorMaterial)m.dispose();}});this.scopeFeed.dispose();this.renderer.dispose();}
+  dispose(){this.disposed=true;this.exactBatches?.dispose();this.resizeObserver.disconnect();this.controls.dispose();this.env.dispose();this.scene.traverse(o=>{o.geometry?.dispose();if(o.material){for(const m of Array.isArray(o.material)?o.material:[o.material])if(m!==this.scopeFeed.monitorMaterial)m.dispose();}});this.scopeFeed.dispose();this.renderer.dispose();}
 }

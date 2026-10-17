@@ -60,6 +60,7 @@ export class TissueFragments {
     geometry.setAttribute('tissueRestPosition', new THREE.BufferAttribute(descriptor.positions, 3));
     geometry.setAttribute('tissueCutMask', new THREE.BufferAttribute(descriptor.cutMasks, 1));
     geometry.userData.materialNormals=descriptor.normals;
+    geometry.userData.woundSurface=descriptor.woundSurface;
     geometry.setIndex(new THREE.BufferAttribute(descriptor.indices, 1));
     geometry.computeBoundingBox(); geometry.computeBoundingSphere();
     const mesh = new THREE.Mesh(geometry, this.tissue.material);

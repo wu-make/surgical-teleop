@@ -4,6 +4,7 @@ import { createTissueMaterial } from './tissue-material.js';
 import { TissueFragments } from './tissue-fragments.js';
 import { BloodFlow } from './blood-flow.js';
 import {closestParentSurface,closestParentSegment,firstParentHit} from './tissue-contact.js';
+import {MeshBroadPhase} from './mesh-broad-phase.js';
 
 const vectorArray = point => Array.isArray(point) ? [...point] : [point.x, point.y, point.z];
 const copyCuts = cuts => cuts.map(cut => validateCut(cut));
@@ -23,6 +24,8 @@ export class TissueVolume {
     this.voxelMm = 1.5;
     this.error = null;
     this._meshes = new Map();
+    this._bloodBroadPhase=new MeshBroadPhase();
+    this.updateTimings={};
     this._cuts = [];
     this._cutGroups = [];
     this._cutGroupMap = new Map();
@@ -131,9 +134,12 @@ export class TissueVolume {
   moveHeldFragment(id, point, quaternion) { return this.fragments.move(id, point, quaternion); }
   releaseFragment(id) { return this.fragments.release(id); }
   updateFragments(dt) { this.fragments.update(dt); }
-  collideBloodDrop(start,end,radius){
-    const crossing=firstParentHit(this._meshes.values(),start,end);if(crossing)return crossing;
-    const surface=closestParentSurface(this._meshes.values(),end,radius+.00005);
+  prepareBloodContacts(){this._bloodBroadPhase.sync(this._meshes.values());}
+  collideBloodDrop(start,end,radius,prepared=false){
+    if(!prepared)this.prepareBloodContacts();
+    const meshes=this._bloodBroadPhase.query(start,end,radius+.00005);
+    const crossing=firstParentHit(meshes,start,end);if(crossing)return crossing;
+    const surface=closestParentSurface(meshes,end,radius+.00005);
     return surface&&end.clone().sub(surface).dot(surface.normal)<radius?surface:null;
   }
   get fragmentMetrics() { return this.fragments.metrics; }
@@ -484,6 +490,7 @@ export class TissueVolume {
   }
 
   _receive(data) {
+    const receiveStart=performance.now();
     const active = this._inFlight;
     if (!active || data.id !== active.command.id) return;
     this._inFlight = null;
@@ -503,9 +510,11 @@ export class TissueVolume {
       if (data.type === 'restore') this._restoringFragmentPoses = null;
       for (const chunk of data.chunks) this._replaceChunk(chunk);
       Object.assign(this, data.statistics);
-      if(data.type==='restore'){this.blood.restore(this._restoringBlood);this._restoringBlood=null;if(!this.blood.nodes.length)this.blood.syncSurface();}
-      else if(data.type==='cut')this.blood.syncSurface({injury:data.removedMm3>1e-8});
+      const woundStart=performance.now();
+      if(data.type==='restore'){this.blood.restore(this._restoringBlood);this._restoringBlood=null;if(!this.blood.nodes.length)this.blood.syncSurface({selection:data.woundSelection});}
+      else if(data.type==='cut')this.blood.syncSurface({injury:data.removedMm3>1e-8,selection:data.woundSelection});
       else if(data.type==='init')this.blood.reset();
+      this.updateTimings={receiveMs:performance.now()-receiveStart,woundMs:performance.now()-woundStart,chunks:data.chunks.length};
       const result = { changed: !!data.changedSamples || data.type !== 'cut', removedMm3: data.removedMm3, removedVolumeMm3: this.removedVolumeMm3, totalVolumeMm3: this.totalVolumeMm3,
         fragments: (data.fragments ?? []).map(fragment => fragment.id) };
       active.callbacks.forEach(command => command.resolve(result));
@@ -525,6 +534,7 @@ export class TissueVolume {
     const geometry = new THREE.BufferGeometry();
     geometry.userData.restPositions = chunk.positions;
     geometry.userData.restNormals = chunk.normals;
+    geometry.userData.woundSurface=chunk.woundSurface;
     geometry.setAttribute('position', new THREE.BufferAttribute(chunk.positions.slice(), 3).setUsage(THREE.StreamDrawUsage));
     geometry.setAttribute('normal', new THREE.BufferAttribute(chunk.normals.slice(), 3).setUsage(THREE.StreamDrawUsage));
     geometry.setAttribute('color', new THREE.BufferAttribute(chunk.colors, 3));
@@ -556,7 +566,7 @@ export class TissueVolume {
     this._fail(new Error('Tissue volume disposed'));
     for (const mesh of this._meshes.values()) mesh.geometry.dispose();
     this.blood.dispose();this.fragments.clear(); this._excludedValues.clear();
-    this._meshes.clear(); this.group.clear(); this.material.dispose();
+    this._meshes.clear();this._bloodBroadPhase.clear(); this.group.clear(); this.material.dispose();
     this._baseField = null;
   }
 }

@@ -9,11 +9,12 @@ import {makeScopeContext} from './scope-context.js';
 import {collisionFeedback} from './collision-feedback.js';
 import {attachScopeNavigation} from './scope-navigation.js';
 import {advanceSimulationStep} from './simulation-step.js';
+import {FrameMetrics} from './frame-metrics.js';
 
 const $=id=>document.getElementById(id),base=import.meta.env.BASE_URL;
 const held=new Set(),pointerHeld=new Set(),allMotion=new Set(['KeyW','KeyA','KeyS','KeyD','KeyQ','KeyE','KeyZ','KeyX','KeyC','KeyV','KeyH','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','BracketLeft','BracketRight','Space','ShiftLeft','ShiftRight']);
 let view,tissue,sim,interactionController,demo,scopeNavigation,ready=false,precision='normal',lastFrame=performance.now(),nextRender=0,lastRenderAt=0,fpsFrames=0,fpsSince=lastFrame,lastUI=0,fps=0,historyBusy=false,frameHandle,frameDurations=[],runtimeErrors=[];
-const record=[],maxRecords=3000;let toastTimer,inputFrames=0,inputEpoch=0;const timings={};
+const record=[],maxRecords=3000;let toastTimer,inputFrames=0,inputEpoch=0;const timings={},frameStats=new FrameMetrics();
 function toast(message){$('toast').textContent=message;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,3000);}
 function updateCollisionUI(){
   if(!sim||!view)return;
@@ -55,7 +56,7 @@ async function reset(){
     // must not reattach a specimen or overwrite the new interaction state.
     interactionController.reset();
     await tissue.reset();
-    sim.reset();sim.select('right');
+    sim.reset();sim.select('right');frameStats.clear();
     precision='normal';document.querySelectorAll('[data-speed]').forEach(button=>button.classList.toggle('active',button.dataset.speed===precision));
     switchView('endo');
     sim.prepareInitialScopeView(view.scopeAspect);
@@ -83,7 +84,7 @@ function updateUI(){if(!sim)return;const s=sim.state,tool=s.tools[s.selected]||s
   $('bleeding-state').textContent=blood?.pressureContacts?'局部压迫中 · 松开后继续观察':blood?.recentPressure?'已局部压迫 · 继续观察是否再渗血':blood?.activeSources?'切面仍有渗血':blood?.emittedMl?'当前流量已受抑制 · 需继续观察':'尚无开放出血切面';
   const tcpProjection=new THREE.Vector3(...s.tools[s.activeTool].position).project(view.endoCamera);
   const scopeTipsNdc=Object.fromEntries(['left','right'].map(side=>[side,new THREE.Vector3(...s.tools[side].position).project(view.endoCamera).toArray()]));
-  $('stage').dataset.telemetry=JSON.stringify({state:sim.snapshot().state,fps,errors:runtimeErrors,removedVolumeMm3:tissue?.removedVolumeMm3,fragments:tissue?.fragmentMetrics,armErrors:view.armErrors,scopeArmError:view.assemblies?.scopeArmError,toolRCMErrors:view.assemblies?.toolRCMErrors,interaction:interactionController?.metrics,demo:demo?.active,demoPhase:demo?.phase,tissueBusy:tissue?.busy,cutCount:tissue?._cuts.length,viewMode:view.mode,precision,scopeFeed:view.scopeFeed.resolution,scopeViewAspect:sim.viewAspect,scopeTcpNdc:tcpProjection.toArray(),scopeTipsNdc,robotJoints:view.joints.map(joint=>({name:joint.name,angle:joint.userData.angle})),scopeFov:view.endoCamera.fov,drawCalls:view.renderer.info.render.calls,triangles:view.renderer.info.render.triangles,connectionModes:view.assemblies?.connectionModes,timings});if(view.mode==='endo'){const p=new THREE.Vector3(...s.tools[s.activeTool].position).applyMatrix4(view.endoCamera.matrixWorldInverse);const pixels=.01*$('stage').clientHeight/(2*Math.tan(THREE.MathUtils.degToRad(view.endoCamera.fov*.5))*Math.max(.01,-p.z));$('lens-scale').style.width=pixels+'px';}
+  $('stage').dataset.telemetry=JSON.stringify({state:sim.snapshot().state,fps,errors:runtimeErrors,removedVolumeMm3:tissue?.removedVolumeMm3,fragments:tissue?.fragmentMetrics,armErrors:view.armErrors,scopeArmError:view.assemblies?.scopeArmError,toolRCMErrors:view.assemblies?.toolRCMErrors,interaction:interactionController?.metrics,demo:demo?.active,demoPhase:demo?.phase,tissueBusy:tissue?.busy,cutCount:tissue?._cuts.length,viewMode:view.mode,precision,scopeFeed:view.scopeFeed.resolution,scopeViewAspect:sim.viewAspect,scopeTcpNdc:tcpProjection.toArray(),scopeTipsNdc,robotJoints:view.joints.map(joint=>({name:joint.name,angle:joint.userData.angle})),scopeFov:view.endoCamera.fov,drawCalls:view.renderer.info.render.calls,triangles:view.renderer.info.render.triangles,connectionModes:view.assemblies?.connectionModes,timings,framePerformance:frameStats.cached,tissueTimings:tissue.updateTimings,renderTimings:view.renderTimings});if(view.mode==='endo'){const p=new THREE.Vector3(...s.tools[s.activeTool].position).applyMatrix4(view.endoCamera.matrixWorldInverse);const pixels=.01*$('stage').clientHeight/(2*Math.tan(THREE.MathUtils.degToRad(view.endoCamera.fov*.5))*Math.max(.01,-p.z));$('lens-scale').style.width=pixels+'px';}
   const lensLabel=document.querySelector('.lens-label');if(lensLabel)lensLabel.textContent='LAPAROSCOPE · '+(s.scope.fov??55).toFixed(0)+'° FOV';
 }
 function attachUI(){
@@ -98,7 +99,7 @@ function attachUI(){
   $('approach-bleed').onclick=()=>{if(historyBusy||geometryBusy()||sim.state.paused)return;clearInput();demo.stop('');demo.approachBleeding();updateUI();};
   $('single-step').onclick=singleStep;
   $('pause').onclick=()=>pause(!sim.state.paused);$('resume').onclick=()=>pause(false);$('undo').onclick=()=>undo();$('redo').onclick=()=>undo(true);$('reset').onclick=reset;$('follow').onclick=toggleFollow;$('cut-mode').onclick=toggleCut;
-  $('follow-mode').onchange=e=>{if(historyBusy){updateUI();return;}clearInput();sim.setScopeFollow(true,e.target.value);updateUI();};$('scope-content').onchange=e=>{if(historyBusy){updateUI();return;}clearInput();sim.setScopeViewMode(e.target.value);sim.setScopeFollow(true);toast(e.target.value==='specimen'?'按真实标本大小调整观察距离；中心仍跟随所选控制目标':'局部术野距离；中心跟随所选控制目标');updateUI();};$('demo').onclick=()=>{if(historyBusy||(!demo?.active&&geometryBusy()))return;clearInput();demo.startExample();switchView('endo');updateUI();};$('approach').onclick=()=>{if(historyBusy||geometryBusy())return;clearInput();demo.stop('');demo.approach();updateUI();};
+  $('follow-mode').onchange=e=>{if(historyBusy){updateUI();return;}clearInput();sim.setScopeFollow(true,e.target.value);updateUI();};$('scope-content').onchange=e=>{if(historyBusy){updateUI();return;}clearInput();sim.setScopeViewMode(e.target.value);sim.setScopeFollow(true);toast(e.target.value==='specimen'?'按真实标本大小调整观察距离；中心仍跟随所选控制目标':'局部术野距离；中心跟随所选控制目标');updateUI();};$('demo').onclick=()=>{if(historyBusy||(!demo?.active&&geometryBusy()))return;clearInput();if(!demo.active)frameStats.clear();demo.startExample();switchView('endo');updateUI();};$('approach').onclick=()=>{if(historyBusy||geometryBusy())return;clearInput();demo.stop('');demo.approach();updateUI();};
   $('approach-specimen').onclick=()=>{if(historyBusy||geometryBusy())return;clearInput();demo.stop('');demo.approachSpecimen();switchView('endo');updateUI();};
   $('view-endo').onclick=()=>switchView('endo');$('view-overview').onclick=()=>switchView('overview');$('swap-view').onclick=()=>switchView();$('view-home').onclick=()=>{if(historyBusy||(view.mode==='endo'&&sim.state.paused))return;clearInput();if(view.mode==='endo'){sim.checkpoint('内窥镜视角复位',()=>interactionController.snapshot());sim.homeScopeView();}else view.home();toast('观察视角已复位');};$('fullscreen').onclick=async()=>{try{if(document.fullscreenElement)await document.exitFullscreen();else await $('stage').requestFullscreen();}catch{toast('当前浏览器不支持全屏，请使用浏览器全屏模式');}};
   $('help').onclick=()=>{demo?.stop('');clearInput();$('help-dialog').showModal();};$('about').onclick=()=>{demo?.stop('');clearInput();$('about-dialog').showModal();};document.querySelectorAll('dialog [data-close]').forEach(b=>b.onclick=()=>b.closest('dialog').close());document.querySelectorAll('dialog').forEach(d=>d.addEventListener('click',e=>{if(e.target===d)d.close();}));
@@ -125,9 +126,9 @@ function animate(now){
   if(!historyBusy)sim.update(dt,keys);inputFrames++;const controlEnd=performance.now();timings.control=controlEnd-start;
   if(!sim.state.paused&&!historyBusy)enforceScopeClearance();timings.clearance=performance.now()-controlEnd;
   updateCollisionUI();
-  if(now>=nextRender){const renderDt=Math.min(.05,lastRenderAt?(now-lastRenderAt)/1000:dt),sceneStart=performance.now();view.update(sim.state,renderDt);lastRenderAt=now;const sceneEnd=performance.now();interaction(keys,renderDt);const interactionEnd=performance.now();view.render(now);timings.scene=sceneEnd-sceneStart;timings.interaction=interactionEnd-sceneEnd;timings.render=performance.now()-interactionEnd;fpsFrames++;nextRender=Math.max(nextRender+1000/60,now-1000/60);}
+  if(now>=nextRender){if(lastRenderAt&&!sim.state.paused&&!historyBusy&&!document.hidden)frameStats.record(now-lastRenderAt,keys.has('KeyH')?'pressure':sim.state.cutting?'cutting':'manipulation');const renderDt=Math.min(.05,lastRenderAt?(now-lastRenderAt)/1000:dt),sceneStart=performance.now();view.update(sim.state,renderDt);lastRenderAt=now;const sceneEnd=performance.now();interaction(keys,renderDt);const interactionEnd=performance.now();view.render(now);timings.scene=sceneEnd-sceneStart;timings.interaction=interactionEnd-sceneEnd;timings.render=performance.now()-interactionEnd;fpsFrames++;nextRender=Math.max(nextRender+1000/60,now-1000/60);}
   frameDurations.push(performance.now()-start);if(frameDurations.length>600)frameDurations.shift();
-  if(now-fpsSince>1000){fps=fpsFrames*1000/(now-fpsSince);$('fps').textContent=fps.toFixed(0)+' FPS';fpsFrames=0;fpsSince=now;}
+  if(now-fpsSince>1000){frameStats.summarize();fps=fpsFrames*1000/(now-fpsSince);$('fps').textContent=fps.toFixed(0)+' FPS';fpsFrames=0;fpsSince=now;}
   if(now-lastUI>100){lastUI=now;updateUI();}
 }
 async function init(){try{

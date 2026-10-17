@@ -27,20 +27,26 @@ function closestSegments(a,b,c,d,p,q){
 class SurfaceIndex {
   constructor(geometry){
     this.geometry=geometry;this.positions=geometry.attributes.position;this.indices=geometry.index.array;
-    const triangles=Array.from({length:this.indices.length/3},(_,i)=>i);
-    const centroid=(triangle,axis)=>{
-      const i=triangle*3,a=this.indices[i],b=this.indices[i+1],c=this.indices[i+2];
-      return (this.positions.array[a*3+axis]+this.positions.array[b*3+axis]+this.positions.array[c*3+axis])/3;
+    const count=this.indices.length/3,triangles=Uint32Array.from({length:count},(_,i)=>i),centres=new Float64Array(count*3),p=this.positions.array;
+    for(let i=0;i<count;i++)for(let axis=0;axis<3;axis++)centres[i*3+axis]=(p[this.indices[i*3]*3+axis]+p[this.indices[i*3+1]*3+axis]+p[this.indices[i*3+2]*3+axis])/3;
+    // In-place median partition avoids recursive centroid recomputation and
+    // sorting/copying the same triangle lists at every hierarchy level.
+    const partition=(from,to,middle,axis)=>{
+      let lo=from,hi=to-1;
+      while(lo<hi){const pivot=centres[triangles[(lo+hi)>>1]*3+axis];let i=lo,j=hi;
+        while(i<=j){while(centres[triangles[i]*3+axis]<pivot)i++;while(centres[triangles[j]*3+axis]>pivot)j--;if(i<=j){const value=triangles[i];triangles[i++]=triangles[j];triangles[j--]=value;}}
+        if(middle<=j)hi=j;else if(middle>=i)lo=i;else break;
+      }
     };
-    const build=list=>{
-      if(list.length<=12)return {triangles:list,bounds:new Float64Array(6)};
+    const build=(from,to)=>{
+      if(to-from<=12)return {triangles:triangles.subarray(from,to),bounds:new Float64Array(6)};
       const low=[Infinity,Infinity,Infinity],high=[-Infinity,-Infinity,-Infinity];
-      for(const triangle of list)for(let axis=0;axis<3;axis++){const v=centroid(triangle,axis);low[axis]=Math.min(low[axis],v);high[axis]=Math.max(high[axis],v);}
+      for(let i=from;i<to;i++)for(let axis=0;axis<3;axis++){const v=centres[triangles[i]*3+axis];low[axis]=Math.min(low[axis],v);high[axis]=Math.max(high[axis],v);}
       let axis=0;for(let i=1;i<3;i++)if(high[i]-low[i]>high[axis]-low[axis])axis=i;
-      list.sort((a,b)=>centroid(a,axis)-centroid(b,axis));const half=list.length>>1;
-      return {left:build(list.slice(0,half)),right:build(list.slice(half)),bounds:new Float64Array(6)};
+      const middle=(from+to)>>1;partition(from,to,middle,axis);
+      return {left:build(from,middle),right:build(middle,to),bounds:new Float64Array(6)};
     };
-    this.root=build(triangles);this.version=-1;
+    this.root=build(0,count);this.version=-1;
   }
   refit(){
     if(this.version===this.positions.version)return;
