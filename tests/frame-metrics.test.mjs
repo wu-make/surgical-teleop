@@ -5,3 +5,23 @@ test('frame diagnostics include slow frames without simulation-time clamping and
   const metrics=new FrameMetrics();for(let i=0;i<99;i++)metrics.record(1000/60,'cutting');metrics.record(200,'cutting');metrics.record(16,'pressure');metrics.record(NaN,'cutting');const data=metrics.summarize();assert.equal(data.cutting.frames,100);assert.equal(data.cutting.over50ms,1);assert.equal(data.cutting.p99Ms,1000/60);assert(data.cutting.averageFps<60);assert.equal(data.pressure.frames,1);metrics.clear();assert.deepEqual(metrics.summarize(),{});
 });
 test('frame diagnostics retain a bounded recent window',()=>{const metrics=new FrameMetrics(3);metrics.record(200,'cutting');for(let i=0;i<3;i++)metrics.record(20,'cutting');const data=metrics.summarize();assert.equal(data.cutting.frames,3);assert.equal(data.cutting.averageFps,50);assert.equal(data.cutting.over50ms,0);});
+
+test('session counters retain old stalls after the recent ring wraps, and exported intervals are chronological copies',()=>{
+  const metrics=new FrameMetrics(3);for(const ms of [200,10,20,30,40])metrics.record(ms,'cutting');metrics.record(16,'pressure');
+  const report=metrics.report({includeIntervals:true});assert.equal(report.session.cutting.frames,5);
+  assert.equal(report.session.cutting.over50ms,1);assert.equal(report.session.cutting.maxMs,200);
+  assert.equal(report.recentWindow.phases.cutting.maxMs,40);
+  assert.deepEqual(report.recentWindow.intervals.map(row=>row.ms),[30,40,16]);
+  report.session.cutting.maxMs=0;report.recentWindow.intervals[0].ms=0;
+  assert.equal(metrics.report().session.cutting.maxMs,200);assert.equal(metrics.rows[0].ms,30);
+  metrics.clear();assert.deepEqual(metrics.report().session,{});assert.deepEqual(metrics.summarize(),{});
+});
+
+test('hidden, paused and restoration gaps do not leak into resumed frame measurements',()=>{
+  const metrics=new FrameMetrics();metrics.sample(0,'cutting');metrics.sample(20,'cutting');
+  metrics.sample(1020,'cutting',false);metrics.sample(3000,'cutting');metrics.sample(3016,'cutting');
+  metrics.sample(3017,'cutting',false);metrics.sample(4000,'pressure');metrics.sample(4018,'pressure');
+  const report=metrics.report();assert.equal(report.session.cutting.frames,2);assert.equal(report.session.cutting.maxMs,20);
+  assert.equal(report.session.pressure.frames,1);assert.equal(report.session.pressure.maxMs,18);
+  metrics.clear();metrics.sample(9999,'pressure');assert.deepEqual(metrics.report().session,{});
+});
