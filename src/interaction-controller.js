@@ -29,6 +29,7 @@ export class InteractionController {
     this._generation = 0;
     this._fragmentRebaseId = null;
     this.requiresReopen=false;
+    this._pressurePosition=null;
     this._cutTask=null;
     this._clock=0;this._noMaterialAttempt=null;
     this._bladeContactCache=null;
@@ -73,10 +74,11 @@ export class InteractionController {
     this._fragmentRebaseId=null;
     const released=this.grasp;
     if(released?.kind==='fragment')this.tissue.releaseFragment?.(released.fragmentId);
-    else if (released && !immediate) this.relaxing = { ...copy(released), remaining: 1 };
+    else if (released && !immediate) this.relaxing = { ...copy(released), remaining: 1,offset:[...released.displacement],velocity:[0,0,0],releaseAge:0 };
     this.grasp = null;
     if (immediate) { this.relaxing = null; this.tissue.setGrasp(null); }
     this.onEvent('release', {kind:released?.kind??'tissue',fragmentId:released?.fragmentId??null});
+    if(released&&!immediate)this.onMessage(released.kind==='fragment'?'独立组织块已松开，按重力下落并接触周边表面':'组织仍与母体相连：已从钳口滑脱，正在回落和回弹');
   }
 
   /** Cancel controller continuations before resetting/restoring the tissue.
@@ -85,6 +87,7 @@ export class InteractionController {
   reset(){
     ++this._generation;this._cutTask=null;this.cuttingBusy=false;this.lastCut=null;this._noMaterialAttempt=null;this._bladeContactCache=null;
     this._clearCutTrajectory();
+    this._pressurePosition=null;
     this.release(true);this.contact=contactState();
   }
   invalidate(){this.reset();}
@@ -190,6 +193,18 @@ export class InteractionController {
     }else{direction=new THREE.Vector3(0,0,1).applyQuaternion(this._toolQuaternionLocal('right'));source='kinematic-fallback';}
     const a=tip.clone().addScaledVector(direction,-.008),b=tip;
     return {segments:[{a,b,worldA:this.tissue.group.localToWorld(a.clone()),worldB:this.tissue.group.localToWorld(b.clone())}],source};
+  }
+
+  pressureApproachTarget(source){
+    const desired=source.display.clone().addScaledVector(source.normal,.0004);
+    let closest=null,best=Infinity;
+    for(const {a,b} of this._bladeGeometry().segments){
+      const d=b.clone().sub(a),t=THREE.MathUtils.clamp(desired.clone().sub(a).dot(d)/Math.max(1e-20,d.lengthSq()),0,1);
+      const point=a.clone().addScaledVector(d,t),distance=point.distanceToSquared(desired);
+      if(distance<best){best=distance;closest=point;}
+    }
+    const tip=localPoint(this.tissue,this.sim.state.tools.right.position);
+    return this.tissue.group.localToWorld(closest?tip.add(desired).sub(closest):desired);
   }
 
   _sameCut(signature,previous=this.lastCut){
@@ -312,13 +327,18 @@ export class InteractionController {
     }
     if (this.grasp) this.applyGrasp();
     if ((!this.grasp||this.grasp.kind==='fragment')&&this.relaxing) {
-      this.relaxing.remaining *= Math.exp(-dt * 11);
-      this._setAttachedDeformation(this.relaxing,new THREE.Vector3(...this.relaxing.displacement).multiplyScalar(this.relaxing.remaining));
+      // Critically damped recoil starts continuously from the released pose.
+      // The material remains connected: no rigid piece or artificial tear.
+      const r=this.relaxing,h=Math.max(0,Math.min(.1,dt)),omega=15,decay=Math.exp(-omega*h);
+      r.offset??=r.displacement.map(v=>v*r.remaining);r.velocity??=[0,0,0];r.releaseAge=(r.releaseAge??0)+h;
+      for(let i=0;i<3;i++){const x=r.offset[i],v=r.velocity[i],c=v+omega*x;r.offset[i]=(x+c*h)*decay;r.velocity[i]=(v-omega*c*h)*decay;}
+      r.remaining=Math.hypot(...r.offset)/Math.max(1e-12,Math.hypot(...r.displacement));
+      this._setAttachedDeformation(r,new THREE.Vector3(...r.offset));
       if (this.relaxing.remaining < .008) { this.relaxing = null; this.tissue.setGrasp(null); }
     } else if(!this.grasp||this.grasp.kind==='fragment')this.tissue.setGrasp(null);
   }
 
-  async update(dt, { clutched = false } = {}) {
+  async update(dt, { clutched = false,compressing=false } = {}) {
     if(!this.tissue.ready){this._setCutStatus('loading','正在加载真实组织');return;}
     if(this.sim.state.paused){this._breakCutTrajectory();this._pendingCutFeedback();this._setCutStatus('paused','仿真已暂停；已记录的剪刃轨迹将在继续后完成');return;}
     if(Number.isFinite(dt)&&dt>0)this._clock+=Math.min(.1,dt);
@@ -334,6 +354,11 @@ export class InteractionController {
     this.contact.left = Math.abs(leftDistance) < GRASP_CONTACT_MARGIN||leftFragmentId!=null;
     this.contact.leftFragmentId=leftFragmentId;
     const blade=this._bladeGeometry();
+    const selected=this.sim.state.selected,tool=this.sim.state.tools[selected],pressurePoint=tool?localPoint(this.tissue,tool.position):null;
+    const steady=pressurePoint&&(!this._pressurePosition||pressurePoint.distanceTo(this._pressurePosition)<=.005*Math.max(1/240,dt));
+    const canPress=compressing&&!clutched&&steady&&tool?.jaw<.22&&(selected!=='left'||!this.grasp);
+    this._pressurePosition=compressing?pressurePoint:null;
+    this.tissue.blood?.update(dt,{pressureSegments:canPress?(selected==='right'?blade.segments:[{a:pressurePoint,b:pressurePoint}]):[]});
     const contactKey=[this.tissue._contactRevision??0,this.tissue._epoch??0,this.tissue._cuts?.length??0,...blade.segments.flatMap(segment=>[...segment.a.toArray(),...segment.b.toArray()])].join(',');
     let hits;
     if(pending)hits=[];
@@ -351,7 +376,8 @@ export class InteractionController {
     this.contact.rightDepthMm = Number.isFinite(distance) ? -distance * 1000 : 0;
     this.contact.cutting = !!this._cutTask;
     const jaw=right.jaw;
-    if(!this.sim.state.cutting){this.lastCut=null;this._noMaterialAttempt=null;this._breakCutTrajectory();this._setCutStatus('disabled','按 B 开启剪切模式');}
+    if(compressing){this.lastCut=null;this._breakCutTrajectory();this._setCutStatus('pressure',this.tissue.blood?.pressureContacts?'局部压迫中：观察渗血变化；松开 H 后继续检查':'压迫需稳定接触渗血切面：闭合器械，精细贴近；左钳需先释放组织');}
+    else if(!this.sim.state.cutting){this.lastCut=null;this._noMaterialAttempt=null;this._breakCutTrajectory();this._setCutStatus('disabled','按 B 开启剪切模式');}
     else if(jaw>.22){this.lastCut=null;this._noMaterialAttempt=null;this._breakCutTrajectory();this._setCutStatus('jaw-open','右剪尚未闭合，请选右剪后按 C');}
     else if(clutched){this.lastCut=null;this._breakCutTrajectory();this._setCutStatus('clutched','松开空格离合后继续剪切');}
     else{
@@ -368,7 +394,7 @@ export class InteractionController {
 
   get metrics() {
     return { ...this.contact, grasp: copy(this.grasp), deformation: this.tissue.graspMetrics,
-      cuttingBusy: this.cuttingBusy,requiresReopen:this.requiresReopen,heldFragmentId:this.grasp?.kind==='fragment'?this.grasp.fragmentId:null };
+      cuttingBusy: this.cuttingBusy,requiresReopen:this.requiresReopen,releaseState:this.relaxing?'connected-slip':this.tissue.fragmentMetrics?.pieces.some(p=>!p.held&&!p.sleeping)?'detached-fall':null,blood:this.tissue.blood?.metrics??null,heldFragmentId:this.grasp?.kind==='fragment'?this.grasp.fragmentId:null };
   }
 }
 

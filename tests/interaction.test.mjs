@@ -162,6 +162,18 @@ test('opening the left jaw releases it with a bounded continuous recoil', async 
   tissue.dispose();
 });
 
+test('uncut release starts without a displacement jump and recoils while remaining one connected organ',async()=>{
+  const {sim,tissue,interaction}=workbench();
+  try{
+    await interaction.update(1/60);sim.state.tools.left.position[2]+=.014;await interaction.update(1/60);
+    const initial=tissue.graspMetrics.displacementMm;sim.setJaw('left',1);await interaction.update(1/240);
+    assert.equal(interaction.grasp,null);assert.equal(interaction.metrics.releaseState,'connected-slip');
+    assert(tissue.graspMetrics.displacementMm>initial*.99,'release position and zero initial recoil velocity are continuous');
+    for(let i=0;i<100;i++)await interaction.update(1/120);
+    assert.equal(tissue.graspMetrics.active,false);assert.equal(tissue.fragmentMetrics.count,0,'an uncut release must not invent a falling rigid piece');
+  }finally{tissue.dispose();}
+});
+
 test('an attached material anchor transfers seamlessly to its disconnected specimen and no longer drags its mother',async()=>{
   const {sim,tissue,interaction}=raisedWorkbench();
   let toolRotation=new THREE.Quaternion();interaction.toolQuaternion=()=>toolRotation;
@@ -245,6 +257,24 @@ test('a nearby independent piece cannot steal a still-attached grasp from a diff
   await interaction.update(1/60);
   assert.equal(interaction.grasp.kind,'tissue');assert.equal(piece.held,false);
   tissue.dispose();
+});
+
+test('bleeding-surface approach preserves the left grasp, uses an actual source, and pressure cannot cut',async()=>{
+  const {sim,tissue,interaction}=raisedWorkbench(),demo=new GuidedDemo(sim,tissue,interaction);
+  try{
+    await interaction.update(1/60);const reference=[...interaction.grasp.reference];
+    assert.equal(demo.approachBleeding(),false,'intact tissue cannot be substituted for an absent bleeding target');
+    const source={key:'bleed',reference:[.021,0,.021],restNormal:[Math.SQRT1_2,0,Math.SQRT1_2],area:6.25,sourceArea:2,cut:true,fragmentId:null,volume:0,clot:0,pressure:0,injured:true};
+    tissue.blood.nodes=[source];tissue.blood.updatePositions();tissue.blood.connect();
+    assert.equal(demo.approachBleeding(),true);assert.equal(sim.state.selected,'right');assert.equal(sim.state.cutting,false);
+    for(let i=0;i<80;i++){demo.update(1/60);sim.update(1/60,new Set());await interaction.update(1/60);}
+    assert.equal(demo.active,false);assert.deepEqual(interaction.grasp.reference,reference);
+    sim.setJaw('right',0);sim.setCutting(true);const count=tissue._cuts.length;
+    for(let i=0;i<120;i++)await interaction.update(1/60,{compressing:true});
+    assert.equal(tissue._cuts.length,count,'pressure blocks new swept cuts even if a stale cutting flag exists');
+    assert(tissue.blood.metrics.pressureExposureSeconds>1);assert(source.clot>.05);
+    const volume=tissue.blood.emitted;sim.setPaused(true);await interaction.update(1,{compressing:true});assert.equal(tissue.blood.emitted,volume);
+  }finally{tissue.dispose();}
 });
 
 test('the guided basal raster actually disconnects material rather than producing only an open groove',()=>{
@@ -391,4 +421,12 @@ test('resume rebases a restored specimen onto the fresh CAD orientation gauge wi
   assert.ok(Math.abs(piece.quaternion.angleTo(new THREE.Quaternion(...saved.quaternion))-.4)<1e-8,'subsequent deliberate wrist rotation must still rotate the specimen');
   sim.setJaw('left',1);await interaction.update(1/60);assert.equal(piece.held,false);
   tissue.dispose();
+});
+
+ test('bleeding approach aligns an offset CAD blade rather than assuming the TCP is the contact surface',async()=>{
+  const {sim,tissue,interaction}=raisedWorkbench(),demo=new GuidedDemo(sim,tissue,interaction);
+  interaction.toolBlade=()=>{const tip=new THREE.Vector3(...sim.state.tools.right.position);return {segments:[{a:tip.clone().add(new THREE.Vector3(.008,0,-.002)),b:tip.clone().add(new THREE.Vector3(.008,0,.002))}]};};
+  const source={key:'offset',reference:[.021,0,.021],restNormal:[0,1,0],area:6.25,sourceArea:2,cut:true,fragmentId:null,volume:0,clot:0,injured:true};
+  tissue.blood.nodes=[source];tissue.blood.updatePositions();tissue.blood.connect();
+  try{assert.equal(demo.approachBleeding(),true);for(let i=0;i<80;i++){demo.update(1/60);sim.update(1/60,new Set());await interaction.update(1/60);}assert.equal(sim.state.tools.right.jaw,0);for(let i=0;i<60;i++)await interaction.update(1/60,{compressing:true});assert(tissue.blood.metrics.pressureExposureSeconds>.8);assert(source.clot>.05);}finally{tissue.dispose();}
 });

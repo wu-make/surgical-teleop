@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { validateCut, normalizeMetadata, distanceToCut, cutBounds, nodeIndex, normalizeDeformation, deformationWeight, deformationMinimumScale, LOCAL_TRACTION, deformPoint, inverseDeformPoint } from './tissue-worker.js';
 import { createTissueMaterial } from './tissue-material.js';
 import { TissueFragments } from './tissue-fragments.js';
+import { BloodFlow } from './blood-flow.js';
 import {closestParentSurface,closestParentSegment} from './tissue-contact.js';
 
 const vectorArray = point => Array.isArray(point) ? [...point] : [point.x, point.y, point.z];
@@ -38,6 +39,7 @@ export class TissueVolume {
     this._deformationStats = { cacheBuilds: 0, radiusUpdates: 0, movedVertices: 0 };
     this.material = createTissueMaterial();
     this.fragments = new TissueFragments(this);
+    this.blood=new BloodFlow(this);
     this._separations = [];
     this._excludedValues = new Map();
     this._restoringFragmentPoses = null;
@@ -100,7 +102,7 @@ export class TissueVolume {
   }
 
   snapshot() { return { version: 2, cuts: copyCuts(this._cuts), deformation: this._deformation ? normalizeDeformation(this._deformation) : null,
-    separations: structuredClone(this._separations), fragments: this.fragments.snapshot() }; }
+    separations: structuredClone(this._separations), fragments: this.fragments.snapshot(),blood:this.blood.snapshot() }; }
 
   async restore(snapshot) {
     if (!this.ready || this._disposed) return { changed: false, reason: 'not-ready' };
@@ -111,6 +113,7 @@ export class TissueVolume {
     this._cuts = copyCuts(cuts);
     this._lastCompletedCut=null;
     this._restoringFragmentPoses = new Map((snapshot.fragments ?? []).map(piece => [piece.id, structuredClone(piece)]));
+    this._restoringBlood=structuredClone(snapshot.blood??null);
     this.setGrasp(snapshot.deformation ?? null);
     return this._enqueue({ type: 'restore', cuts, separations: structuredClone(snapshot.separations ?? []) });
   }
@@ -495,6 +498,9 @@ export class TissueVolume {
       if (data.type === 'restore') this._restoringFragmentPoses = null;
       for (const chunk of data.chunks) this._replaceChunk(chunk);
       Object.assign(this, data.statistics);
+      if(data.type==='restore'){this.blood.restore(this._restoringBlood);this._restoringBlood=null;if(!this.blood.nodes.length)this.blood.syncSurface();}
+      else if(data.type==='cut')this.blood.syncSurface({injury:data.removedMm3>1e-8});
+      else if(data.type==='init')this.blood.reset();
       const result = { changed: !!data.changedSamples || data.type !== 'cut', removedMm3: data.removedMm3, removedVolumeMm3: this.removedVolumeMm3, totalVolumeMm3: this.totalVolumeMm3,
         fragments: (data.fragments ?? []).map(fragment => fragment.id) };
       active.callbacks.forEach(command => command.resolve(result));
@@ -544,7 +550,7 @@ export class TissueVolume {
     this.worker?.terminate();
     this._fail(new Error('Tissue volume disposed'));
     for (const mesh of this._meshes.values()) mesh.geometry.dispose();
-    this.fragments.clear(); this._excludedValues.clear();
+    this.blood.dispose();this.fragments.clear(); this._excludedValues.clear();
     this._meshes.clear(); this.group.clear(); this.material.dispose();
     this._baseField = null;
   }

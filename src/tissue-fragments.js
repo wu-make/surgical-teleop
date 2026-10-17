@@ -59,6 +59,7 @@ export class TissueFragments {
     geometry.setAttribute('color', new THREE.BufferAttribute(descriptor.colors, 3));
     geometry.setAttribute('tissueRestPosition', new THREE.BufferAttribute(descriptor.positions, 3));
     geometry.setAttribute('tissueCutMask', new THREE.BufferAttribute(descriptor.cutMasks, 1));
+    geometry.userData.materialNormals=descriptor.normals;
     geometry.setIndex(new THREE.BufferAttribute(descriptor.indices, 1));
     geometry.computeBoundingBox(); geometry.computeBoundingSphere();
     const mesh = new THREE.Mesh(geometry, this.tissue.material);
@@ -70,7 +71,7 @@ export class TissueFragments {
       position: saved ? vec(saved.position) : center.clone(), quaternion: rotation(saved?.quaternion),
       velocity: saved?.velocity ? vec(saved.velocity) : new THREE.Vector3(), held: !!saved?.held,
       attachment: saved?.attachment ? structuredClone(saved.attachment) : null, sleeping: !!saved?.sleeping,
-      contactTime: 0, support: this._supportPoints(positions) };
+      contactTime: saved?.contactTime??0, support: this._supportPoints(positions) };
     this.items.set(piece.id, piece); this.group.add(mesh); this.sync(piece);
     return piece;
   }
@@ -98,7 +99,7 @@ export class TissueFragments {
   snapshot() {
     return [...this.items.values()].map(p => ({ id: p.id, position: p.position.toArray(), quaternion: p.quaternion.toArray(),
       velocity: p.velocity.toArray(), held: p.held, sleeping: p.sleeping, deformation: p.deformation ? structuredClone(p.deformation) : null,
-      attachment: p.attachment ? structuredClone(p.attachment) : null }));
+      attachment: p.attachment ? structuredClone(p.attachment) : null,contactTime:p.contactTime }));
   }
 
   atReference(point) {
@@ -211,9 +212,13 @@ export class TissueFragments {
     const inverse = this.tissue.group.getWorldQuaternion(new THREE.Quaternion()).invert();
     const gravity = new THREE.Vector3(0, -9.81, 0).applyQuaternion(inverse);
     const up = new THREE.Vector3(0, 1, 0).applyQuaternion(inverse);
-    const steps = Math.max(1, Math.ceil(Math.min(.05, dt) / .01)), h = Math.min(.05, dt) / steps;
     for (const piece of this.items.values()) {
       if (piece.held || piece.sleeping) continue;
+      // Limit each free-fall displacement relative to the sampled organ. A
+      // fixed 10 ms step could enter a thin surface deeply, then expel the
+      // specimen sideways by repeated large penetration corrections.
+      const duration=Math.min(.05,dt),travel=piece.velocity.length()*duration+4.905*duration*duration;
+      const steps=Math.max(1,Math.ceil(duration/.008),Math.min(64,Math.ceil(travel/.0006))),h=duration/steps;
       for (let step = 0; step < steps; step++) {
         piece.velocity.addScaledVector(gravity, h).multiplyScalar(Math.exp(-h * 1.6));
         piece.position.addScaledVector(piece.velocity, h);
@@ -233,8 +238,16 @@ export class TissueFragments {
             normal.setComponent(axis, (this.tissue.sampleDistance(hi) - this.tissue.sampleDistance(lo)) / (2 * eps));
           }
           if (!Number.isFinite(normal.lengthSq()) || normal.lengthSq() < 1e-8) normal.copy(up);
-          normal.normalize(); piece.position.addScaledVector(normal, Math.min(.008, -penetration + .0002));
-          const inward = piece.velocity.dot(normal); if (inward < 0) piece.velocity.addScaledVector(normal, -inward);
+          normal.normalize();
+          const inward=piece.velocity.dot(normal),tangent=piece.velocity.clone().addScaledVector(normal,-inward),vertical=normal.dot(up);
+          if(vertical>.7&&tangent.length()<.025){
+            // Static contact on a supporting patch must not create lateral
+            // energy from a slightly asymmetric sampled vertex/normal.
+            piece.position.addScaledVector(up,Math.min(.0012,(-penetration+.0001)/vertical));piece.velocity.set(0,0,0);
+          }else{
+            piece.position.addScaledVector(normal,Math.min(.0012,-penetration+.0001));
+            if(inward<0)piece.velocity.addScaledVector(normal,-inward);
+          }
           contact = true;
         }
         if (floorPenetration > 0) { piece.position.addScaledVector(up, floorPenetration); const inward = piece.velocity.dot(up); if (inward < 0) piece.velocity.addScaledVector(up, -inward); contact = true; }

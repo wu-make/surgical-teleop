@@ -61,7 +61,7 @@ tissueCapsule*=1.0+(tissueGrain-.5)*.038*tissueGrainVisibility;
 // The exposed solid is red-brown, warmer and less glossy than the membrane.
 // Fine pale septa/pits follow 3-D material coordinates on both sides of a cut.
 // This shear demonstration deliberately omits heat-charred/necrotic colouring.
-vec3 tissueCutColour=mix(vec3(.190,.050,.038),vec3(.265,.076,.055),tissueGrain);
+vec3 tissueCutColour=mix(vec3(.155,.027,.029),vec3(.235,.062,.045),tissueGrain);
 tissueCutColour*=.90+.15*tissueMesoscopic+.05*tissueMottle;
 tissueCutColour=mix(tissueCutColour,vec3(.34,.187,.130),tissueSepta*.10);
 tissueCutColour=mix(tissueCutColour,vec3(.045,.012,.009),tissueLumen*.84);
@@ -110,15 +110,15 @@ vTissueCut=tissueCutMask;`);
     shader.fragmentShader = DETAIL_FUNCTIONS + shader.fragmentShader;
     shader.fragmentShader = shader.fragmentShader.replace('#include <color_fragment>', COLOUR_DETAIL);
     shader.fragmentShader = shader.fragmentShader.replace('#include <roughnessmap_fragment>', /* glsl */`#include <roughnessmap_fragment>
-roughnessFactor=clamp(roughnessFactor+tissueCut*.18+(tissueGrain-.5)*.055*tissueGrainVisibility
+roughnessFactor=clamp(roughnessFactor+tissueCut*.12+(tissueGrain-.5)*.055*tissueGrainVisibility
                      +(tissueMottle-.5)*.040+tissueLumen*tissueCut*.08,.30,.68);`);
     shader.fragmentShader = shader.fragmentShader.replace('#include <normal_fragment_maps>', NORMAL_DETAIL);
     shader.fragmentShader = shader.fragmentShader.replace('#include <lights_physical_fragment>', /* glsl */`#include <lights_physical_fragment>
 #ifdef USE_CLEARCOAT
-  material.clearcoat=mix(.30,.075,tissueCut)*(.90+.10*tissueMottle);
+  material.clearcoat=mix(.30,.15,tissueCut)*(.90+.10*tissueMottle);
   material.clearcoatRoughness=max(material.clearcoatRoughness,mix(.23,.37,tissueCut));
 #endif`);
   };
-  material.customProgramCacheKey = () => 'anatomical-capsule-cut-parenchyma-v4';
+  material.customProgramCacheKey = () => 'anatomical-capsule-cut-parenchyma-v5';
   return material;
 }
