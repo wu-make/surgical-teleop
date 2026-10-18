@@ -31,11 +31,12 @@ test('blood material caching is exact through recoil and rigid specimen transpor
 test('cut-source emission and downhill film transport conserve volume and create 3-D geometry',()=>{
   const {t,b,step}=bench();
   try{
+    const g=new THREE.PlaneGeometry(.025,.025,20,20);g.rotateX(-Math.PI/2);g.translate(.003,.01,0);g.setAttribute('tissueRestPosition',g.attributes.position.clone());g.computeBoundingBox();t._meshes.set('surface',new THREE.Mesh(g));
     step(600);
     assert(b.emitted>0);assert(b.nodes[1].volume>0,'volume travels off its source over connected surface cells');
     assert(Math.abs(b.metrics.balanceErrorMm3)<1e-9);
-    assert(b.film.count>0&&b.fibres.count===3);assert.equal(b.film.material.map,null);
-    assert(b.film.instanceMatrix.array.some(v=>v!==0));
+    assert(b.film.geometry.drawRange.count>0&&b.fibres.count===3);assert.equal(b.film.material.map,null);
+    assert(b.film.geometry.attributes.filmThickness.array.some(v=>v>0));assert.equal(b.film.isInstancedMesh,undefined,'a wound is a connected surface, not a row of ellipsoids');
   }finally{t.dispose();}
 });
 test('sustained local pressure suppresses inflow but never deletes blood already emitted',()=>{
@@ -92,7 +93,7 @@ test('blood and clot history restores exact volumes, positions and source states
   const {t,b,step}=bench();try{
     step(200);b.shed(new THREE.Vector3(0,.1,0),.5);b.emitted+=.5;
     const saved=b.snapshot();b.reset();b.restore(saved);assert.deepEqual(b.snapshot(),saved);
-    assert(Math.abs(b.metrics.balanceErrorMm3)<1e-9);b.reset();assert.equal(b.metrics.emittedMl,0);assert.equal(b.film.count,0);assert.equal(b.fibres.count,0);
+    assert(Math.abs(b.metrics.balanceErrorMm3)<1e-9);b.reset();assert.equal(b.metrics.emittedMl,0);assert.equal(b.film.geometry.drawRange.count,0);assert.equal(b.fibres.count,0);
   }finally{t.dispose();}
 });
 test('shed drops fall under gravity while conserving their physical volume',()=>{

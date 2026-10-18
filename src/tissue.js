@@ -18,7 +18,7 @@ const canSkipBox = (squaredDistance, currentDistance, scale = 1) => squaredDista
 
 /** A real sampled organ volume; the worker alone owns and modifies its SDF. */
 export class TissueVolume {
-  constructor() {
+  constructor({gpuBlood=false}={}) {
     this.group = new THREE.Group();
     this.group.name = 'anatomical-liver-volume';
     this.ready = false;
@@ -47,7 +47,7 @@ export class TissueVolume {
     this._deformationStats = { cacheBuilds: 0, radiusUpdates: 0, movedVertices: 0 };
     this.material = createTissueMaterial();
     this.fragments = new TissueFragments(this);
-    this.blood=new BloodFlow(this);
+    this.blood=new BloodFlow(this,{gpuSurface:gpuBlood});
     this._separations = [];
     this._excludedValues = new Map();
     this._restoringFragmentPoses = null;
@@ -143,9 +143,22 @@ export class TissueVolume {
   collideBloodDrop(start,end,radius,prepared=false){
     if(!prepared)this.prepareBloodContacts();
     const meshes=this._bloodBroadPhase.query(start,end,radius+.00005);
-    const crossing=firstParentHit(meshes,start,end);if(crossing)return crossing;
-    const surface=closestParentSurface(meshes,end,radius+.00005);
-    return surface&&end.clone().sub(surface).dot(surface.normal)<radius?surface:null;
+    let crossing=firstParentHit(meshes,start,end),surface=crossing?null:closestParentSurface(meshes,end,radius+.00005);
+    if(surface&&end.clone().sub(surface).dot(surface.normal)>=radius)surface=null;
+    let best=surface?surface.distanceToSquared(end):Infinity;
+    for(const piece of this.fragments.items.values()){
+      // Reject in organ coordinates first; retain the complete frozen specimen
+      // triangles and the same hierarchy used for the parent surface.
+      const box=piece.box,margin=radius+.00005;
+      if(box&&(Math.max(start.x,end.x)<box.min.x-margin||Math.min(start.x,end.x)>box.max.x+margin||Math.max(start.y,end.y)<box.min.y-margin||Math.min(start.y,end.y)>box.max.y+margin||Math.max(start.z,end.z)<box.min.z-margin||Math.min(start.z,end.z)>box.max.z+margin))continue;
+      const inverse=piece.quaternion.clone().invert(),a=start.clone().sub(piece.position).applyQuaternion(inverse),b=end.clone().sub(piece.position).applyQuaternion(inverse);
+      const transform=p=>{p.applyQuaternion(piece.quaternion).add(piece.position);p.normal.applyQuaternion(piece.quaternion);p.fragmentId=piece.id;return p;};
+      const hit=firstParentHit([piece.mesh],a,b);
+      if(hit&&(!crossing||hit.travel<crossing.travel))crossing=transform(hit);
+      const near=crossing?null:closestParentSurface([piece.mesh],b,radius+.00005);
+      if(near&&b.clone().sub(near).dot(near.normal)<radius){const distance=near.distanceToSquared(b);if(distance<best){best=distance;surface=transform(near);}}
+    }
+    return crossing??surface;
   }
   get fragmentMetrics() { return this.fragments.metrics; }
 
