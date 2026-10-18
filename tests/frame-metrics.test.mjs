@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {FrameMetrics} from '../src/frame-metrics.js';
+test('worst frame context survives replacement of the recent slow-frame ring',()=>{
+  const metrics=new FrameMetrics(3);let captures=0;metrics.record(157.5,'cutting',()=>{captures++;return{endedAt:1200,bloodMs:130};});
+  for(let i=0;i<80;i++)metrics.record(36,'cutting',()=>{captures++;return{endedAt:1300+i};});
+  const report=metrics.report();assert.equal(report.slowFrames.length,64);assert.equal(report.worstFrames[0].ms,157.5);assert.equal(report.worstFrames[0].work.bloodMs,130);assert.equal(captures,81,'capture once per slow frame');
+  report.worstFrames[0].work.bloodMs=0;assert.equal(metrics.report().worstFrames[0].work.bloodMs,130);metrics.clear();assert.deepEqual(metrics.worstFrames,[]);
+});
 test('frame diagnostics include slow frames without simulation-time clamping and separate cutting from other phases',()=>{
   const metrics=new FrameMetrics();for(let i=0;i<99;i++)metrics.record(1000/60,'cutting');metrics.record(200,'cutting');metrics.record(16,'pressure');metrics.record(NaN,'cutting');const data=metrics.summarize();assert.equal(data.cutting.frames,100);assert.equal(data.cutting.over50ms,1);assert.equal(data.cutting.p99Ms,1000/60);assert(data.cutting.averageFps<60);assert.equal(data.pressure.frames,1);metrics.clear();assert.deepEqual(metrics.summarize(),{});
 });

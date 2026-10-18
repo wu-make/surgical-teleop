@@ -2,7 +2,7 @@
  * never alters the controller, geometry density, render resolution or timestep. */
 export class FrameMetrics {
   constructor(limit=7200){this.limit=limit;this.clear();}
-  clear(){this.rows=[];this.head=0;this.cached={};this.totals={};this.lastSample=null;this.slowFrames=[];this.presentationChanges=[];}
+  clear(){this.rows=[];this.head=0;this.cached={};this.totals={};this.lastSample=null;this.slowFrames=[];this.worstFrames=[];this.presentationChanges=[];}
   observePresentation(fullscreen,width,height,pixelRatio,atMs){
     const last=this.presentationChanges.at(-1);
     if(last&&last.fullscreen===fullscreen&&last.width===width&&last.height===height&&last.pixelRatio===pixelRatio)return;
@@ -20,7 +20,7 @@ export class FrameMetrics {
     const total=this.totals[phase]??={frames:0,seconds:0,averageFps:0,maxMs:0,over33ms:0,over50ms:0};
     total.frames++;total.seconds+=milliseconds/1000;total.averageFps=total.frames/total.seconds;
     total.maxMs=Math.max(total.maxMs,milliseconds);if(milliseconds>33.34)total.over33ms++;if(milliseconds>50)total.over50ms++;
-    if(milliseconds>33.34){this.slowFrames.push({ms:milliseconds,phase,...(work?{work:structuredClone(work())}:{})});if(this.slowFrames.length>64)this.slowFrames.shift();}
+    if(milliseconds>33.34){const row={ms:milliseconds,phase,...(work?{work:structuredClone(work())}:{})};this.slowFrames.push(row);if(this.slowFrames.length>64)this.slowFrames.shift();this.worstFrames.push(row);this.worstFrames.sort((a,b)=>b.ms-a.ms);this.worstFrames.length=Math.min(8,this.worstFrames.length);}
     const row={ms:milliseconds,phase,...(Number.isFinite(endedAt)?{endedAt}:{})};if(this.rows.length<this.limit)this.rows.push(row);else{this.rows[this.head]=row;this.head=(this.head+1)%this.limit;}
   }
   summarize(){
@@ -31,7 +31,7 @@ export class FrameMetrics {
   report({includeIntervals=false}={}){
     const report={units:'milliseconds for intervals; seconds for measured duration',
       scope:'Since reset or example start; excludes paused, hidden and history restoration intervals. Frame time is not simulation time.',
-      session:structuredClone(this.totals),slowFrames:structuredClone(this.slowFrames),presentationChanges:structuredClone(this.presentationChanges),recentWindow:{capacityFrames:this.limit,retainedFrames:this.rows.length,phases:this.summarize()}};
+      session:structuredClone(this.totals),slowFrames:structuredClone(this.slowFrames),worstFrames:structuredClone(this.worstFrames),presentationChanges:structuredClone(this.presentationChanges),recentWindow:{capacityFrames:this.limit,retainedFrames:this.rows.length,phases:this.summarize()}};
     if(includeIntervals)report.recentWindow.intervals=[...this.rows.slice(this.head),...this.rows.slice(0,this.head)].map(row=>({...row}));
     return report;
   }

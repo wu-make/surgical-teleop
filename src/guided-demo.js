@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { surfacePose } from './interaction-controller.js';
 import { deformPoint as materialDisplay, normalizeDeformation } from './tissue-worker.js';
+import {runCooperatively,runImmediately} from './cooperative-work.js';
 
 const smooth = value => value * value * (3 - 2 * value);
 const defaults = { left: [-.025, 1.106, -.015], right: [.025, 1.108, -.015] };
@@ -10,6 +11,10 @@ const defaults = { left: [-.025, 1.106, -.015], right: [.025, 1.108, -.015] };
  * groove and pretending it detached. Returned positions are material coordinates.
  */
 export function planPeripheralResections(tissue, {depth=.012,cutRadius=.0024}={}) {
+  return runImmediately(planPeripheralResectionSteps(tissue,{depth,cutRadius}));
+}
+
+export function* planPeripheralResectionSteps(tissue, {depth=.012,cutRadius=.0024}={}) {
   if(!tissue.queryReferenceDistance||!tissue.metadata)return [];
   const meta=tissue.metadata,spacing=Math.max(...meta.spacing),step=Math.min(cutRadius*1.45,Math.max(.0025,spacing*1.8));
   const bounds=meta.bounds??[meta.origin.map(v=>v+spacing*2),meta.origin.map((v,i)=>v+(meta.dims[i]-3)*meta.spacing[i])];
@@ -26,6 +31,7 @@ export function planPeripheralResections(tissue, {depth=.012,cutRadius=.0024}={}
         if(distance<=cutRadius){lowU=Math.min(lowU,u);highU=Math.max(highU,u);lowV=Math.min(lowV,v);highV=Math.max(highV,v);}
         if(distance<0)inside.push({point,distance});
       }
+      yield;
     }
     if(inside.length<4||!Number.isFinite(lowU))continue;
     inside.sort((a,b)=>a.distance-b.distance);
@@ -44,6 +50,7 @@ export function planPeripheralResections(tissue, {depth=.012,cutRadius=.0024}={}
         }
         outside=projection;
       }
+      yield;
     }
     if(!anchor||sign*(anchor[axis]-plane)<cutRadius*2+spacing)continue;
     const normal=new THREE.Vector3().setComponent(axis,sign);
@@ -75,6 +82,7 @@ export class GuidedDemo {
   }
 
   stop(message = '已结束自动操作，可继续手动控制') {
+    this._planningToken=(this._planningToken??0)+1;
     if (!this.active) return;
     this.active = false;
     this.sim.setCutting(false);
@@ -153,6 +161,32 @@ export class GuidedDemo {
     let prepared=null;
     for(const plan of plans){prepared=this._preparePlan(plan);if(prepared)break;}
     if(!prepared){this.onMessage('当前器官没有可安全到达的薄缘切离路径；请移开器械或重置完整器官后重试');return;}
+    this._startPrepared(prepared);
+  }
+
+  async startExampleAsync(options={}){
+    if(this.active){this.stop();return false;}
+    if(this.tissue.busy||this.interaction.cuttingBusy){this.onMessage('组织更新中，请稍候再开始示范');return false;}
+    const token=this._planningToken=(this._planningToken??0)+1,epoch=this.tissue._epoch,cuts=this.tissue._cuts?.length,metadata=this.tissue.metadata;
+    const tools=JSON.stringify(this.sim.state.tools),paused=this.sim.state.paused;
+    const valid=()=>this._planningToken===token&&this.active&&!this.tissue._disposed&&this.tissue._epoch===epoch&&this.tissue.metadata===metadata&&this.tissue._cuts?.length===cuts&&!this.tissue.busy&&!this.interaction.cuttingBusy&&this.sim.state.paused===paused&&JSON.stringify(this.sim.state.tools)===tools;
+    this.active=true;this.mode='planning';this.phase='planning';this.time=0;
+    this.onMessage('正在分帧准备完整切离路径，可取消；组织采样与碰撞检查保持完整');this.onChange();
+    const self=this;
+    function* prepare(){
+      const plans=yield* planPeripheralResectionSteps(self.tissue);
+      for(const plan of plans){const prepared=yield* self._preparePlanSteps(plan);if(prepared)return prepared;}
+      return null;
+    }
+    try{
+      const result=await runCooperatively(prepare(),{...options,valid});if(this._planningToken===token)this.planningTimings=result.stats;
+      if(result.cancelled||!valid()){if(this._planningToken===token)this.stop('路径准备已取消：场景或操作状态发生改变');return false;}
+      if(!result.value){this.stop('当前器官没有可安全到达的薄缘切离路径；请移开器械或重置完整器官后重试');return false;}
+      this._startPrepared(result.value);return true;
+    }catch(error){if(this._planningToken===token)this.stop('路径准备未完成，可重新开始');throw error;}
+  }
+
+  _startPrepared(prepared){
     Object.assign(this,prepared);
     this.sim.checkpoint('真实切离、夹持与移开示范', ()=>this.interaction.snapshot({forHistory:true}),{takeOwnership:true});
     this.interaction.release(true);
@@ -170,6 +204,10 @@ export class GuidedDemo {
   }
 
   _preparePlan(plan) {
+    return runImmediately(this._preparePlanSteps(plan));
+  }
+
+  *_preparePlanSteps(plan) {
     const world=point=>this.tissue.group.localToWorld(point.clone());
     const surface=world(plan.referenceAnchor),up=new THREE.Vector3(0,1,0);
     const leftRest=surface.clone().addScaledVector(plan.worldNormal,.0006);
@@ -188,11 +226,13 @@ export class GuidedDemo {
       try{
         const probe=new this.sim.constructor();probe.restore(this.sim.snapshot());probe.setPaused(false);
         probe.setJaw('left',.75);probe.setJaw('right',.85);
-        let blocked=probe.moveToolTo(rightStandby.toArray(),'right').limited||probe.moveToolTo(leftRest.toArray(),'left').limited;
-        probe.setJaw('left',0);
-        blocked ||= probe.moveToolTo(leftLift.toArray(),'left').limited||probe.moveToolTo(rightEntry.toArray(),'right').limited;
-        probe.setJaw('right',0);
-        for(const point of plan.path){if(blocked||probe.moveToolTo(displayed(point).toArray(),'right').limited){blocked=true;break;}}
+        let blocked=probe.moveToolTo(rightStandby.toArray(),'right').limited;yield;
+        if(!blocked){blocked=probe.moveToolTo(leftRest.toArray(),'left').limited;yield;}
+        probe.setJaw('left',0);yield;
+        if(!blocked){blocked=probe.moveToolTo(leftLift.toArray(),'left').limited;yield;}
+        if(!blocked){blocked=probe.moveToolTo(rightEntry.toArray(),'right').limited;yield;}
+        probe.setJaw('right',0);yield;
+        for(const point of plan.path){if(blocked)break;blocked=probe.moveToolTo(displayed(point).toArray(),'right').limited;yield;if(blocked)break;}
         if(!blocked)return {plan,leftRest,leftLift,leftAway,rightStandby};
       }catch{continue;}
     }
@@ -236,6 +276,7 @@ export class GuidedDemo {
 
   update(dt) {
     if (!this.active || this.sim.state.paused) return;
+    if(this.mode==='planning')return;
     this.time += dt;
     if (this.mode === 'approach') {
       if(this._bleedingKey){
