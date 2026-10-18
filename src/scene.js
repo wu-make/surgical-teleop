@@ -127,7 +127,13 @@ export class SurgicalScene{
   }
   _makeScopeArm(){this.scopeArm=new THREE.Group();}
   addTissue(tissue){this.tissue=tissue;tissue.group.position.set(0,1.035,0);this.scene.add(tissue.group);tissue.group.traverse(m=>{m.layers.enable(1);if(m.isMesh){m.castShadow=true;m.receiveShadow=true;}});}
-  resize(){const w=this.stage.clientWidth,h=this.stage.clientHeight;if(w<1||h<1)return;this.renderer.setSize(w,h,false);this.overviewCamera.aspect=w/h;this.overviewCamera.updateProjectionMatrix();this.endoCamera.aspect=w/h;this.endoCamera.updateProjectionMatrix();}
+  resize(){
+    const w=this.stage.clientWidth,h=this.stage.clientHeight;if(w<1||h<1)return;
+    if(this._width===w&&this._height===h)return;
+    const start=performance.now();this._width=w;this._height=h;
+    this.renderer.setSize(w,h,false);this.overviewCamera.aspect=w/h;this.overviewCamera.updateProjectionMatrix();this.endoCamera.aspect=w/h;this.endoCamera.updateProjectionMatrix();
+    this.resizeTimings??=[];this.resizeTimings.push({at:start,width:w,height:h,ms:performance.now()-start});if(this.resizeTimings.length>32)this.resizeTimings.shift();
+  }
   setMode(mode){this.mode=mode;this.controls.enabled=mode==='overview';}
   get scopeAspect(){const area=this.mode==='endo'?this.stage:this.mini;if(area===this.stage)return Math.max(1,area.clientWidth)/Math.max(1,area.clientHeight);const bounds=area.getBoundingClientRect();return Math.max(1,bounds.width)/Math.max(1,bounds.height);}
   home(){const damping=this.controls.enableDamping;this.controls.enableDamping=false;this.controls.update();this.overviewCamera.position.set(1.68,2.02,-1.92);this.controls.target.set(0,1.20,.18);this.controls.update();this.controls.enableDamping=damping;}

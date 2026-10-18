@@ -27,7 +27,7 @@ export class BloodFlow {
     this._surfaceCache=new Map();this.reset();
   }
   reset(){this.nodes=[];this.drops=[];this.emitted=0;this.escaped=0;this.reservoir=0;this.clock=0;this.pressureExposure=0;this.lastPressureClock=-1;this.lastPressureContacts=0;this.pressureActive=false;this.pressureContacts=0;this._accumulator=0;this._neighbours=[];this._positionCache=new WeakMap();this._surfaceCache.clear();this.render();}
-  snapshot(){return{version:1,nodes:this.nodes.map(n=>{const {display,normal,physicalArea,...saved}=n;return clone(saved);}),drops:clone(this.drops),emitted:this.emitted,escaped:this.escaped,reservoir:this.reservoir,clock:this.clock,pressureExposure:this.pressureExposure,lastPressureClock:this.lastPressureClock,lastPressureContacts:this.lastPressureContacts};}
+  snapshot(){return{version:1,nodes:clone(this.nodes.map(n=>{const {display,normal,physicalArea,...saved}=n;return saved;})),drops:clone(this.drops),emitted:this.emitted,escaped:this.escaped,reservoir:this.reservoir,clock:this.clock,pressureExposure:this.pressureExposure,lastPressureClock:this.lastPressureClock,lastPressureContacts:this.lastPressureContacts};}
   restore(s){
     this.reset();if(!s)return;
     if(s.version!==1||!Array.isArray(s.nodes)||s.nodes.length>MAX_NODES||!Array.isArray(s.drops)||s.drops.length>MAX_DROPS)throw new Error('Invalid blood-flow snapshot');

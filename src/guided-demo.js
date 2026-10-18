@@ -99,7 +99,7 @@ export class GuidedDemo {
     const tool = this.sim.state.tools[side];
     const surface = surfacePose(this.tissue, tool.position) ?? surfacePose(this.tissue, defaults[side]);
     if (!surface) { this.onMessage('当前区域没有可接近的组织表面'); return; }
-    this.sim.checkpoint('器械表面就位', ()=>this.interaction.snapshot());
+    this.sim.checkpoint('器械表面就位', ()=>this.interaction.snapshot({forHistory:true}),{takeOwnership:true});
     if (side === 'left') this.interaction.release(true);
     this.sim.setCutting(false);
     this.sim.setJaw(side, .7);
@@ -123,7 +123,7 @@ export class GuidedDemo {
     const piece=surface?.fragmentId!=null?this.tissue.getFragment?.(surface.fragmentId):null;
     if(!piece||!available.has(piece.id)){this.onMessage('附近 35 cm 内未找到可接近的独立标本表面，不会退回母体');return false;}
     const normal=(surface.normal??new THREE.Vector3(0,1,0)).clone().normalize(),inverse=piece.quaternion.clone().invert();
-    this.sim.checkpoint('左钳接近独立标本',()=>this.interaction.snapshot());
+    this.sim.checkpoint('左钳接近独立标本',()=>this.interaction.snapshot({forHistory:true}),{takeOwnership:true});
     this.sim.select('left');this.sim.setCutting(false);this.sim.setJaw('left',.75);
     this.mode='approach';this.active=true;this.time=0;this.side='left';
     this._bleedingKey=null;
@@ -140,7 +140,7 @@ export class GuidedDemo {
     const sources=(this.tissue.blood?.nodes??[]).filter(n=>n.cut&&n.injured&&n.fragmentId==null&&n.clot<.95&&n.display);
     sources.sort((a,b)=>a.display.distanceToSquared(point)-b.display.distanceToSquared(point));
     const source=sources[0];if(!source){this.onMessage('当前没有可接近的开放渗血切面');return false;}
-    this.sim.checkpoint('右端接近渗血切面',()=>this.interaction.snapshot());this.sim.select('right');this.sim.setCutting(false);this.sim.setJaw('right',0);
+    this.sim.checkpoint('右端接近渗血切面',()=>this.interaction.snapshot({forHistory:true}),{takeOwnership:true});this.sim.select('right');this.sim.setCutting(false);this.sim.setJaw('right',0);
     this.mode='approach';this.active=true;this.time=0;this.side='right';this.approachFragment=null;this._bleedingKey=source.key;
     this.start=new THREE.Vector3(...tool.position);this.end=this.interaction.pressureApproachTarget(source);
     this.onMessage('右端已闭合，正在以实际剪刃接近渗血切面；就位后按住 H 局部压迫');this.onChange();return true;
@@ -154,7 +154,7 @@ export class GuidedDemo {
     for(const plan of plans){prepared=this._preparePlan(plan);if(prepared)break;}
     if(!prepared){this.onMessage('当前器官没有可安全到达的薄缘切离路径；请移开器械或重置完整器官后重试');return;}
     Object.assign(this,prepared);
-    this.sim.checkpoint('真实切离、夹持与移开示范', ()=>this.interaction.snapshot());
+    this.sim.checkpoint('真实切离、夹持与移开示范', ()=>this.interaction.snapshot({forHistory:true}),{takeOwnership:true});
     this.interaction.release(true);
     this.sim.setCutting(false);
     this.sim.setPaused(false);

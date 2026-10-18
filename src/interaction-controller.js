@@ -10,6 +10,7 @@ const asVector=point=>point?.isVector3?point.clone():new THREE.Vector3(...point)
 // CAD TCP is at the jaws. This is a contact tolerance for the 1.5 mm volume,
 // not a magnetic pickup radius or a claimed material precision.
 const GRASP_CONTACT_MARGIN=.002;
+const CUT_RADIUS=.0024;
 
 /** Shared interaction path for manual input and the optional guided example. */
 export class InteractionController {
@@ -36,7 +37,7 @@ export class InteractionController {
     this._cutSpans=[];this._cutTail=null;this._pendingCutSamples=0;this._cutOverflow=false;
   }
 
-  snapshot() { return { version: 3, tissue: this.tissue.snapshot(), grasp: copy(this.grasp), relaxing: copy(this.relaxing),requiresReopen:this.requiresReopen }; }
+  snapshot(options) { return { version: 3, tissue: this.tissue.snapshot(options), grasp: copy(this.grasp), relaxing: copy(this.relaxing),requiresReopen:this.requiresReopen }; }
 
   async restore(data) {
     const generation = ++this._generation;
@@ -94,8 +95,8 @@ export class InteractionController {
 
   _setCutStatus(status,reason){this.contact.cutStatus=status;this.contact.cutReason=reason;}
 
-  _clearCutTrajectory(){this._cutSpans=[];this._cutTail=null;this._pendingCutSamples=0;this._cutOverflow=false;}
-  _breakCutTrajectory(){this._cutTail=null;this._cutOverflow=false;}
+  _clearCutTrajectory(){this._jawObservation=null;this._cutSpans=[];this._cutTail=null;this._pendingCutSamples=0;this._cutOverflow=false;}
+  _breakCutTrajectory(){this._cutTail=null;this._cutOverflow=false;this._jawObservation=null;}
   /** Call on discrete B/pause/clutch transitions as well as rendered frames,
    * so an off/on pair between two renders can never bridge the disabled gap. */
   breakCutTrajectory(){this._breakCutTrajectory();}
@@ -144,13 +145,13 @@ export class InteractionController {
         const batch=this._takeCutBatch();task.batch=batch;this._pendingCutFeedback();
         this.contact.cutting=true;this._setCutStatus('busy','正在完成已执行的剪切，请稍候');
         const before=this.tissue.removedVolumeMm3;let result;
-        if(this.tissue.cutSamples)result=await this.tissue.cutSamples(batch.map(pose=>({segments:pose.segments,deformation:pose.material})),.0024);
+        if(this.tissue.cutSamples)result=await this.tissue.cutSamples(batch.map(pose=>({segments:pose.segments,deformation:pose.material})),CUT_RADIUS);
         else{
           // Lightweight test adapters and old integrations can accept one pose
           // at a time. Production uses cutSamples to freeze each material map.
           for(const pose of batch){
-            if(this.tissue.cutSegments)result=await this.tissue.cutSegments(pose.segments,.0024);
-            else for(const segment of pose.segments)result=await this.tissue.cutSegment(segment.a,segment.b,.0024);
+            if(this.tissue.cutSegments)result=await this.tissue.cutSegments(pose.segments,CUT_RADIUS);
+            else for(const segment of pose.segments)result=await this.tissue.cutSegment(segment.a,segment.b,CUT_RADIUS);
           }
         }
         if(task.generation!==this._generation||this._cutTask!==task)return;
@@ -368,8 +369,8 @@ export class InteractionController {
     if(pending)hits=[];
     else if(this._bladeContactCache?.key===contactKey)hits=this._bladeContactCache.hits;
     else{
-      hits=blade.segments.map(segment=>this.tissue.contactSegment?.(segment.a,segment.b,.0032)??
-        {contact:Math.min(this.tissue.sampleDistance(segment.a),this.tissue.sampleDistance(segment.b))<=.0032,distance:Infinity});
+      hits=blade.segments.map(segment=>this.tissue.contactSegment?.(segment.a,segment.b,CUT_RADIUS)??
+        {contact:Math.min(this.tissue.sampleDistance(segment.a),this.tissue.sampleDistance(segment.b))<=CUT_RADIUS,distance:Infinity});
       this._bladeContactCache={key:contactKey,hits};
     }
     const hit=hits.find(value=>value.contact);
@@ -383,7 +384,13 @@ export class InteractionController {
     const jaw=right.jaw;
     if(compressing){this.lastCut=null;this._breakCutTrajectory();this._setCutStatus('pressure',this.tissue.blood?.pressureContacts?'局部压迫中：观察渗血变化；松开 H 后继续检查':'压迫需稳定接触渗血切面：闭合器械，精细贴近；左钳需先释放组织');}
     else if(!this.sim.state.cutting){this.lastCut=null;this._noMaterialAttempt=null;this._breakCutTrajectory();this._setCutStatus('disabled','按 B 开启剪切模式');}
-    else if(jaw>.22){this.lastCut=null;this._noMaterialAttempt=null;this._breakCutTrajectory();this._setCutStatus('jaw-open','右剪尚未闭合，请选右剪后按 C');}
+    else if(jaw>.22 && !(this._jawObservation!=null && jaw<this._jawObservation-1e-6)){
+      // Retain the open CAD pose as the start of a closure, without cutting
+      // while opening or parked open. Closing samples the actual opposing edges.
+      this.lastCut=null;this._noMaterialAttempt=null;this._breakCutTrajectory();
+      this._cutTail=captureBladePose(blade,point,this._toolQuaternionLocal('right'),jaw,right.wrist,this.tissue._deformation??null);
+      this._setCutStatus('jaw-open','右剪已待命：让组织位于剪口之间，再按 C 闭合');
+    }
     else if(clutched){this.lastCut=null;this._breakCutTrajectory();this._setCutStatus('clutched','松开空格离合后继续剪切');}
     else{
       const pose=captureBladePose(blade,point,this._toolQuaternionLocal('right'),jaw,right.wrist,this.tissue._deformation??null);
@@ -391,6 +398,7 @@ export class InteractionController {
       else if(this._sameCut(pose))this._setCutStatus('already-cut','此处已切开，请沿组织连接继续移动右剪');
       this._appendBladePose(pose,{contact:pending||!!hit});
     }
+    this._jawObservation=jaw;
     this._pendingCutFeedback();
     if(this._cutOverflow)this._setCutStatus('blocked','切割轨迹缓冲已满，已停止记录新路径；等待追赶后请重新张合剪口或切换 B');
     else if(this.cuttingBusy)this._setCutStatus('busy','正在完成已执行的剪切，请稍候');

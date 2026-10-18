@@ -57,7 +57,8 @@ test('the endoscope uses a linear HDR target and exactly one official display co
     assert.equal(material.fragmentShader.split('sRGBTransferOETF( gl_FragColor )').length - 1, 1);
     assert.doesNotMatch(material.fragmentShader, /#include <(?:tonemapping|colorspace)_fragment>/);
   }
-  assert.equal(feed.outputMaterial.fragmentShader, OutputShader.fragmentShader);
+  assert.match(feed.outputMaterial.fragmentShader,/vUv \* feedScale/);
+  assert.match(feed.monitorMaterial.fragmentShader,/feedUV \* feedScale/);
   assert.equal(feed.outputMaterial.depthTest, false); assert.equal(feed.outputMaterial.depthWrite, false);
   assert.equal(feed.monitorMaterial.depthTest, true); assert.equal(feed.monitorMaterial.depthWrite, true);
   assert.notEqual(feed.outputMaterial.uniforms, feed.monitorMaterial.uniforms);
@@ -174,4 +175,25 @@ test('the real theatre LCD faces the default overview, matches its feed aspect a
     geometries.forEach(geometry => geometry.dispose()); materials.forEach(material => { material.map?.dispose(); material.dispose(); });
     feed.dispose();
   }
+});
+
+test('preallocated HDR storage retains every active pixel across fullscreen and view switches',()=>{
+  const renderer=new RendererProbe(),feed=new ScopeFeed(renderer),scene=new THREE.Scene(),camera=new THREE.PerspectiveCamera();
+  let allocations=0;feed.target.addEventListener('dispose',()=>allocations++);
+  feed.reserve(renderer,1920,1080);const initial=allocations;
+  for(const [w,h]of [[640,400],[1280,720],[1920,1080],[280,180],[640,400]]){
+    feed.capture(renderer,scene,camera,w,h);
+    assert.deepEqual(feed.resolution,{width:w*1.5,height:h*1.5});
+    assert.deepEqual(feed.target.viewport.toArray(),[0,0,w*1.5,h*1.5]);
+    assert.deepEqual(feed.outputMaterial.uniforms.feedScale.value.toArray(),[w/1920,h/1080]);
+    assert.equal(feed.monitorMaterial.uniforms.feedScale,feed.outputMaterial.uniforms.feedScale);
+    assert.equal(camera.aspect,w/h);assert.equal(allocations,initial,'no texture/depth reallocation during fullscreen');
+  }
+  feed.dispose();
+});
+
+test('unchanged viewport notifications do not reallocate the drawing buffer',()=>{
+  let sizes=[];const view={stage:{clientWidth:863,clientHeight:556},renderer:{setSize:(w,h)=>sizes.push([w,h])},overviewCamera:new THREE.PerspectiveCamera(),endoCamera:new THREE.PerspectiveCamera()};
+  SurgicalScene.prototype.resize.call(view);SurgicalScene.prototype.resize.call(view);assert.deepEqual(sizes,[[863,556]]);
+  view.stage.clientWidth=1746;view.stage.clientHeight=984;SurgicalScene.prototype.resize.call(view);assert.deepEqual(sizes.at(-1),[1746,984]);assert.equal(view.endoCamera.aspect,1746/984);
 });

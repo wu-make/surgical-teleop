@@ -430,3 +430,20 @@ test('resume rebases a restored specimen onto the fresh CAD orientation gauge wi
   tissue.blood.nodes=[source];tissue.blood.updatePositions();tissue.blood.connect();
   try{assert.equal(demo.approachBleeding(),true);for(let i=0;i<80;i++){demo.update(1/60);sim.update(1/60,new Set());await interaction.update(1/60);}assert.equal(sim.state.tools.right.jaw,0);for(let i=0;i<60;i++)await interaction.update(1/60,{compressing:true});assert(tissue.blood.metrics.pressureExposureSeconds>.8);assert(source.clot>.05);}finally{tissue.dispose();}
 });
+
+test('closing jaws cuts their actual swept blades before the nearly-closed threshold; opening does not',async()=>{
+  const {sim,tissue,interaction}=workbench();
+  sim.state.tools.left.position=[-.08,0,0];sim.setCutting(true);sim.state.tools.right.jaw=.8;
+  interaction.toolBlade=()=>{const x=(.8-sim.state.tools.right.jaw)*.12;return{source:'closure-test',segments:[{a:new THREE.Vector3(x,-.008,.028),b:new THREE.Vector3(x,.008,.028)}]};};
+  try{
+    await interaction.update(1/60);assert.equal(tissue.removedVolumeMm3,0,'stationary open blades cannot cut');
+    sim.state.tools.right.jaw=.7;await interaction.update(1/60);
+    assert(tissue.removedVolumeMm3>0,'the actual closing edge must cut while jaw is still > .22');
+    const removed=tissue.removedVolumeMm3,history=tissue.snapshot({forHistory:true});
+    assert(Object.isFrozen(history.cuts[0]));assert.throws(()=>{history.cuts[0].a[0]=999;},TypeError);
+    sim.state.tools.right.jaw=.8;await interaction.update(1/60);
+    assert.equal(tissue.removedVolumeMm3,removed,'opening cannot sweep-cut tissue');
+    const count=history.cuts.length;await tissue.cut(new THREE.Vector3(0,0,.02),.0024);assert.equal(history.cuts.length,count,'history array is independent of later appends');
+    const exported=structuredClone(tissue.snapshot());exported.cuts[0].a[0]=999;assert.notEqual(tissue._cuts[0].a[0],999);
+  }finally{tissue.dispose();}
+});

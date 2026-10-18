@@ -12,27 +12,41 @@ export class ScopeFeed {
     this.target.texture.colorSpace = THREE.LinearSRGBColorSpace;
     this.target.texture.name = 'Linear_Real_Time_Endoscope_Feed';
     const uniforms = THREE.UniformsUtils.clone(OutputShader.uniforms);
+    uniforms.feedScale = { value: new THREE.Vector2(1, 1) };
     uniforms.tDiffuse.value = this.target.texture; uniforms.toneMappingExposure.value = exposure;
     this.outputMaterial = new THREE.RawShaderMaterial({ ...OutputShader, uniforms,
-      defines: { ACES_FILMIC_TONE_MAPPING: '', SRGB_TRANSFER: '' }, depthTest: false, depthWrite: false, toneMapped: false });
+      defines: { ACES_FILMIC_TONE_MAPPING: '', SRGB_TRANSFER: '' }, depthTest: false, depthWrite: false, toneMapped: false,
+      fragmentShader: OutputShader.fragmentShader.replace('varying vec2 vUv;', 'varying vec2 vUv;\nuniform vec2 feedScale;')
+        .replace('texture2D( tDiffuse, vUv )', 'texture2D( tDiffuse, vUv * feedScale )') });
     const monitorUniforms = THREE.UniformsUtils.clone(OutputShader.uniforms);
     monitorUniforms.tDiffuse.value = this.target.texture; monitorUniforms.toneMappingExposure.value = exposure;
     monitorUniforms.feedAspect = { value: 1 }; monitorUniforms.screenAspect = { value: 1.6 };
+    monitorUniforms.feedScale = uniforms.feedScale;
     this.monitorMaterial = new THREE.RawShaderMaterial({ ...OutputShader, uniforms: monitorUniforms,
       defines: { ACES_FILMIC_TONE_MAPPING: '', SRGB_TRANSFER: '' }, toneMapped: false,
-      fragmentShader: OutputShader.fragmentShader.replace('varying vec2 vUv;', 'varying vec2 vUv;\nuniform float feedAspect;\nuniform float screenAspect;')
+      fragmentShader: OutputShader.fragmentShader.replace('varying vec2 vUv;', 'varying vec2 vUv;\nuniform vec2 feedScale;\nuniform float feedAspect;\nuniform float screenAspect;')
         .replace('gl_FragColor = texture2D( tDiffuse, vUv );', `vec2 feedUV=vUv;
 float fit=screenAspect/feedAspect;
 if(fit>1.0)feedUV.x=(feedUV.x-.5)*fit+.5;else feedUV.y=(feedUV.y-.5)/fit+.5;
 if(any(lessThan(feedUV,vec2(0.0)))||any(greaterThan(feedUV,vec2(1.0)))){gl_FragColor=vec4(.008,.012,.016,1.0);return;}
-gl_FragColor = texture2D( tDiffuse, feedUV );`) });
+gl_FragColor = texture2D( tDiffuse, feedUV * feedScale );`) });
     this.quad = new FullScreenQuad(this.outputMaterial);
     this.resolution = { width: 1, height: 1 }; this.disposed = false;
   }
 
+  // Reserve GPU storage during loading. Active pixels remain one-to-one with
+  // the original HDR capture: no downsampling, reduced detail or stale frame.
+  reserve(renderer, width, height) {
+    const w=Math.max(this.target.width,Math.round(width*renderer.getPixelRatio())),h=Math.max(this.target.height,Math.round(height*renderer.getPixelRatio()));
+    if(w!==this.target.width||h!==this.target.height)this.target.setSize(w,h);
+    renderer.initRenderTarget?.(this.target);
+  }
+
   capture(renderer, scene, camera, width, height) {
     const ratio = renderer.getPixelRatio(), w = Math.max(1, Math.round(width * ratio)), h = Math.max(1, Math.round(height * ratio));
-    if (this.target.width !== w || this.target.height !== h) this.target.setSize(w, h);
+    if (this.target.width < w || this.target.height < h) this.target.setSize(Math.max(this.target.width,w),Math.max(this.target.height,h));
+    this.target.viewport.set(0,0,w,h);
+    this.outputMaterial.uniforms.feedScale.value.set(w/this.target.width,h/this.target.height);
     this.resolution = { width: w, height: h };
     camera.aspect = width / Math.max(1, height); camera.updateProjectionMatrix();
     this.monitorMaterial.uniforms.feedAspect.value = camera.aspect;

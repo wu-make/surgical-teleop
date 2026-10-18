@@ -5,8 +5,12 @@ import { TissueFragments } from './tissue-fragments.js';
 import { BloodFlow } from './blood-flow.js';
 import {closestParentSurface,closestParentSegment,firstParentHit} from './tissue-contact.js';
 import {MeshBroadPhase} from './mesh-broad-phase.js';
+import {CutSpatialIndex} from './cut-spatial-index.js';
 
 const vectorArray = point => Array.isArray(point) ? [...point] : [point.x, point.y, point.z];
+// Accepted cutter records are append-only. History can share these immutable
+// records while owning its array; public exports still receive detached copies.
+const freezeRecord = value => { if(value && typeof value === 'object' && !Object.isFrozen(value)){for(const child of Object.values(value))freezeRecord(child);Object.freeze(value);}return value; };
 const copyCuts = cuts => cuts.map(cut => validateCut(cut));
 const squaredDistanceToBox = (p, low, high) => Math.max(low[0] - p[0], 0, p[0] - high[0]) ** 2 + Math.max(low[1] - p[1], 0, p[1] - high[1]) ** 2 + Math.max(low[2] - p[2], 0, p[2] - high[2]) ** 2;
 // An outside bounding-box distance is a lower bound on distance to its solid.
@@ -87,7 +91,7 @@ export class TissueVolume {
       if(samples.reduce((n,sample)=>n+(sample.segments?.length??0),0)>64)throw new Error('A cutting pass supports at most 64 source blade segments');
       primitives=samples.filter(sample=>sample.segments?.length).map(sample=>{
         const points=sample.segments.map(segment=>({a:vectorArray(segment.a),b:vectorArray(segment.b)}));
-        return validateCut({...points[0],...(points.length>1?{segments:points}:{}),radius,deformation:sample.deformation});
+        return freezeRecord(validateCut({...points[0],...(points.length>1?{segments:points}:{}),radius,deformation:sample.deformation}));
       });
     }
     catch (error) { return Promise.reject(error); }
@@ -105,7 +109,7 @@ export class TissueVolume {
     });
   }
 
-  snapshot() { return { version: 2, cuts: copyCuts(this._cuts), deformation: this._deformation ? normalizeDeformation(this._deformation) : null,
+  snapshot({forHistory=false}={}) { return { version: 2, cuts: forHistory?this._cuts.slice():copyCuts(this._cuts), deformation: this._deformation ? normalizeDeformation(this._deformation) : null,
     separations: structuredClone(this._separations), fragments: this.fragments.snapshot(),blood:this.blood.snapshot() }; }
 
   async restore(snapshot) {
@@ -114,7 +118,7 @@ export class TissueVolume {
     const cuts = snapshot.cuts.map(validateCut);
     this._epoch++;
     for (const command of this._commands.splice(0)) command.resolve({ changed: false, cancelled: true });
-    this._cuts = copyCuts(cuts);
+    this._cuts = copyCuts(cuts).map(freezeRecord);
     this._lastCompletedCut=null;
     this._restoringFragmentPoses = new Map((snapshot.fragments ?? []).map(piece => [piece.id, structuredClone(piece)]));
     this._restoringBlood=structuredClone(snapshot.blood??null);
@@ -245,11 +249,7 @@ export class TissueVolume {
       const displayed = group.deformation ? deformPoint(p, group.deformation) : p;
       this._queryStats.mappedGroups++;
       if (canSkipBox(squaredDistanceToBox(displayed, group.low, group.high), distance)) { this._queryStats.skippedGroups++; continue; }
-      for (const entry of group.entries) {
-        if (distance >= entry.cut.radius || canSkipBox(squaredDistanceToBox(displayed, entry.low, entry.high), distance)) { this._queryStats.skippedCutters++; continue; }
-        distance = Math.max(distance, entry.cut.radius - distanceToCut(displayed,entry.cut));
-        this._queryStats.evaluatedCutters++;
-      }
+      distance=group.index.evaluate(displayed,distance,this._queryStats);
     }
     return distance;
   }
@@ -260,13 +260,16 @@ export class TissueVolume {
       this._contactHistoryScale=1;this._contactHasDeformedCuts=false;this._contactQueryCache.clear();
     }
     while (this._indexedCutCount < this._cuts.length) {
-      const cut = this._cuts[this._indexedCutCount++], deformation = cut.deformation;
+      // History records stay deeply immutable. Hot SDF queries use their own
+      // numeric arrays so frozen-array element access cannot deopt every voxel
+      // and CAD contact query as the cut history grows.
+      const cut = validateCut(this._cuts[this._indexedCutCount++]), deformation = cut.deformation;
       const key = deformation ? JSON.stringify(deformation) : 'rest';
       let group = this._cutGroupMap.get(key);
       if (!group) {
         const minimumScale = deformationMinimumScale(deformation);
         this._contactHistoryScale=Math.min(this._contactHistoryScale,minimumScale);this._contactHasDeformedCuts||=!!deformation;
-        group = { deformation, minimumScale, entries: [], low: [Infinity, Infinity, Infinity], high: [-Infinity, -Infinity, -Infinity], referenceLow: [Infinity, Infinity, Infinity], referenceHigh: [-Infinity, -Infinity, -Infinity] };
+        group = { deformation, minimumScale, entries: [], index:new CutSpatialIndex(), low: [Infinity, Infinity, Infinity], high: [-Infinity, -Infinity, -Infinity], referenceLow: [Infinity, Infinity, Infinity], referenceHigh: [-Infinity, -Infinity, -Infinity] };
         this._cutGroupMap.set(key, group); this._cutGroups.push(group);
       }
       const {low,high}=cutBounds(cut,cut.radius);
@@ -276,7 +279,7 @@ export class TissueVolume {
         group.referenceLow[axis] = Math.min(group.referenceLow[axis], low[axis] - Math.max(0, delta[axis]));
         group.referenceHigh[axis] = Math.max(group.referenceHigh[axis], high[axis] - Math.min(0, delta[axis]));
       }
-      group.entries.push({ cut, low, high });
+      const entry={cut,low,high};group.entries.push(entry);group.index.add(entry);
     }
   }
 

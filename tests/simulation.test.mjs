@@ -807,3 +807,12 @@ test('live viewport aspect is validated atomically and stays independent of undo
   s.setPaused(true);s.setScopeContext({viewAspect:.08});const pose=[...s.state.scope.position];hold(s,[],1);nearVector(s.state.scope.position,pose);
   s.reset();near(s.viewAspect,.08);
 });
+
+test('explicit ownership avoids a duplicate history clone and normal checkpoints still isolate callers',()=>{
+  const sim=new Simulation(),owned={cuts:[Object.freeze({radius:.0024})],blood:{volume:4}};
+  sim.checkpoint('owned',()=>owned,{takeOwnership:true});assert.equal(sim.undoStack[0].extraData,owned);
+  const ordinary={blood:{volume:5}};sim.checkpoint('ordinary',ordinary);ordinary.blood.volume=99;
+  assert.equal(sim.undoStack[1].extraData.blood.volume,5);
+  const result=sim.undo({blood:{volume:6}});result.extraData.blood.volume=100;
+  assert.equal(sim.redoStack[0].extraData.blood.volume,6);
+});

@@ -198,7 +198,7 @@ function normalizeKeys(input) {
 const axisInput = (keys, positive, negative) => Number(keys.has(positive)) - Number(keys.has(negative));
 
 export class Simulation {
-  constructor({ onEvent, getExtraData, shouldCheckpoint } = {}) {
+  constructor({ onEvent, getExtraData, shouldCheckpoint, ownsExtraData=false } = {}) {
     this.state = initialState();
     this.undoStack = [];
     this.redoStack = [];
@@ -209,6 +209,7 @@ export class Simulation {
     this._events = [];
     this._limitCooldown = 0;
     this._controlAges = new Map();
+    this.ownsExtraData=ownsExtraData;
     this.getExtraData = typeof getExtraData === 'function' ? getExtraData : undefined;
     this.shouldCheckpoint = typeof shouldCheckpoint === 'function' ? shouldCheckpoint : undefined;
     // Viewport shape is display context, never part of surgical undo history.
@@ -297,12 +298,14 @@ export class Simulation {
    * Save BEFORE an atomic action. extraData may contain a typed tissue mask,
    * or be a lazy factory so pending worker geometry is never sampled when the
    * host's stability gate is closed. A rejected checkpoint leaves redo intact.
+   * takeOwnership is for a fresh private snapshot whose mutable fields have no
+   * external owner; immutable cutter records may be shared. Defaults clone.
    * Pass the current extraData to undo/redo so the other direction can restore it.
    */
-  checkpoint(label = '操作', extraData) {
+  checkpoint(label = '操作', extraData, {takeOwnership=false}={}) {
     if(this.shouldCheckpoint&&!this.shouldCheckpoint())return false;
     if(typeof extraData==='function')extraData=extraData();
-    this.undoStack.push({ label: String(label), snapshot: this.snapshot(), extraData: extraData === undefined ? undefined : clone(extraData) });
+    this.undoStack.push({ label: String(label), snapshot: this.snapshot(), extraData: extraData === undefined ? undefined : takeOwnership?extraData:clone(extraData) });
     if (this.undoStack.length > LIMITS.history) this.undoStack.shift();
     this.redoStack.length = 0;
     this._emit('history', { canUndo: true, canRedo: false });
@@ -506,7 +509,7 @@ export class Simulation {
   moveToolTo(position, id = this.state.selected, {checkpoint = false, label = '定位器械'} = {}) {
     if (!validVector(position)) throw new TypeError('Tool position requires three finite values.');
     if (this.state.paused) return {changed: false, limited: false};
-    if (checkpoint) this.checkpoint(label, ()=>this.getExtraData?.());
+    if (checkpoint) this.checkpoint(label, ()=>this.getExtraData?.(),{takeOwnership:this.ownsExtraData});
     return this._moveTool(sub(position, this._tool(id).position), id);
   }
 
@@ -519,7 +522,7 @@ export class Simulation {
     const index = typeof axis === 'string' ? AXES[axis] : axis;
     if (![0, 1, 2].includes(index) || !finite(sign) || !finite(step) || step < 0) throw new TypeError('Nudge requires an axis, finite direction and nonnegative step.');
     if (this.state.paused) return false;
-    this.checkpoint('微调位移', ()=>this.getExtraData?.());
+    this.checkpoint('微调位移', ()=>this.getExtraData?.(),{takeOwnership:this.ownsExtraData});
     if (id === 'scope') {
       if (index === 2) this._manualScopeDepth(-sign*step,this.state.scope.follow?this._scopeFraming():null);
       else {
@@ -567,7 +570,7 @@ export class Simulation {
 
   homeTools() {
     if (this.state.paused) return false;
-    this.checkpoint('器械回中', ()=>this.getExtraData?.());
+    this.checkpoint('器械回中', ()=>this.getExtraData?.(),{takeOwnership:this.ownsExtraData});
     this.state.tools = initialState().tools;
     this.state.collision=collisionState(this.state.tools);
     this._emit('home');
@@ -607,7 +610,7 @@ export class Simulation {
     const jaw = axisInput(keys, 'KeyV', 'KeyC');
     const scopeInsertion = axisInput(keys, 'BracketRight', 'BracketLeft');
     const moving = Boolean(x || y || z || pitch || yaw || roll || scopeInsertion || (jaw && this.state.selected !== 'scope'));
-    if (moving && !this._gesture) this.checkpoint('遥操作位姿', ()=>this.getExtraData?.());
+    if (moving && !this._gesture) this.checkpoint('遥操作位姿', ()=>this.getExtraData?.(),{takeOwnership:this.ownsExtraData});
     this._gesture = moving;
     const fine = keys.has('ShiftLeft') || keys.has('ShiftRight');
     let changed = false;

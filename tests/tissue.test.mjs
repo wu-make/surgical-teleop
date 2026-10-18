@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { createVolumeState, applyCapsuleCut, resetVolume, polygonizeChunk, allChunkKeys, nodeIndex, normalizeDeformation, deformationWeight, deformPoint, inverseDeformPoint, deformNormal,LOCAL_TRACTION } from '../src/tissue-worker.js';
+import { createVolumeState, applyCapsuleCut, resetVolume, polygonizeChunk, allChunkKeys, nodeIndex, normalizeDeformation, deformationWeight, deformPoint, inverseDeformPoint, deformNormal,LOCAL_TRACTION,validateCut } from '../src/tissue-worker.js';
 import { TissueVolume } from '../src/tissue.js';
 
 function sphereVolume(n = 25, spacing = 0.0015, radius = 0.013) {
@@ -464,4 +464,14 @@ test('worker coalescing is bounded by total source blade segments rather than st
   await assert.rejects(tissue.cutSamples([{segments:Array.from({length:65},()=>segments[0]),deformation:null}],.0024),/64/);
   assert.equal(tissue._cuts.length,count,'rejected oversized work cannot pollute replay history');
   tissue.dispose();
+});
+
+test('immutable history uses isolated ordinary arrays for exact hot contact queries',()=>{
+  const t=new TissueVolume();
+  const freeze=v=>{if(v&&typeof v==='object'){for(const child of Object.values(v))freeze(child);Object.freeze(v);}return v;};
+  const cut=freeze(validateCut({a:[-.01,0,0],b:[.01,0,0],radius:.0024,deformation:{model:'local-flow',local:[0,0,0],displacement:[0,0,.006],radius:.018,coreRadius:.0025}}));
+  t._cuts=[cut];t._ensureCutIndex();const entry=t._cutGroups[0].entries[0];
+  assert.deepEqual(entry.cut,cut);assert.notEqual(entry.cut,cut);assert.notEqual(entry.cut.a,cut.a);assert.equal(Object.isFrozen(entry.cut.a),false);
+  assert.notEqual(t._cutGroups[0].deformation,cut.deformation);assert.equal(Object.isFrozen(t._cutGroups[0].deformation.displacement),false);
+  entry.cut.a[0]=123;assert.equal(cut.a[0],-.01,'hot query storage cannot corrupt undo history');t.dispose();
 });
