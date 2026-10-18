@@ -177,13 +177,14 @@ export class BloodFlow {
     // localToWorld otherwise walks the scene graph for every droplet substep.
     this.tissue.group.updateWorldMatrix(true,false);
     const worldMatrix=this.tissue.group.matrixWorld;
+    const depositionHit={},previous=new THREE.Vector3(),worldPoint=new THREE.Vector3();
     for(const d of this.drops){
       const p=vec(d.position),v=vec(d.velocity),steps=Math.ceil(h/.008),step=h/steps;
       let deposited=false;
       for(let i=0;i<steps;i++){
-        const previous=p.clone();
+        previous.copy(p);
         v.addScaledVector(gravity,step).multiplyScalar(Math.exp(-step*.5));p.addScaledVector(v,step);
-        const {node:nearest,distance:best}=deposition.nearest(p,v);
+        const {node:nearest,distance:best}=deposition.nearest(p,v,depositionHit);
         if(nearest&&best<.0012){nearest.volume+=d.volume;deposited=true;break;}
         // Query the displayed cut mesh through its shared/refitted hierarchy.
         // Replaying all historical deformation maps per droplet/substep made
@@ -192,7 +193,7 @@ export class BloodFlow {
         const radius=Math.cbrt(d.volume*3/(4*Math.PI))*.001;
         const surface=this.tissue.collideBloodDrop?.(previous,p,radius,true);
         if(surface){p.copy(surface).addScaledVector(surface.normal,radius+.00005);const inward=v.dot(surface.normal);if(inward<0)v.addScaledVector(surface.normal,-inward);v.multiplyScalar(Math.exp(-step*8));}
-        if(p.clone().applyMatrix4(worldMatrix).y<.958){this.escaped+=d.volume;deposited=true;break;}
+        if(worldPoint.copy(p).applyMatrix4(worldMatrix).y<.958){this.escaped+=d.volume;deposited=true;break;}
       }
       if(!deposited){d.position=p.toArray();d.velocity=v.toArray();retained.push(d);}
     }

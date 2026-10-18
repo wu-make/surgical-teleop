@@ -30,3 +30,11 @@ test('deposition preserves original equal-distance ordering and strict search ra
   assert.equal(new BloodNeighbourIndex(nodes).nearest(p,v.clone().negate()).node,null);
   assert.deepEqual(new BloodNeighbourIndex([]).nearest(p,v),linear([],p,v));
 });
+
+test('reused deposition result clears a previous hit and retains exact tie order',()=>{
+  const nodes=[.001,-.001].map(x=>({display:new THREE.Vector3(x,0,0),normal:new THREE.Vector3(0,1,0)}));
+  const index=new BloodNeighbourIndex(nodes),out={},v=new THREE.Vector3(0,-1,0);
+  assert.equal(index.nearest(new THREE.Vector3(),v,out),out);assert.equal(out.node,nodes[0]);
+  assert.equal(index.nearest(new THREE.Vector3(1,2,3),v,out),out);assert.equal(out.node,null);assert.equal(out.distance,.0035);
+  assert.deepEqual(index.nearest(new THREE.Vector3(-.0035,0,0),v,out),linear(nodes,new THREE.Vector3(-.0035,0,0),v));
+});
