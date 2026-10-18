@@ -26,6 +26,7 @@ export class TissueVolume {
     this._meshes = new Map();
     this._bloodBroadPhase=new MeshBroadPhase();
     this.updateTimings={};
+    this.transitionTimings=[];
     this._cuts = [];
     this._cutGroups = [];
     this._cutGroupMap = new Map();
@@ -500,12 +501,15 @@ export class TissueVolume {
     } else if (data.epoch !== this._epoch) {
       active.callbacks.forEach(command => command.resolve({ changed: false, cancelled: true }));
     } else {
+      const exclusionsStart=performance.now();
       if (data.exclusions?.reset) this._excludedValues.clear();
       if (data.exclusions) for (let i = 0; i < data.exclusions.nodeIndices.length; i++) {
         this._excludedValues.set(data.exclusions.nodeIndices[i], data.exclusions.positiveValues[i]);
       }
-      if (data.type === 'init' || data.type === 'restore') this.fragments.clear();
+      if (data.type === 'init' || data.type === 'restore') {this.fragments.clear();this.transitionTimings.length=0;}
+      const fragmentsStart=performance.now();
       for (const fragment of data.fragments ?? []) this.fragments.add(fragment, this._restoringFragmentPoses?.get(fragment.id));
+      const fragmentsEnd=performance.now();
       if (data.separations) this._separations = structuredClone(data.separations);
       if (data.type === 'restore') this._restoringFragmentPoses = null;
       for (const chunk of data.chunks) this._replaceChunk(chunk);
@@ -514,7 +518,8 @@ export class TissueVolume {
       if(data.type==='restore'){this.blood.restore(this._restoringBlood);this._restoringBlood=null;if(!this.blood.nodes.length)this.blood.syncSurface({selection:data.woundSelection});}
       else if(data.type==='cut')this.blood.syncSurface({injury:data.removedMm3>1e-8,selection:data.woundSelection});
       else if(data.type==='init')this.blood.reset();
-      this.updateTimings={receiveMs:performance.now()-receiveStart,woundMs:performance.now()-woundStart,chunks:data.chunks.length};
+      this.updateTimings={receivedAt:receiveStart,receiveMs:performance.now()-receiveStart,exclusionsMs:fragmentsStart-exclusionsStart,fragmentsMs:fragmentsEnd-fragmentsStart,chunksMs:woundStart-fragmentsEnd,woundMs:performance.now()-woundStart,chunks:data.chunks.length,fragments:data.fragments?.length??0};
+      if(data.fragments?.length){this.transitionTimings.push({...this.updateTimings});if(this.transitionTimings.length>8)this.transitionTimings.shift();}
       const result = { changed: !!data.changedSamples || data.type !== 'cut', removedMm3: data.removedMm3, removedVolumeMm3: this.removedVolumeMm3, totalVolumeMm3: this.totalVolumeMm3,
         fragments: (data.fragments ?? []).map(fragment => fragment.id) };
       active.callbacks.forEach(command => command.resolve(result));
@@ -535,6 +540,7 @@ export class TissueVolume {
     geometry.userData.restPositions = chunk.positions;
     geometry.userData.restNormals = chunk.normals;
     geometry.userData.woundSurface=chunk.woundSurface;
+    geometry.userData.surfaceTree=chunk.contactTree;
     geometry.setAttribute('position', new THREE.BufferAttribute(chunk.positions.slice(), 3).setUsage(THREE.StreamDrawUsage));
     geometry.setAttribute('normal', new THREE.BufferAttribute(chunk.normals.slice(), 3).setUsage(THREE.StreamDrawUsage));
     geometry.setAttribute('color', new THREE.BufferAttribute(chunk.colors, 3));

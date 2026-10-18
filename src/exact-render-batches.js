@@ -23,7 +23,10 @@ export class ExactRenderBatches {
       for(const value of group.geometries.values()){const range=group.mesh.getGeometryRangeAt(value.id);group.vCursor=Math.max(group.vCursor,range.vertexStart+range.reservedVertexCount);group.iCursor=Math.max(group.iCursor,range.indexStart+range.reservedIndexCount);}
       if(group.vCursor+v>group.vCapacity||group.iCursor+i>group.iCapacity){group.vCapacity=Math.max(Math.ceil(group.vCapacity*1.5),group.vCursor+v+1024);if(geometry.index)group.iCapacity=Math.max(Math.ceil(group.iCapacity*1.5),group.iCursor+i+2048);group.mesh.setGeometrySize(group.vCapacity,group.iCapacity);}
     }
-    record={id:group.mesh.addGeometry(geometry),references:0,attributes:Object.values(geometry.attributes),versions:[],indexVersion:-1,vertices:v,indices:i};group.vCursor+=v;group.iCursor+=i;group.geometries.set(geometry,record);return record;
+    // addGeometry already copies every attribute/index. Recording its versions
+    // avoids immediately copying the whole new cut surface a second time.
+    const attributes=Object.values(geometry.attributes);
+    record={id:group.mesh.addGeometry(geometry),references:0,attributes,versions:attributes.map(a=>a.version),indexVersion:geometry.index?.version??0,vertices:v,indices:i};group.vCursor+=v;group.iCursor+=i;group.geometries.set(geometry,record);return record;
   }
   _remove(source,record){
     const {group,geometry}=record;group.mesh.deleteInstance(record.instance);group.active--;geometry.references--;

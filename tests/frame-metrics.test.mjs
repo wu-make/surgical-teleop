@@ -25,3 +25,21 @@ test('hidden, paused and restoration gaps do not leak into resumed frame measure
   assert.equal(report.session.pressure.frames,1);assert.equal(report.session.pressure.maxMs,18);
   metrics.clear();metrics.sample(9999,'pressure');assert.deepEqual(metrics.report().session,{});
 });
+
+test('slow-frame work is captured lazily, bounded, detached from live state and cleared on reset',()=>{
+  const metrics=new FrameMetrics();let calls=0;const state={receiveMs:7};const work=()=>{calls++;return state;};
+  metrics.sample(0,'cutting',true,work);metrics.sample(16,'cutting',true,work);assert.equal(calls,0);
+  metrics.sample(76,'cutting',true,work);state.receiveMs=0;
+  assert.equal(metrics.report().slowFrames[0].work.receiveMs,7);
+  for(let i=0;i<80;i++)metrics.record(60,'cutting',work);
+  assert.equal(metrics.report().slowFrames.length,64);assert.equal(metrics.report().session.cutting.over50ms,81);
+  metrics.clear();assert.deepEqual(metrics.report().slowFrames,[]);
+});
+
+test('fullscreen acceptance exports actual resolution transitions without duplicating unchanged frames',()=>{
+  const metrics=new FrameMetrics();metrics.observePresentation(false,949,612,1,0);
+  metrics.observePresentation(true,1920,1080,1,100);metrics.observePresentation(true,1920,1080,1,120100);
+  metrics.observePresentation(false,949,612,1,120200);
+  assert.equal(metrics.report().presentationChanges.length,3);assert.equal(metrics.report().presentationChanges[1].fullscreen,true);
+  metrics.clear();assert.deepEqual(metrics.report().presentationChanges,[]);
+});

@@ -1,10 +1,11 @@
 import * as THREE from 'three';
+import {buildSurfaceTree} from './surface-tree.js';
 
 const boxDistanceSquared=(p,b)=>Math.max(b[0]-p.x,0,p.x-b[3])**2+Math.max(b[1]-p.y,0,p.y-b[4])**2+Math.max(b[2]-p.z,0,p.z-b[5])**2;
 const boxesDistanceSquared=(a,b)=>Math.max(b[0]-a[3],a[0]-b[3],0)**2+Math.max(b[1]-a[4],a[1]-b[4],0)**2+Math.max(b[2]-a[5],a[2]-b[5],0)**2;
 
-function closestSegments(a,b,c,d,p,q){
-  const u=new THREE.Vector3().subVectors(b,a),v=new THREE.Vector3().subVectors(d,c),r=new THREE.Vector3().subVectors(a,c);
+function closestSegments(a,b,c,d,p,q,u,v,r){
+  u.subVectors(b,a);v.subVectors(d,c);r.subVectors(a,c);
   const aa=u.lengthSq(),ee=v.lengthSq(),f=v.dot(r);let s=0,t=0;
   if(aa<=1e-20&&ee<=1e-20){p.copy(a);q.copy(c);return;}
   if(aa<=1e-20)t=THREE.MathUtils.clamp(f/ee,0,1);
@@ -27,26 +28,12 @@ function closestSegments(a,b,c,d,p,q){
 class SurfaceIndex {
   constructor(geometry){
     this.geometry=geometry;this.positions=geometry.attributes.position;this.indices=geometry.index.array;
-    const count=this.indices.length/3,triangles=Uint32Array.from({length:count},(_,i)=>i),centres=new Float64Array(count*3),p=this.positions.array;
-    for(let i=0;i<count;i++)for(let axis=0;axis<3;axis++)centres[i*3+axis]=(p[this.indices[i*3]*3+axis]+p[this.indices[i*3+1]*3+axis]+p[this.indices[i*3+2]*3+axis])/3;
-    // In-place median partition avoids recursive centroid recomputation and
-    // sorting/copying the same triangle lists at every hierarchy level.
-    const partition=(from,to,middle,axis)=>{
-      let lo=from,hi=to-1;
-      while(lo<hi){const pivot=centres[triangles[(lo+hi)>>1]*3+axis];let i=lo,j=hi;
-        while(i<=j){while(centres[triangles[i]*3+axis]<pivot)i++;while(centres[triangles[j]*3+axis]>pivot)j--;if(i<=j){const value=triangles[i];triangles[i++]=triangles[j];triangles[j--]=value;}}
-        if(middle<=j)hi=j;else if(middle>=i)lo=i;else break;
-      }
-    };
-    const build=(from,to)=>{
-      if(to-from<=12)return {triangles:triangles.subarray(from,to),bounds:new Float64Array(6)};
-      const low=[Infinity,Infinity,Infinity],high=[-Infinity,-Infinity,-Infinity];
-      for(let i=from;i<to;i++)for(let axis=0;axis<3;axis++){const v=centres[triangles[i]*3+axis];low[axis]=Math.min(low[axis],v);high[axis]=Math.max(high[axis],v);}
-      let axis=0;for(let i=1;i<3;i++)if(high[i]-low[i]>high[axis]-low[axis])axis=i;
-      const middle=(from+to)>>1;partition(from,to,middle,axis);
-      return {left:build(from,middle),right:build(middle,to),bounds:new Float64Array(6)};
-    };
-    this.root=build(0,count);this.version=-1;
+    const prepared=geometry.userData.surfaceTree;
+    const tree=prepared??buildSurfaceTree(this.positions.array,this.indices);
+    this.root=tree.root;
+    // A deformed parent chunk refits against its actual displayed vertices.
+    // Frozen specimens and unchanged chunks already carry exact bounds.
+    this.version=prepared&&this.positions.version!==0?-1:this.positions.version;
   }
   refit(){
     if(this.version===this.positions.version)return;
@@ -112,12 +99,13 @@ class SurfaceIndex {
     const direction=new THREE.Vector3().subVectors(end,start),length=direction.length(),ray=new THREE.Ray(start,length?direction.clone().divideScalar(length):new THREE.Vector3(0,0,1));
     const bounds=[Math.min(start.x,end.x),Math.min(start.y,end.y),Math.min(start.z,end.z),Math.max(start.x,end.x),Math.max(start.y,end.y),Math.max(start.z,end.z)];
     const triangle=new THREE.Triangle(),blade=new THREE.Vector3(),surface=new THREE.Vector3(),hit=new THREE.Vector3(),normal=new THREE.Vector3();
+    const u=new THREE.Vector3(),v=new THREE.Vector3(),r=new THREE.Vector3(),offset=new THREE.Vector3();
     const p=this.positions,indices=this.indices,stack=[this.root];
     const accept=()=>{
       const squared=blade.distanceToSquared(surface);if(squared>best)return;
       best=squared;triangle.getNormal(normal);
       result={point:blade.clone(),surface:surface.clone(),normal:normal.clone(),distance:Math.sqrt(best),
-        t:length?THREE.MathUtils.clamp(new THREE.Vector3().subVectors(blade,start).dot(direction)/(length*length),0,1):0};
+        t:length?THREE.MathUtils.clamp(offset.subVectors(blade,start).dot(direction)/(length*length),0,1):0};
     };
     while(stack.length){
       const node=stack.pop();if(boxesDistanceSquared(bounds,node.bounds)>best)continue;
@@ -127,7 +115,9 @@ class SurfaceIndex {
         if(length&&ray.intersectTriangle(triangle.a,triangle.b,triangle.c,false,hit)&&hit.distanceTo(start)<=length+1e-10){blade.copy(hit);surface.copy(hit);accept();return result;}
         blade.copy(start);triangle.closestPointToPoint(start,surface);accept();
         blade.copy(end);triangle.closestPointToPoint(end,surface);accept();
-        for(const [a,b] of [[triangle.a,triangle.b],[triangle.b,triangle.c],[triangle.c,triangle.a]]){closestSegments(start,end,a,b,blade,surface);accept();}
+        closestSegments(start,end,triangle.a,triangle.b,blade,surface,u,v,r);accept();
+        closestSegments(start,end,triangle.b,triangle.c,blade,surface,u,v,r);accept();
+        closestSegments(start,end,triangle.c,triangle.a,blade,surface,u,v,r);accept();
       }
     }
     return result;

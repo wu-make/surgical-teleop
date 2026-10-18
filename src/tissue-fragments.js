@@ -44,10 +44,12 @@ export class TissueFragments {
     const frozen = saved && Object.hasOwn(saved, 'deformation') ? saved.deformation :
       Object.hasOwn(descriptor, 'deformation') ? descriptor.deformation : this.tissue._deformation;
     const deformation = normalizeDeformation(frozen);
-    const center = new THREE.Vector3().fromArray(deformPoint(descriptor.center, deformation));
-    const positions = new Float32Array(descriptor.positions.length);
-    const normals = new Float32Array(descriptor.normals.length);
-    for (let i = 0; i < positions.length; i += 3) {
+    // Old snapshots and explicit saved deformations retain the exact fallback.
+    const prepared=descriptor.display?.signature===JSON.stringify(deformation)?descriptor.display:null;
+    const center = new THREE.Vector3().fromArray(prepared?.center??deformPoint(descriptor.center, deformation));
+    const positions = prepared?.positions??new Float32Array(descriptor.positions.length);
+    const normals = prepared?.normals??new Float32Array(descriptor.normals.length);
+    if(!prepared)for (let i = 0; i < positions.length; i += 3) {
       const rest = [...descriptor.positions.subarray(i, i + 3)];
       const p = deformPoint(rest, deformation);
       const n = deformation ? deformNormal([...descriptor.normals.subarray(i, i + 3)], deformationWeight(rest, deformation).gradient, deformation.displacement) : descriptor.normals.subarray(i, i + 3);
@@ -61,8 +63,10 @@ export class TissueFragments {
     geometry.setAttribute('tissueCutMask', new THREE.BufferAttribute(descriptor.cutMasks, 1));
     geometry.userData.materialNormals=descriptor.normals;
     geometry.userData.woundSurface=descriptor.woundSurface;
+    geometry.userData.surfaceTree=prepared?.contactTree;
     geometry.setIndex(new THREE.BufferAttribute(descriptor.indices, 1));
-    geometry.computeBoundingBox(); geometry.computeBoundingSphere();
+    if(prepared){geometry.boundingBox=new THREE.Box3(vec(prepared.min),vec(prepared.max));geometry.boundingSphere=new THREE.Sphere(vec(prepared.sphereCenter),prepared.radius);}
+    else{geometry.computeBoundingBox(); geometry.computeBoundingSphere();}
     const mesh = new THREE.Mesh(geometry, this.tissue.material);
     mesh.name = `specimen-${descriptor.id}`; mesh.layers.enable(1);
     mesh.castShadow = true; mesh.receiveShadow = true;
@@ -72,7 +76,7 @@ export class TissueFragments {
       position: saved ? vec(saved.position) : center.clone(), quaternion: rotation(saved?.quaternion),
       velocity: saved?.velocity ? vec(saved.velocity) : new THREE.Vector3(), held: !!saved?.held,
       attachment: saved?.attachment ? structuredClone(saved.attachment) : null, sleeping: !!saved?.sleeping,
-      contactTime: saved?.contactTime??0, support: this._supportPoints(positions) };
+      contactTime: saved?.contactTime??0, support: prepared?Array.from({length:26},(_,i)=>new THREE.Vector3().fromArray(prepared.support,i*3)):this._supportPoints(positions) };
     this.items.set(piece.id, piece); this.group.add(mesh); this.sync(piece);
     return piece;
   }

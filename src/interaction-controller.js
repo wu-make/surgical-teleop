@@ -341,9 +341,11 @@ export class InteractionController {
   async update(dt, { clutched = false,compressing=false } = {}) {
     if(!this.tissue.ready){this._setCutStatus('loading','正在加载真实组织');return;}
     if(this.sim.state.paused){this._breakCutTrajectory();this._pendingCutFeedback();this._setCutStatus('paused','仿真已暂停；已记录的剪刃轨迹将在继续后完成');return;}
+    const updateStart=performance.now();
     if(Number.isFinite(dt)&&dt>0)this._clock+=Math.min(.1,dt);
     this.updateGrasp(dt);
     this.tissue.updateFragments?.(dt);
+    const graspEnd=performance.now();
     const { left, right } = this.sim.state.tools;
     const leftPoint=localPoint(this.tissue,left.position);
     const leftDistance = this.tissue.contactDistance?.(leftPoint,GRASP_CONTACT_MARGIN)??this.tissue.sampleDistance(leftPoint);
@@ -358,7 +360,9 @@ export class InteractionController {
     const steady=pressurePoint&&(!this._pressurePosition||pressurePoint.distanceTo(this._pressurePosition)<=.005*Math.max(1/240,dt));
     const canPress=compressing&&!clutched&&steady&&tool?.jaw<.22&&(selected!=='left'||!this.grasp);
     this._pressurePosition=compressing?pressurePoint:null;
+    const bloodStart=performance.now();
     this.tissue.blood?.update(dt,{pressureSegments:canPress?(selected==='right'?blade.segments:[{a:pressurePoint,b:pressurePoint}]):[]});
+    const bloodEnd=performance.now();
     const contactKey=[this.tissue._contactRevision??0,this.tissue._epoch??0,this.tissue._cuts?.length??0,...blade.segments.flatMap(segment=>[...segment.a.toArray(),...segment.b.toArray()])].join(',');
     let hits;
     if(pending)hits=[];
@@ -374,6 +378,7 @@ export class InteractionController {
     this.contact.bladeDistanceMm=hit&&Number.isFinite(hit.distance)?hit.distance*1000:null;
     this.contact.cutContactPointWorld=hit?.point?this.tissue.group.localToWorld(hit.point.clone()).toArray():null;
     this.contact.rightDepthMm = Number.isFinite(distance) ? -distance * 1000 : 0;
+    this.timings={graspMs:graspEnd-updateStart,contactMs:bloodStart-graspEnd,bloodMs:bloodEnd-bloodStart,bladeMs:performance.now()-bloodEnd};
     this.contact.cutting = !!this._cutTask;
     const jaw=right.jaw;
     if(compressing){this.lastCut=null;this._breakCutTrajectory();this._setCutStatus('pressure',this.tissue.blood?.pressureContacts?'局部压迫中：观察渗血变化；松开 H 后继续检查':'压迫需稳定接触渗血切面：闭合器械，精细贴近；左钳需先释放组织');}
@@ -393,7 +398,7 @@ export class InteractionController {
   }
 
   get metrics() {
-    return { ...this.contact, grasp: copy(this.grasp), deformation: this.tissue.graspMetrics,
+    return { ...this.contact, timings:this.timings,grasp: copy(this.grasp), deformation: this.tissue.graspMetrics,
       cuttingBusy: this.cuttingBusy,requiresReopen:this.requiresReopen,releaseState:this.relaxing?'connected-slip':this.tissue.fragmentMetrics?.pieces.some(p=>!p.held&&!p.sleeping)?'detached-fall':null,blood:this.tissue.blood?.metrics??null,heldFragmentId:this.grasp?.kind==='fragment'?this.grasp.fragmentId:null };
   }
 }

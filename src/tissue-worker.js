@@ -1,4 +1,5 @@
 import {prepareWoundSurface,selectWoundSurface} from './wound-surface.js';
+import {buildSurfaceTree} from './surface-tree.js';
 // Anatomy is sampled in metres. The field is negative inside the source organ.
 // These exports deliberately have no browser dependencies so the same geometry
 // and CSG code can be checked with Node's test runner.
@@ -90,6 +91,32 @@ export function deformPoint(point, deformation) {
   if (!deformation) return [...point];
   const { weight } = deformationWeight(point, deformation);
   return point.map((v, axis) => v + deformation.displacement[axis] * weight);
+}
+
+/** Freeze the complete specimen in the worker before its atomic handoff.
+ * Uses the same Float32 vertices, normal mapping and 26 support directions as
+ * the foreground path; material coordinates and all triangles stay intact. */
+export function prepareFragmentDisplay(descriptor) {
+  const deformation=normalizeDeformation(descriptor.deformation),center=deformPoint(descriptor.center,deformation);
+  const positions=new Float32Array(descriptor.positions.length),normals=new Float32Array(descriptor.normals.length);
+  const min=[Infinity,Infinity,Infinity],max=[-Infinity,-Infinity,-Infinity];
+  for(let i=0;i<positions.length;i+=3){
+    const rest=[...descriptor.positions.subarray(i,i+3)],p=deformPoint(rest,deformation);
+    const n=deformation?deformNormal([...descriptor.normals.subarray(i,i+3)],deformationWeight(rest,deformation).gradient,deformation.displacement):descriptor.normals.subarray(i,i+3);
+    for(let axis=0;axis<3;axis++){
+      positions[i+axis]=p[axis]-center[axis];normals[i+axis]=n[axis];
+      min[axis]=Math.min(min[axis],positions[i+axis]);max[axis]=Math.max(max[axis],positions[i+axis]);
+    }
+  }
+  const sphereCenter=min.map((v,i)=>(v+max[i])*.5);let radiusSq=0;
+  for(let i=0;i<positions.length;i+=3)radiusSq=Math.max(radiusSq,(positions[i]-sphereCenter[0])**2+(positions[i+1]-sphereCenter[1])**2+(positions[i+2]-sphereCenter[2])**2);
+  const support=new Float32Array(26*3);let offset=0;
+  for(let z=-1;z<=1;z++)for(let y=-1;y<=1;y++)for(let x=-1;x<=1;x++){
+    if(!x&&!y&&!z)continue;let best=-Infinity,index=0;
+    for(let i=0;i<positions.length;i+=3){const dot=positions[i]*x+positions[i+1]*y+positions[i+2]*z;if(dot>best){best=dot;index=i;}}
+    support.set(positions.subarray(index,index+3),offset);offset+=3;
+  }
+  return {signature:JSON.stringify(deformation),center,positions,normals,min,max,sphereCenter,radius:Math.sqrt(radiusSq),support,contactTree:buildSurfaceTree(positions,descriptor.indices)};
 }
 
 export function inverseDeformPoint(point, deformation) {
@@ -631,8 +658,11 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
       for(const chunk of chunks){woundChunks.delete(chunk.key);if(chunk.positions.length)woundChunks.set(chunk.key,chunk.woundSurface);delete chunk.woundSurface;}
       for(const fragment of fragments)woundFragments.set(fragment.id,{id:fragment.id,surface:prepareWoundSurface(fragment,true)});
       const woundSelection=selectWoundSurface(woundChunks.values(),woundFragments.values());
+      for(const fragment of fragments)fragment.display=prepareFragmentDisplay(fragment);
+      for(const chunk of chunks)if(chunk.positions.length)chunk.contactTree=buildSurfaceTree(chunk.positions,chunk.indices);
       const transfer = chunks.flatMap(chunk => [chunk.positions.buffer, chunk.normals.buffer, chunk.colors.buffer, chunk.cutMasks.buffer, chunk.indices.buffer]);
-      for (const fragment of fragments)transfer.push(fragment.positions.buffer, fragment.normals.buffer, fragment.colors.buffer, fragment.cutMasks.buffer, fragment.indices.buffer, fragment.volume.values.buffer);
+      for (const fragment of fragments)transfer.push(fragment.positions.buffer, fragment.normals.buffer, fragment.colors.buffer, fragment.cutMasks.buffer, fragment.indices.buffer, fragment.volume.values.buffer,fragment.display.positions.buffer,fragment.display.normals.buffer,fragment.display.support.buffer);
+      for(const owner of [...chunks,...fragments.map(f=>f.display)])if(owner.contactTree)transfer.push(owner.contactTree.boundsStore.buffer,owner.contactTree.triangles.buffer);
       transfer.push(woundSelection.edges.buffer);
       transfer.push(exclusions.nodeIndices.buffer, exclusions.positiveValues.buffer);
       self.postMessage({ id: data.id, epoch: data.epoch, type: data.type, chunks,woundSelection, statistics: statistics(state), changedSamples, removedMm3, fragments,

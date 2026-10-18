@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import {TissueVolume} from '../src/tissue.js';
-import {createVolumeState,allChunkKeys,polygonizeChunk,applyCapsuleCut} from '../src/tissue-worker.js';
+import {createVolumeState,allChunkKeys,polygonizeChunk,applyCapsuleCut,normalizeDeformation,deformPoint,deformNormal,deformationWeight} from '../src/tissue-worker.js';
 
 function bench(){
   const t=new TissueVolume();t.group.position.y=1.035;t.group.updateMatrixWorld(true);
@@ -10,6 +10,24 @@ function bench(){
   b.nodes=[0,.0025,.005].map((x,i)=>({key:String(i),reference:[x,.01-i*.0008,0],restNormal:[0,1,0],area:4,cut:true,fragmentId:null,volume:0,clot:0,pressure:0,injured:i===0}));
   b.updatePositions();b.connect();return{t,b,step:(n,options)=>{for(let i=0;i<n;i++)b.update(1/60,options);}};
 }
+
+test('blood material caching is exact through recoil and rigid specimen transport',()=>{
+  const {t,b}=bench(),piece={deformation:normalizeDeformation({model:'local-flow',local:[0,.01,0],displacement:[0,.006,.02]}),frozenCenter:new THREE.Vector3(.004,.01,.01),position:new THREE.Vector3(),quaternion:new THREE.Quaternion()};
+  t.getFragment=id=>id==='piece'?piece:null;b.nodes[1].fragmentId='piece';let previousMaterial;
+  try{for(let step=0;step<30;step++){
+    t._deformation=normalizeDeformation({model:'local-flow',local:[0,.01,0],displacement:[0,.003*(1-step/30),.01*(1-step/30)]});
+    piece.position.set(step*.001,.003,.02);piece.quaternion.setFromAxisAngle(new THREE.Vector3(1,2,3).normalize(),step*.08);b.updatePositions();
+    const cached=b._positionCache.get(b.nodes[1]).materialPoint;if(previousMaterial)assert.equal(cached,previousMaterial,'rigid movement must reuse the frozen material calculation');previousMaterial=cached;
+    for(const n of b.nodes){
+      const owner=n.fragmentId?piece:null,d=owner?.deformation??t._deformation,gradient=deformationWeight(n.reference,d).gradient;
+      const position=new THREE.Vector3(...deformPoint(n.reference,d));if(owner)position.sub(owner.frozenCenter).applyQuaternion(owner.quaternion).add(owner.position);
+      const normal=new THREE.Vector3(...deformNormal(n.restNormal,gradient,d.displacement));if(owner)normal.applyQuaternion(owner.quaternion);normal.normalize();
+      const determinant=1+new THREE.Vector3(...gradient).dot(new THREE.Vector3(...d.displacement));
+      const areaScale=new THREE.Vector3(...n.restNormal).multiplyScalar(determinant).addScaledVector(new THREE.Vector3(...gradient),-new THREE.Vector3(...n.restNormal).dot(new THREE.Vector3(...d.displacement))).length();
+      assert.deepEqual(n.display,position);assert.deepEqual(n.normal,normal);assert.equal(n.physicalArea,n.area*THREE.MathUtils.clamp(areaScale,.01,10));
+    }
+  }}finally{t.dispose();}
+});
 test('cut-source emission and downhill film transport conserve volume and create 3-D geometry',()=>{
   const {t,b,step}=bench();
   try{

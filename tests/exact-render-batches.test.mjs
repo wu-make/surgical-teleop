@@ -10,6 +10,18 @@ function verify(batcher,source){
   for(const name of Object.keys(g.attributes))assert.deepEqual(batch.geometry.attributes[name].array.slice(range.vertexStart*g.attributes[name].itemSize,(range.vertexStart+range.vertexCount)*g.attributes[name].itemSize),g.attributes[name].array,`${name} must not lose detail`);
   for(let i=0;i<range.indexCount;i++)assert.equal(batch.geometry.index.array[range.indexStart+i]-range.vertexStart,g.index.array[i]);
 }
+
+test('new cut geometry is copied into its batch once; later attribute edits still upload once',()=>{
+  const original=THREE.BatchedMesh.prototype.setGeometryAt;let copies=0;
+  THREE.BatchedMesh.prototype.setGeometryAt=function(...args){copies++;return original.apply(this,args);};
+  const root=new THREE.Scene(),material=new THREE.MeshStandardMaterial(),sources=[0,1].map(()=>new THREE.Mesh(new THREE.BoxGeometry(),material));sources.forEach(m=>root.add(m));const batcher=new ExactRenderBatches(root);
+  try{
+    batcher.sync(sources);assert.equal(copies,2,'addGeometry already copied both source geometries');
+    batcher.sync(sources);assert.equal(copies,2);
+    sources[0].geometry.attributes.position.setX(0,.8);sources[0].geometry.attributes.position.needsUpdate=true;
+    batcher.sync(sources);assert.equal(copies,3);verify(batcher,sources[0]);
+  }finally{THREE.BatchedMesh.prototype.setGeometryAt=original;batcher.dispose();sources.forEach(m=>m.geometry.dispose());material.dispose();}
+});
 test('exact batches retain every triangle and material attribute through movement, deformation and visibility changes',()=>{
   const root=new THREE.Scene(),joint=new THREE.Group();joint.position.set(.02,1.03,-.01);root.add(joint);const material=new THREE.MeshPhysicalMaterial(),sources=[];
   for(let i=0;i<3;i++){const g=new THREE.BoxGeometry(.01,.02,.03);g.setAttribute('tissueRestPosition',g.attributes.position.clone());g.setAttribute('tissueCutMask',new THREE.BufferAttribute(new Float32Array(g.attributes.position.count).fill(i*.25),1));const m=new THREE.Mesh(g,material);m.position.x=i*.04;m.layers.enable(1);m.castShadow=m.receiveShadow=true;joint.add(m);sources.push(m);}

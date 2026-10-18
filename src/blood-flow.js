@@ -18,6 +18,9 @@ export class BloodFlow {
     const blood=new THREE.MeshPhysicalMaterial({color:'#9a2432',roughness:.34,metalness:0,clearcoat:.62,clearcoatRoughness:.18});
     const fibre=new THREE.MeshStandardMaterial({color:'#b08065',roughness:.79});
     this.film=new THREE.InstancedMesh(new THREE.SphereGeometry(1,12,8),blood,MAX_NODES);
+    // Allocate the final shader variant before the first wound opens, rather
+    // than switching USE_INSTANCING_COLOR during the first bleeding frame.
+    this.film.instanceColor=new THREE.InstancedBufferAttribute(new Float32Array(MAX_NODES*3).fill(1),3);
     this.dropsMesh=new THREE.InstancedMesh(new THREE.SphereGeometry(1,10,7),blood,MAX_DROPS);
     this.fibres=new THREE.InstancedMesh(new THREE.CapsuleGeometry(1,1,2,5),fibre,MAX_NODES);
     for(const m of [this.film,this.dropsMesh,this.fibres]){m.layers.enable(1);m.count=0;m.frustumCulled=false;m.castShadow=m.receiveShadow=m===this.fibres;this.group.add(m);}
@@ -102,13 +105,22 @@ export class BloodFlow {
       const piece=n.fragmentId!=null?this.tissue.getFragment(n.fragmentId):null,d=piece?piece.deformation:this.tissue._deformation;
       const pose=piece?[...piece.position.toArray(),...piece.quaternion.toArray()]:null,last=this._positionCache.get(n);
       if(last&&last.piece===piece&&last.deformation===d&&(!piece||pose.every((v,i)=>v===last.pose?.[i])))continue;
-      const gradient=d?deformationWeight(n.reference,d).gradient:null;
-      n.display=this.displayPoint(n);n.normal=vec(d?deformNormal(n.restNormal,gradient,d.displacement):n.restNormal);
-      const determinant=d?1+vec(gradient).dot(vec(d.displacement)):1;
-      const areaScale=d?vec(n.restNormal).multiplyScalar(determinant).addScaledVector(vec(gradient),-vec(n.restNormal).dot(vec(d.displacement))).length():1;
-      n.physicalArea=n.area*THREE.MathUtils.clamp(areaScale,.01,10);
+      let materialPoint=last?.materialPoint,materialNormal=last?.materialNormal,physicalArea=last?.physicalArea;
+      if(!last||last.piece!==piece||last.deformation!==d){
+        // Weight and Jacobian come from the same expensive material mapping.
+        // A rigid specimen changes pose without changing either of them.
+        const mapping=d?deformationWeight(n.reference,d):null,gradient=mapping?.gradient;
+        materialPoint=vec(d?n.reference.map((v,i)=>v+d.displacement[i]*mapping.weight):n.reference);
+        if(piece)materialPoint.sub(piece.frozenCenter);
+        materialNormal=vec(d?deformNormal(n.restNormal,gradient,d.displacement):n.restNormal);
+        const determinant=d?1+vec(gradient).dot(vec(d.displacement)):1;
+        const areaScale=d?vec(n.restNormal).multiplyScalar(determinant).addScaledVector(vec(gradient),-vec(n.restNormal).dot(vec(d.displacement))).length():1;
+        physicalArea=n.area*THREE.MathUtils.clamp(areaScale,.01,10);
+      }
+      n.display=materialPoint.clone();if(piece)n.display.applyQuaternion(piece.quaternion).add(piece.position);
+      n.normal=materialNormal.clone();n.physicalArea=physicalArea;
       if(piece)n.normal.applyQuaternion(piece.quaternion);n.normal.normalize();
-      this._positionCache.set(n,{piece,deformation:d,pose});
+      this._positionCache.set(n,{piece,deformation:d,pose,materialPoint,materialNormal,physicalArea});
     }
   }
   connect(){
