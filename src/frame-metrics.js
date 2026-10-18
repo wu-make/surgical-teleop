@@ -12,16 +12,16 @@ export class FrameMetrics {
   // attributed to the first visible frame after resuming.
   sample(now,phase,eligible=true,work=null){
     if(!Number.isFinite(now)){this.lastSample=null;return;}
-    if(eligible&&this.lastSample!==null)this.record(now-this.lastSample,phase,work);
+    if(eligible&&this.lastSample!==null)this.record(now-this.lastSample,phase,work,now);
     this.lastSample=eligible?now:null;
   }
-  record(milliseconds,phase,work=null){
+  record(milliseconds,phase,work=null,endedAt=null){
     if(!Number.isFinite(milliseconds)||milliseconds<=0)return;
     const total=this.totals[phase]??={frames:0,seconds:0,averageFps:0,maxMs:0,over33ms:0,over50ms:0};
     total.frames++;total.seconds+=milliseconds/1000;total.averageFps=total.frames/total.seconds;
     total.maxMs=Math.max(total.maxMs,milliseconds);if(milliseconds>33.34)total.over33ms++;if(milliseconds>50)total.over50ms++;
     if(milliseconds>33.34){this.slowFrames.push({ms:milliseconds,phase,...(work?{work:structuredClone(work())}:{})});if(this.slowFrames.length>64)this.slowFrames.shift();}
-    const row={ms:milliseconds,phase};if(this.rows.length<this.limit)this.rows.push(row);else{this.rows[this.head]=row;this.head=(this.head+1)%this.limit;}
+    const row={ms:milliseconds,phase,...(Number.isFinite(endedAt)?{endedAt}:{})};if(this.rows.length<this.limit)this.rows.push(row);else{this.rows[this.head]=row;this.head=(this.head+1)%this.limit;}
   }
   summarize(){
     const groups=new Map();for(const row of this.rows){if(!groups.has(row.phase))groups.set(row.phase,[]);groups.get(row.phase).push(row.ms);}

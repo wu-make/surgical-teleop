@@ -122,25 +122,27 @@ export function prepareFragmentDisplay(descriptor) {
 export function inverseDeformPoint(point, deformation) {
   if (!deformation) return [...point];
   if(deformation.model==='local-flow'){
-    let result=[...point];const count=deformation.steps;
+    let x=point[0],y=point[1],z=point[2];const count=deformation.steps;
+    const [dx,dy,dz]=deformation.displacement,[ax,ay,az]=deformation.local;
+    const core=deformation.coreRadius,falloff=deformation.radius-core;
     for(let i=count-1;i>=0;i--){
       const start=i*deformation.stepFraction,fraction=Math.min(deformation.stepFraction,1-start);
-      const step=deformation.displacement.map(v=>v*fraction),local=deformation.local.map((v,axis)=>v+deformation.displacement[axis]*start);
+      const sx=dx*fraction,sy=dy*fraction,sz=dz*fraction,lx=ax+dx*start,ly=ay+dy*start,lz=az+dz*start;
       // Each near-identity compact step has a strictly positive Jacobian;
       // undo its own map before moving to the preceding material frame.
-      const target=[...result];
+      const tx=x,ty=y,tz=z;
       for(let iteration=0;iteration<16;iteration++){
-        const offset=result.map((v,axis)=>v-local[axis]),length=Math.hypot(...offset),core=deformation.coreRadius,falloff=deformation.radius-core;
+        const ox=x-lx,oy=y-ly,oz=z-lz,length=Math.hypot(ox,oy,oz);
         const r=Math.max(0,Math.min(1,(length-core)/falloff)),t=1-r,w=t**4*(4*r+1);
         const derivative=length>core&&r<1?-20*r*t**3/(falloff*length):0;
-        const gradient=offset.map(v=>v*derivative),error=result.map((v,axis)=>v+step[axis]*w-target[axis]);
-        if(Math.hypot(...error)<1e-11)break;
-        const denominator=1+gradient.reduce((sum,v,axis)=>sum+v*step[axis],0);
-        const projection=gradient.reduce((sum,v,axis)=>sum+v*error[axis],0)/denominator;
-        result=result.map((v,axis)=>v-error[axis]+step[axis]*projection);
+        const gx=ox*derivative,gy=oy*derivative,gz=oz*derivative,ex=x+sx*w-tx,ey=y+sy*w-ty,ez=z+sz*w-tz;
+        if(Math.hypot(ex,ey,ez)<1e-11)break;
+        const denominator=1+(gx*sx+gy*sy+gz*sz);
+        const projection=(gx*ex+gy*ey+gz*ez)/denominator;
+        x=x-ex+sx*projection;y=y-ey+sy*projection;z=z-ez+sz*projection;
       }
     }
-    return result;
+    return [x,y,z];
   }
   const result = [...point], delta = deformation.displacement;
   for (let i = 0; i < 20; i++) {

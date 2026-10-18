@@ -236,7 +236,9 @@ export class InteractionController {
     const previous=this.grasp;
     if(transition&&previous?.kind!=='fragment'){
       this.relaxing={...copy(previous),remaining:1};
-      this.tissue.setGrasp(null);
+      // Keep the mother's current display map until the first analytic recoil
+      // step. Resetting it here briefly snaps the parent flat and forces every
+      // affected vertex/contact bound to be rebuilt twice at separation.
     }
     this.grasp={kind:'fragment',fragmentId,local:point.toArray(),reference:reference?[...reference]:null,displacement:[0,0,0]};
     this._fragmentRebaseId=null;

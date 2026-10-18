@@ -6,6 +6,14 @@ test('frame diagnostics include slow frames without simulation-time clamping and
 });
 test('frame diagnostics retain a bounded recent window',()=>{const metrics=new FrameMetrics(3);metrics.record(200,'cutting');for(let i=0;i<3;i++)metrics.record(20,'cutting');const data=metrics.summarize();assert.equal(data.cutting.frames,3);assert.equal(data.cutting.averageFps,50);assert.equal(data.cutting.over50ms,0);});
 
+test('raw frame timestamps identify separation intervals even after cutting switches off',()=>{
+  const metrics=new FrameMetrics();metrics.sample(100,'cutting');metrics.sample(116,'cutting');metrics.sample(170.6,'manipulation');metrics.sample(187,'manipulation');
+  const rows=metrics.report({includeIntervals:true}).recentWindow.intervals;
+  assert.deepEqual(rows.map(r=>r.endedAt),[116,170.6,187]);
+  assert.equal(rows.filter(r=>r.endedAt>=120&&r.endedAt-r.ms<=175).length,2);
+  assert.equal(metrics.report().session.manipulation.over50ms,1,'phase switch must not conceal the conversion stall');
+});
+
 test('session counters retain old stalls after the recent ring wraps, and exported intervals are chronological copies',()=>{
   const metrics=new FrameMetrics(3);for(const ms of [200,10,20,30,40])metrics.record(ms,'cutting');metrics.record(16,'pressure');
   const report=metrics.report({includeIntervals:true});assert.equal(report.session.cutting.frames,5);

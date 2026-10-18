@@ -186,9 +186,16 @@ test('an attached material anchor transfers seamlessly to its disconnected speci
   const descriptor=specimenDescriptor(center.toArray());descriptor.deformation=structuredClone(tissue._deformation);
   const piece=tissue.fragments.add(descriptor),frozenVertices=piece.mesh.geometry.attributes.position.array.slice();
   const before=piece.position.clone();
+  const deformationAtSeparation=structuredClone(tissue._deformation),changes=[];
+  const setGrasp=tissue.setGrasp.bind(tissue);
+  tissue.setGrasp=(...args)=>{changes.push(args[0]);return setGrasp(...args);};
+  interaction._reconcileDetachedGrasp();
+  assert.deepEqual(tissue._deformation,deformationAtSeparation,'atomic separation retains the current mother shape until recoil');
   await interaction.update(1/60);
   assert.equal(interaction.grasp.kind,'fragment');assert.equal(interaction.grasp.fragmentId,piece.id);
   assert.equal(piece.held,true);assert.ok(piece.position.distanceTo(before)<1e-10,'conversion must not jump or release the specimen');
+  assert.equal(changes.includes(null),false,'separation must not reset then reapply the parent deformation');
+  assert.ok(tissue.graspMetrics.displacementMm>Math.hypot(...deformationAtSeparation.displacement)*1000*.97,'first recoil step stays continuous');
   const motherDisplacement=tissue.graspMetrics.displacementMm;
   sim.state.tools.left.position[0]+=.03;sim.state.tools.left.position[1]+=.018;
   toolRotation=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0),.8);
