@@ -371,7 +371,7 @@ export class InteractionController {
     if(pending)hits=[];
     else if(this._bladeContactCache?.key===contactKey)hits=this._bladeContactCache.hits;
     else{
-      hits=blade.segments.map(segment=>this.tissue.contactSegment?.(segment.a,segment.b,CUT_RADIUS)??
+      hits=this.tissue.contactSegments?.(blade.segments,CUT_RADIUS)??blade.segments.map(segment=>this.tissue.contactSegment?.(segment.a,segment.b,CUT_RADIUS)??
         {contact:Math.min(this.tissue.sampleDistance(segment.a),this.tissue.sampleDistance(segment.b))<=CUT_RADIUS,distance:Infinity});
       this._bladeContactCache={key:contactKey,hits};
     }

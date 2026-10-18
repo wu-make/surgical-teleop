@@ -263,7 +263,7 @@ export class SurgicalScene{
   }
   render(now=0){
     const renderStart=performance.now();
-    this.tissue?.blood?.surfaceFilm?.syncDisplay();this.tissue?.blood?.pooledFilm?.syncDisplay();
+    this.tissue?.blood?.flushRender();this.tissue?.blood?.surfaceFilm?.syncDisplay();this.tissue?.blood?.pooledFilm?.syncDisplay();
     if(this.tissue?.ready&&this.assemblies&&this.robotLoaded&&this.renderer.extensions.has('WEBGL_multi_draw')){
       this.exactBatches??=new ExactRenderBatches(this.scene);
       const sources=[];this.room.traverse(m=>{if(m.isMesh)sources.push(m);});

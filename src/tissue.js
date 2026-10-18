@@ -186,13 +186,21 @@ export class TissueVolume {
 
   /** Complete displayed-space blade contact. point is on the blade, surface
    * is on the parent, and t is the blade interpolation fraction. */
-  contactSegment(start,end,margin=.0032){
+  contactSegments(segments,margin=.0032){
+    // Adjacent CAD blade segments share endpoints. Within this synchronous
+    // batch, tissue cannot change; reuse exact signed samples, not geometry.
+    const samples=new Map();return segments.map(({a,b})=>this.contactSegment(a,b,margin,samples));
+  }
+
+  contactSegment(start,end,margin=.0032,samples=null){
     const a=vectorArray(start),b=vectorArray(end),miss={contact:false,distance:Infinity,point:null,surface:null,t:null,inside:false};
     if(a.length!==3||b.length!==3||![...a,...b,margin].every(Number.isFinite)||margin<=0)return miss;
     const from=new THREE.Vector3(...a),to=new THREE.Vector3(...b);
     const steps=this._meshes.size?2:Math.max(2,Math.ceil(from.distanceTo(to)/Math.min(.00075,margin*.5)));
     for(let i=0;i<=steps;i++){
-      const t=i/steps,point=from.clone().lerp(to,t),raw=this.sampleDistance(point);
+      const t=i/steps,point=from.clone().lerp(to,t);let raw;
+      if(samples){const key=point.x+','+point.y+','+point.z;if(samples.has(key))raw=samples.get(key);else{raw=this.sampleDistance(point);samples.set(key,raw);}}
+      else raw=this.sampleDistance(point);
       if(raw<0)return {contact:true,distance:raw*this._contactMinimumScale(),point,surface:null,t,inside:true};
       if(!this._meshes.size){const distance=this.contactDistance(point,margin);if(distance<=margin)return {contact:true,distance,point,surface:null,t,inside:false};}
     }
@@ -532,7 +540,7 @@ export class TissueVolume {
       Object.assign(this, data.statistics);
       const woundStart=performance.now();
       if(data.type==='restore'){this.blood.restore(this._restoringBlood);this._restoringBlood=null;if(!this.blood.nodes.length)this.blood.syncSurface({selection:data.woundSelection});}
-      else if(data.type==='cut')this.blood.syncSurface({injury:data.removedMm3>1e-8,selection:data.woundSelection});
+      else if(data.type==='cut')this.blood.syncSurface({injury:data.removedMm3>1e-8,selection:data.woundSelection,deferRender:this.blood.surfaceFilm.gpu});
       else if(data.type==='init')this.blood.reset();
       this.updateTimings={receivedAt:receiveStart,receiveMs:performance.now()-receiveStart,exclusionsMs:fragmentsStart-exclusionsStart,fragmentsMs:fragmentsEnd-fragmentsStart,chunksMs:woundStart-fragmentsEnd,woundMs:performance.now()-woundStart,chunks:data.chunks.length,fragments:data.fragments?.length??0};
       if(data.fragments?.length){this.transitionTimings.push({...this.updateTimings});if(this.transitionTimings.length>8)this.transitionTimings.shift();}

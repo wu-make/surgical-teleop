@@ -128,3 +128,15 @@ test('wetting liquid transfers to the real disconnected component and follows it
     const saved=b.snapshot();b.restore(saved);assert.deepEqual(b.snapshot(),saved);
   }finally{t.dispose();original?.geometry.dispose();}
 });
+
+test('worker surface delivery and the next fluid step prepare full blood geometry only once before display',()=>{
+  const immediate=new TissueVolume({gpuBlood:true}),deferred=new TissueVolume({gpuBlood:true});try{
+    plane(immediate);plane(deferred);const nodes=[source(0)],selection={nodes,edges:new Uint32Array()};
+    immediate.blood.syncSurface({selection});deferred.blood.syncSurface({selection:structuredClone(selection),deferRender:true});
+    assert.equal(deferred.blood.surfaceFilm.overlays.size,0);assert.equal(deferred.blood.renderDirty,true);
+    assert.deepEqual(deferred.blood.snapshot(),immediate.blood.snapshot(),'physics is already current before GPU upload');
+    deferred.blood.flushRender();assert.equal(deferred.blood.renderDirty,false);assert.equal(deferred.blood.surfaceFilm.geometry.drawRange.count,immediate.blood.surfaceFilm.geometry.drawRange.count);
+    let renders=0;const render=deferred.blood.render.bind(deferred.blood);deferred.blood.render=()=>{renders++;render();};
+    deferred.blood.syncSurface({selection:structuredClone(selection),deferRender:true});deferred.blood.update(1/30);deferred.blood.flushRender();assert.equal(renders,1,'fluid and worker updates share one complete display upload');
+  }finally{immediate.dispose();deferred.dispose();}
+});

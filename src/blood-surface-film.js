@@ -13,7 +13,15 @@ const GRID=.005;
 const bin=(x,y,z)=>`${x}:${y}:${z}`;
 const boxDistanceSq=(b,p)=>Math.max(b.min.x-p[0],0,p[0]-b.max.x)**2+Math.max(b.min.y-p[1],0,p[1]-b.max.y)**2+Math.max(b.min.z-p[2],0,p[2]-b.max.z)**2;
 const makeFields=capacity=>({capacity,texture:new THREE.DataTexture(new Float32Array(capacity*12),capacity*3,1,THREE.RGBAFormat,THREE.FloatType),count:{value:0},owner:{value:0}});
-const encode=(data,n,i,owner=0)=>{const r=radiusOf(n);data.set([...n.reference,r*r,...n.restNormal,n.volume*n.area/Math.max(.01,n.physicalArea??n.area)*3/(Math.PI*(r*1000)**2)*.001,n.clot??0,owner,0,0],i*12);};
+const encode=(data,n,i,owner=0)=>{
+  const r=radiusOf(n),k=i*12;
+  // Write the identical Float32 kernel directly; no spread/temporary arrays
+  // for every cell in every overlapping source chunk on every fluid step.
+  data[k]=n.reference[0];data[k+1]=n.reference[1];data[k+2]=n.reference[2];data[k+3]=r*r;
+  data[k+4]=n.restNormal[0];data[k+5]=n.restNormal[1];data[k+6]=n.restNormal[2];
+  data[k+7]=n.volume*n.area/Math.max(.01,n.physicalArea??n.area)*3/(Math.PI*(r*1000)**2)*.001;
+  data[k+8]=n.clot??0;data[k+9]=owner;data[k+10]=0;data[k+11]=0;
+};
 
 function material(gpu,fields){
   const m=new THREE.MeshPhysicalMaterial({color:'#610e18',roughness:.26,metalness:0,ior:1.36,clearcoat:.85,clearcoatRoughness:.16,
@@ -62,7 +70,7 @@ export class BloodSurfaceFilm {
       this.warmMesh=new THREE.Mesh(this.warmGeometry,this.mesh.material);this.warmMesh.layers.enable(1);this.warmMesh.frustumCulled=false;this.warmMesh.onAfterRender=()=>{this.warmMesh.visible=false;};this.mesh.add(this.warmMesh);
     }
     this.mesh.name='Connected_Blood_Film_On_Actual_Tissue_Triangles';this.mesh.layers.enable(1);this.mesh.frustumCulled=false;this.mesh.renderOrder=2;
-    this.records=new WeakMap();this.owners=new Map();this.displayRecords=[];this.gpuMaterials=new Map();this.overlays=new Map();this.capacity=0;if(!gpu)this._reserve(65536);this.geometry.setDrawRange(0,0);
+    this.kernelOwners=new Map();this.kernelEntries=[];this.records=new WeakMap();this.owners=new Map();this.displayRecords=[];this.gpuMaterials=new Map();this.overlays=new Map();this.capacity=0;if(!gpu)this._reserve(65536);this.geometry.setDrawRange(0,0);
     this.stats={triangles:0,vertices:0,cacheBuilds:0};
     this.p=new THREE.Vector3();this.n=new THREE.Vector3();
   }
@@ -71,7 +79,7 @@ export class BloodSurfaceFilm {
     const specs=[['position',3],['normal',3],['filmThickness',1],['filmClot',1]];if(this.gpu)specs.push(['filmReference',3],['filmRestNormal',3],['filmOwner',1]);
     for(const [name,size]of specs){const array=new Float32Array(this.capacity*size);if(this.geometry.attributes[name])array.set(this.geometry.attributes[name].array);this.geometry.setAttribute(name,new THREE.BufferAttribute(array,size).setUsage(THREE.DynamicDrawUsage));}
   }
-  reset(){this.records=new WeakMap();this.owners.clear();this.displayRecords=[];for(const r of this.overlays.values()){r.overlay.geometry.dispose();r.overlay.material.dispose();r.fields.texture.dispose();}this.overlays.clear();if(this.gpu){this.mesh.clear();this.mesh.add(this.warmMesh);}this.fields.count.value=0;this.geometry.setDrawRange(0,0);this.stats.triangles=this.stats.vertices=0;}
+  reset(){this.kernelOwners.clear();this.kernelEntries.length=0;this.records=new WeakMap();this.owners.clear();this.displayRecords=[];for(const r of this.overlays.values()){r.overlay.geometry.dispose();r.overlay.material.dispose();r.fields.texture.dispose();}this.overlays.clear();if(this.gpu){this.mesh.clear();this.mesh.add(this.warmMesh);}this.fields.count.value=0;this.geometry.setDrawRange(0,0);this.stats.triangles=this.stats.vertices=0;}
   _owners(nodes,pools){
     const groups=new Map();
     for(const n of nodes){const id=nodeOwner(n);if(!groups.has(id))groups.set(id,[]);groups.get(id).push(n);}
@@ -152,11 +160,14 @@ export class BloodSurfaceFilm {
     // The exact same compact kernel is evaluated on the original vertices by
     // the GPU. Moving pools update a tiny field texture, not tens of thousands
     // of CPU vertex/node pairs. No fluid or tissue samples are removed.
-    const owners=new Map(),data=this.fields.texture.image.data;
+    const owners=this.kernelOwners,data=this.fields.texture.image.data;let ownerCount=0;
+    for(const owner of owners.values()){owner.list.length=0;owner.box.makeEmpty();owner.index=-1;}
     for(let i=0;i<nodes.length;i++){
-      const n=nodes[i],id=nodeOwner(n);if(!owners.has(id))owners.set(id,{index:owners.size,list:[],box:new THREE.Box3()});
-      const o=owners.get(id),r=radiusOf(n),p=new THREE.Vector3(...n.reference);o.box.expandByPoint(p.clone().addScalar(r));o.box.expandByPoint(p.addScalar(-r));
-      o.list.push({node:n,r2:r*r});encode(data,n,i,o.index);
+      const n=nodes[i],id=nodeOwner(n);if(!owners.has(id))owners.set(id,{index:-1,list:[],box:new THREE.Box3()});
+      const o=owners.get(id),r=radiusOf(n),p=n.reference,b=o.box;if(o.index<0)o.index=ownerCount++;
+      b.min.x=Math.min(b.min.x,p[0]-r);b.min.y=Math.min(b.min.y,p[1]-r);b.min.z=Math.min(b.min.z,p[2]-r);
+      b.max.x=Math.max(b.max.x,p[0]+r);b.max.y=Math.max(b.max.y,p[1]+r);b.max.z=Math.max(b.max.z,p[2]+r);
+      const entry=this.kernelEntries[i]??= {};entry.node=n;entry.r2=r*r;o.list.push(entry);encode(data,n,i,o.index);
     }
     this.fields.count.value=nodes.length;this.fields.texture.needsUpdate=true;
     const active=new Set();let total=0;

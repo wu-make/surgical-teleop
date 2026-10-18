@@ -199,3 +199,14 @@ test('real curved CAD blades cut a 35 mm raised BodyParts liver tent with clear 
     assert.ok(f.tissue._cuts[0].segments.length>1,'the real curved metal was preserved rather than replaced by an enlarged TCP sphere');
   }finally{assemblies.dispose();f.tissue.dispose();}
 });
+
+test('batched complete CAD contact reuses identical signed samples without changing any surface hit',()=>{
+  const f=slabWorkbench();try{
+    const segments=Array.from({length:10},(_,i)=>({a:new THREE.Vector3((i-5)/1024,7/1024,0),b:new THREE.Vector3((i-4)/1024,7/1024,0)}));
+    const sample=f.tissue.sampleDistance.bind(f.tissue);let calls=0;f.tissue.sampleDistance=p=>{calls++;return sample(p);};
+    const expected=segments.map(({a,b})=>f.tissue.contactSegment(a,b));const serial=calls;calls=0;
+    assert.deepEqual(f.tissue.contactSegments(segments),expected);assert(calls<serial,'shared endpoints are evaluated once within the unchanged synchronous batch');
+    f.tissue.setGrasp(new THREE.Vector3(0,0,0),new THREE.Vector3(.001,0,0));
+    assert.deepEqual(f.tissue.contactSegments(segments),segments.map(({a,b})=>f.tissue.contactSegment(a,b)),'new batches never retain stale signed samples');
+  }finally{f.tissue.dispose();}
+});

@@ -39,8 +39,8 @@ export class BloodFlow {
   }
   // Rebuild only after an actual CSG result. Fresh exposed faces, not B or a
   // timer, create perfused sources. Adjacent capsule cells allow film spreading.
-  syncSurface({injury=false,selection=null}={}){
-    if(selection){this._applySurfaceSelection(selection.nodes,injury,selection.edges);return;}
+  syncSurface({injury=false,selection=null,deferRender=false}={}){
+    if(selection){this._applySurfaceSelection(selection.nodes,injury,selection.edges,deferRender);return;}
     const candidates=new Map(),capsule=[];
     const scan=(mesh,fragmentId=null)=>{
       const cached=this._surfaceCache.get(mesh.uuid);if(cached){for(const entry of cached)store(entry);return;}
@@ -83,7 +83,7 @@ export class BloodFlow {
     const selected=[...cutCells,...[...candidates.values()].filter(n=>!n.cut).slice(0,MAX_NODES-cutCells.length)];
     this._applySurfaceSelection(selected,injury);
   }
-  _applySurfaceSelection(selected,injury,edges=null){
+  _applySurfaceSelection(selected,injury,edges=null,deferRender=false){
     const previousNodes=this.nodes,previous=new Map(this.nodes.map(n=>[n.key,n]));
     this.nodes=selected.map(c=>{
       const old=previous.get(c.key),fresh=injury&&c.cut&&(!old?.cut||vec(c.reference).distanceTo(vec(old.reference))>.00025);
@@ -97,7 +97,7 @@ export class BloodFlow {
     // Ownership follows disconnected material, including liquid that contacted
     // the capsule before its component was separated by a real CSG result.
     for(const d of this.drops)if(d.surface&&d.fragmentId==null){const piece=this.tissue.fragmentAtReference?.(d.reference);if(piece)d.fragmentId=piece.id;}
-    this.render();
+    if(deferRender)this.renderDirty=true;else this.render();
   }
   displayPoint(n){
     const piece=n.fragmentId!=null?this.tissue.getFragment(n.fragmentId):null;
@@ -243,7 +243,9 @@ export class BloodFlow {
     }
     if(remove.size)this.drops=this.drops.filter(d=>!remove.has(d));
   }
+  flushRender(){if(this.renderDirty)this.render();}
   render(){
+    this.renderDirty=false;
     const m=new THREE.Object3D(),up=new THREE.Vector3(0,1,0);let fibres=0;
     this.surfaceFilm.update(this.nodes);
     const pools=[];for(const d of this.drops){if(!d.surface||!d.reference)continue;let field=this._poolFieldCache.get(d);if(!field){field={version:0};this._poolFieldCache.set(d,field);}if(field.area!==d.area||field.fragmentId!==d.fragmentId||!field.reference?.every((v,i)=>v===d.reference[i])||!field.restNormal?.every((v,i)=>v===d.restNormal[i]))field.version++;Object.assign(field,{reference:d.reference,restNormal:d.restNormal,area:d.area,physicalArea:d.area,volume:d.volume,clot:d.clot??0,fragmentId:d.fragmentId??null});pools.push(field);}this.pooledFilm.update(pools);
