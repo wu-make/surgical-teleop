@@ -550,7 +550,7 @@ export class TissueVolume {
       this.onChange?.(result);
     }
     this.busy = !!this._commands.length;
-    this._flush();
+    this._flush();this.onDiagnostic?.('tissue-receive',receiveStart,performance.now());
   }
 
   _replaceChunk(chunk) {

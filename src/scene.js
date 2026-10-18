@@ -36,6 +36,20 @@ function sterileDrape(parent){
   return cover;
 }
 
+function prepareExactGeometry(view){
+    view.tissue?.blood?.flushRender();view.tissue?.blood?.surfaceFilm?.syncDisplay();view.tissue?.blood?.pooledFilm?.syncDisplay();
+    const filmEnd=performance.now();
+    if(view.tissue?.ready&&view.assemblies&&view.robotLoaded&&view.renderer.extensions.has('WEBGL_multi_draw')){
+      view.exactBatches??=new ExactRenderBatches(view.scene);
+      const sources=[];view.room.traverse(m=>{if(m.isMesh)sources.push(m);});
+      for(const mesh of view.tissue?._meshes.values()??[])sources.push(mesh);
+      for(const piece of view.tissue?.fragments.items.values()??[])sources.push(piece.mesh);
+      view.exactBatches.sync(sources);
+    }
+    const batchEnd=performance.now();
+    return {filmEnd,batchEnd};
+}
+
 export class SurgicalScene{
   constructor(canvas,stage,mini){
     this.stage=stage;this.mini=mini;this.mode='endo';this.disposed=false;this.ready=false;
@@ -261,16 +275,10 @@ export class SurgicalScene{
     this.scopeLight.position.copy(sp);this.scopeLight.target.position.set(...sc.lookAt);
     this.controls.update();
   }
+  prepareRenderGeometry(){return prepareExactGeometry(this);}
   render(now=0){
     const renderStart=performance.now();
-    this.tissue?.blood?.flushRender();this.tissue?.blood?.surfaceFilm?.syncDisplay();this.tissue?.blood?.pooledFilm?.syncDisplay();
-    if(this.tissue?.ready&&this.assemblies&&this.robotLoaded&&this.renderer.extensions.has('WEBGL_multi_draw')){
-      this.exactBatches??=new ExactRenderBatches(this.scene);
-      const sources=[];this.room.traverse(m=>{if(m.isMesh)sources.push(m);});
-      for(const mesh of this.tissue?._meshes.values()??[])sources.push(mesh);
-      for(const piece of this.tissue?.fragments.items.values()??[])sources.push(piece.mesh);
-      this.exactBatches.sync(sources);
-    }
+    const {filmEnd,batchEnd}=prepareExactGeometry(this);
     const r=this.renderer,w=this.stage.clientWidth,h=this.stage.clientHeight;
     if(w<1||h<1)return;
     const stageRect=this.stage.getBoundingClientRect(),miniRect=this.mini.getBoundingClientRect();
@@ -279,7 +287,7 @@ export class SurgicalScene{
     // Capture the intracorporeal scene once. The LCD and viewport reuse this frame.
     this.cavity.children[0].visible=true;this.scene.background=new THREE.Color('#6b4a42');
     this.scene.environmentIntensity=.34;r.toneMappingExposure=1.10;
-    this.scopeFeed.capture(r,this.scene,this.endoCamera,this.mode==='endo'?w:mw,this.mode==='endo'?h:mh);
+    const captureStart=performance.now();this.scopeFeed.capture(r,this.scene,this.endoCamera,this.mode==='endo'?w:mw,this.mode==='endo'?h:mh);
     const scopeEnd=performance.now(),scopeCalls=r.info.render?.calls??0;
     r.setRenderTarget(null);r.setScissorTest(false);r.setViewport(0,0,w,h);r.clear();
     this.cavity.children[0].visible=false;this.scene.background=new THREE.Color('#c2d0d0');
@@ -293,7 +301,7 @@ export class SurgicalScene{
       this.scopeFeed.blit(r,mx,my,mw,mh);
     }
     r.setScissorTest(false);
-    this.renderTimings={scopeMs:scopeEnd-renderStart,overviewMs:performance.now()-scopeEnd,scopeCalls,overviewCalls:(r.info.render?.calls??0)-scopeCalls,multiDraw:r.extensions?.has?.('WEBGL_multi_draw')??false,batching:this.exactBatches?.metrics};
+    this.renderTimings={filmMs:filmEnd-renderStart,batchMs:batchEnd-filmEnd,layoutMs:captureStart-batchEnd,scopeOnlyMs:scopeEnd-captureStart,scopeMs:scopeEnd-renderStart,overviewMs:performance.now()-scopeEnd,scopeCalls,overviewCalls:(r.info.render?.calls??0)-scopeCalls,multiDraw:r.extensions?.has?.('WEBGL_multi_draw')??false,batching:this.exactBatches?.metrics,resources:{geometries:r.info.memory?.geometries??null,textures:r.info.memory?.textures??null,programs:r.info.programs?.length}};
   }
   dispose(){this.disposed=true;this.exactBatches?.dispose();this.resizeObserver.disconnect();this.controls.dispose();this.env.dispose();this.scene.traverse(o=>{o.geometry?.dispose();if(o.material){for(const m of Array.isArray(o.material)?o.material:[o.material])if(m!==this.scopeFeed.monitorMaterial)m.dispose();}});this.scopeFeed.dispose();this.renderer.dispose();}
 }

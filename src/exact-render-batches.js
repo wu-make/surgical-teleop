@@ -4,7 +4,13 @@ import * as THREE from 'three';
  * for CAD, tissue contact, deformation, history and per-part bounds. No vertex,
  * triangle, material attribute, resolution or simulation step is removed. */
 export class ExactRenderBatches {
-  constructor(root){this.root=root;this.groups=new Map();this.records=new Map();this.schemas=new WeakMap();this.inverse=new THREE.Matrix4();this.matrix=new THREE.Matrix4();}
+  constructor(root){this.root=root;this.groups=new Map();this.records=new Map();this.schemas=new WeakMap();this.operations=[];this.worstOperations=[];this.operationCounts={};this.inverse=new THREE.Matrix4();this.matrix=new THREE.Matrix4();}
+  _operation(type,start,group,force=false){
+    const end=performance.now(),ms=end-start;this.operationCounts[type]=(this.operationCounts[type]??0)+1;
+    if(!force&&ms<2)return;
+    const row={type,start,end,ms,vertexCapacity:group.vCapacity,indexCapacity:group.iCapacity,active:group.active,tissue:!!group.mesh.geometry.attributes.tissueRestPosition};
+    this.operations.push(row);if(this.operations.length>32)this.operations.shift();this.worstOperations.push(row);this.worstOperations.sort((a,b)=>b.ms-a.ms);this.worstOperations.length=Math.min(8,this.worstOperations.length);
+  }
   _key(mesh,mask){
     const g=mesh.geometry;let schema=this.schemas.get(g);
     if(!schema){schema=Object.keys(g.attributes).sort().map(k=>{const a=g.attributes[k];return `${k}/${a.itemSize}/${a.array.constructor.name}/${a.normalized}`;}).join(',')+`/${!!g.index}`;this.schemas.set(g,schema);}
@@ -19,14 +25,14 @@ export class ExactRenderBatches {
     let record=group.geometries.get(geometry);if(record)return record;
     const v=geometry.attributes.position.count,i=geometry.index?.count??0;
     if(group.vCursor+v>group.vCapacity||group.iCursor+i>group.iCapacity){
-      group.mesh.optimize();group.vCursor=0;group.iCursor=0;
+      const optimizeStart=performance.now();group.mesh.optimize();this._operation('compact',optimizeStart,group,true);group.vCursor=0;group.iCursor=0;
       for(const value of group.geometries.values()){const range=group.mesh.getGeometryRangeAt(value.id);group.vCursor=Math.max(group.vCursor,range.vertexStart+range.reservedVertexCount);group.iCursor=Math.max(group.iCursor,range.indexStart+range.reservedIndexCount);}
-      if(group.vCursor+v>group.vCapacity||group.iCursor+i>group.iCapacity){group.vCapacity=Math.max(Math.ceil(group.vCapacity*1.5),group.vCursor+v+1024);if(geometry.index)group.iCapacity=Math.max(Math.ceil(group.iCapacity*1.5),group.iCursor+i+2048);group.mesh.setGeometrySize(group.vCapacity,group.iCapacity);}
+      if(group.vCursor+v>group.vCapacity||group.iCursor+i>group.iCapacity){group.vCapacity=Math.max(Math.ceil(group.vCapacity*1.5),group.vCursor+v+1024);if(geometry.index)group.iCapacity=Math.max(Math.ceil(group.iCapacity*1.5),group.iCursor+i+2048);const resizeStart=performance.now();group.mesh.setGeometrySize(group.vCapacity,group.iCapacity);this._operation('resize',resizeStart,group,true);}
     }
     // addGeometry already copies every attribute/index. Recording its versions
     // avoids immediately copying the whole new cut surface a second time.
     const attributes=Object.values(geometry.attributes);
-    record={id:group.mesh.addGeometry(geometry),references:0,attributes,versions:attributes.map(a=>a.version),indexVersion:geometry.index?.version??0,vertices:v,indices:i};group.vCursor+=v;group.iCursor+=i;group.geometries.set(geometry,record);return record;
+    const addStart=performance.now();record={id:group.mesh.addGeometry(geometry),references:0,attributes,versions:attributes.map(a=>a.version),indexVersion:geometry.index?.version??0,vertices:v,indices:i};group.vCursor+=v;group.iCursor+=i;group.geometries.set(geometry,record);this._operation('add',addStart,group);return record;
   }
   _remove(source,record){
     const {group,geometry}=record;group.mesh.deleteInstance(record.instance);group.active--;geometry.references--;
@@ -54,6 +60,6 @@ export class ExactRenderBatches {
       if(record.visible!==visible){record.group.mesh.setVisibleAt(record.instance,visible);record.visible=visible;}
     }
   }
-  get metrics(){return {sources:this.records.size,batches:this.groups.size,triangles:[...this.records.values()].reduce((n,r)=>n+(r.sourceGeometry.index?.count??r.sourceGeometry.attributes.position.count)/3,0)};}
+  get metrics(){return {operationCounts:this.operationCounts,operations:this.operations,worstOperations:this.worstOperations,sources:this.records.size,batches:this.groups.size,triangles:[...this.records.values()].reduce((n,r)=>n+(r.sourceGeometry.index?.count??r.sourceGeometry.attributes.position.count)/3,0)};}
   dispose(){for(const [source,record]of this.records)source.layers.mask=record.mask;this.records.clear();for(const group of this.groups.values()){group.mesh.removeFromParent();group.mesh.dispose();}this.groups.clear();}
 }

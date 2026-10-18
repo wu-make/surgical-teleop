@@ -38,3 +38,11 @@ test('repeated growing cut geometries reclaim batch storage and do not duplicate
   const root=new THREE.Scene(),material=new THREE.MeshStandardMaterial(),sources=[new THREE.Mesh(new THREE.SphereGeometry(.01,8,6),material),new THREE.Mesh(new THREE.SphereGeometry(.01,8,6),material)];sources.forEach(m=>root.add(m));const batcher=new ExactRenderBatches(root);
   try{for(let i=0;i<45;i++){const old=sources[0].geometry;sources[0].geometry=new THREE.SphereGeometry(.01,8+i%16,6+i%8);batcher.sync(sources);verify(batcher,sources[0]);assert.equal(batcher.metrics.sources,2);assert.equal(batcher.groups.values().next().value.geometries.size,2);old.dispose();}}finally{batcher.dispose();sources.forEach(m=>m.geometry.dispose());material.dispose();}
 });
+
+test('batch capacity operations retain precise timestamps while preserving every source vertex',()=>{
+  const root=new THREE.Scene(),material=new THREE.MeshStandardMaterial(),sources=[new THREE.Mesh(new THREE.BoxGeometry(),material),new THREE.Mesh(new THREE.BoxGeometry(),material)];sources.forEach(m=>root.add(m));const batches=new ExactRenderBatches(root);
+  try{batches.sync(sources);const old=sources[0].geometry;sources[0].geometry=new THREE.SphereGeometry(.02,45,35);batches.sync(sources);old.dispose();verify(batches,sources[0]);
+    assert(batches.metrics.operationCounts.compact>0);assert(batches.metrics.operationCounts.resize>0);
+    for(const row of batches.metrics.operations){assert(row.end>=row.start);assert(row.ms>=0);assert(row.vertexCapacity>0);}assert(batches.metrics.operations.length<=32);assert(batches.metrics.worstOperations.length<=8);
+  }finally{batches.dispose();sources.forEach(m=>m.geometry.dispose());material.dispose();}
+});
