@@ -1,6 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {FrameMetrics} from '../src/frame-metrics.js';
+
+test('completed evidence windows stop consuming per-frame work without losing their raw intervals',()=>{
+  const m=new FrameMetrics(7200);
+  for(let i=1;i<=500;i++){
+    const at=i*2000;m.record(16,'cutting',null,at);m.pinWindow('stall-'+i,at,{beforeMs:20,afterMs:40});
+    m.record(16,'cutting',null,at+16);m.record(16,'cutting',null,at+32);m.record(16,'cutting',null,at+48);m.record(16,'cutting',null,at+80);
+    assert.equal(m.activeWindows.size,0);
+  }
+  const windows=m.report().pinnedWindows;assert.equal(windows.length,500);
+  for(const window of windows)assert.deepEqual(window.intervals.map(x=>x.endedAt-window.at),[0,16,32,48]);
+});
 test('worst frame context survives replacement of the recent slow-frame ring',()=>{
   const metrics=new FrameMetrics(3);let captures=0;metrics.record(157.5,'cutting',()=>{captures++;return{endedAt:1200,bloodMs:130};});
   for(let i=0;i<80;i++)metrics.record(36,'cutting',()=>{captures++;return{endedAt:1300+i};});

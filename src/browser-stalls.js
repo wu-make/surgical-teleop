@@ -9,15 +9,21 @@ export class BrowserStalls {
       try{const observer=new Observer(list=>this.accept(list.getEntries()));observer.observe({type,buffered:true});this.observers.push(observer);this.supported.push(type);}catch{/* Optional diagnostics must never block simulation. */}
     }
   }
-  clear(){this.since=this.now();this.recent=[];this.worst=[];this.spans=[];this.counts={};this.rafGaps=[];this.incidents=[];this.unfinished=new Map();this.incidentCount=0;this.droppedIncidents=0;}
+  clear(){this.epoch=(this.epoch??0)+1;this.since=this.now();this.recent=[];this.worst=[];this.spans=[];this.counts={};this.rafGaps=[];this.incidents=[];this.unfinished=new Map();this.incidentCount=0;this.droppedIncidents=0;this.archive?.({action:'open',epoch:this.epoch});}
+  setArchive(send){
+    this.archive=message=>send({type:'incident-journal',...message});
+    this.archive({action:'open',epoch:this.epoch});
+    for(const incident of this.incidents)this.archive({action:'capture',epoch:this.epoch,incident});
+    this.incidents=this.incidents.slice(-32);
+  }
   captureFrame(frame,intervals=[]){
     const end=frame.work?.endedAt;if(!Number.isFinite(end))return;
     const start=end-frame.ms,id=++this.incidentCount;
-    if(this.incidents.length>=128){this.droppedIncidents++;return;}
     const incident={id,start,end,frame:structuredClone(frame),intervals:intervals.filter(r=>r.endedAt>=start-1000&&r.endedAt<=end).map(r=>({...r})),browser:this.recent.filter(r=>r.start<end+250&&r.end>start-250).map(r=>structuredClone(r)),runtime:(this.runtime?.rows??[]).filter(r=>r.start<end+500&&r.end>start-1000).map(r=>({...r})),work:this.spans.filter(r=>r.start<end&&r.end>start-250).map(r=>({...r})),rafGaps:this.rafGaps.filter(r=>r.start<end&&r.end>start-250).map(r=>structuredClone(r))};this.incidents.push(incident);this.unfinished.set(end,incident);
+    if(this.archive){this.archive({action:'capture',epoch:this.epoch,incident});if(this.incidents.length>32)this.incidents.shift();}
   }
-  finishFrame(frame){const incident=this.unfinished.get(frame.raf);if(incident){incident.followingFrame=structuredClone(frame);this.unfinished.delete(frame.raf);}}
-  runtimeSample(row){for(const incident of this.incidents)if(row.start<incident.end+500&&row.end>incident.start-1000)incident.runtime.push({...row});}
+  finishFrame(frame){const incident=this.unfinished.get(frame.raf);if(incident){incident.followingFrame=structuredClone(frame);this.unfinished.delete(frame.raf);this.archive?.({action:'following',epoch:this.epoch,id:incident.id,frame});}}
+  runtimeSample(row){for(const incident of this.incidents)if(row.start<incident.end+500&&row.end>incident.start-1000)incident.runtime.push({...row});this.archive?.({action:'runtime',epoch:this.epoch,row});}
   span(name,start,end){if(end-start<4)return;this.spans.push({name,start,end,ms:end-start});if(this.spans.length>128)this.spans.shift();}
   raf(from,to,entered,previous,eligible){
     if(!eligible||!previous?.eligible||!Number.isFinite(from)||to-from<=50)return;
@@ -34,7 +40,8 @@ export class BrowserStalls {
     // Observer callbacks arrive after RAF. Attach them to the original frozen
     // incident, even after the rolling recent/worst lists have moved on.
     for(const incident of this.incidents)if(row.start<incident.end+250&&row.end>incident.start-250)incident.browser.push(structuredClone(row));
+    this.archive?.({action:'browser',epoch:this.epoch,row});
   }}
-  report({compact=false,detach=false}={}){const report={supported:[...this.supported],since:this.since,counts:{...this.counts},recent:compact?this.recent.slice(-4):this.recent,worst:this.worst,rafGaps:this.rafGaps,incidentCount:this.incidentCount,droppedIncidents:this.droppedIncidents,runtime:this.runtime?.report({compact}),...(compact?{incidentSummary:this.incidents.map(i=>({id:i.id,start:i.start,ms:i.frame.ms,phase:i.frame.phase,browserEntries:i.browser.length}))}:{incidents:this.incidents.map(i=>({...i,observations:incidentEvidence(i)}))})};return detach?structuredClone(report):report;}
+  report({compact=false,detach=false}={}){const report={supported:[...this.supported],since:this.since,counts:{...this.counts},recent:compact?this.recent.slice(-4):this.recent,worst:this.worst,rafGaps:this.rafGaps,incidentCount:this.incidentCount,droppedIncidents:this.droppedIncidents,...(this.archive?{archive:{epoch:this.epoch,mainThreadContexts:this.incidents.length,storage:'session export worker',complete:false}}:{}),runtime:this.runtime?.report({compact}),...(compact?{incidentSummary:this.incidents.map(i=>({id:i.id,start:i.start,ms:i.frame.ms,phase:i.frame.phase,browserEntries:i.browser.length}))}:{incidents:this.incidents.map(i=>({...i,observations:incidentEvidence(i)}))})};return detach?structuredClone(report):report;}
   dispose(){for(const observer of this.observers)observer.disconnect();}
 }

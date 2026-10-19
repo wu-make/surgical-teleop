@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {BrowserStalls} from '../src/browser-stalls.js';
+import {IncidentJournal} from '../src/incident-journal.js';
 
 test('browser attribution preserves actual long work and isolates reset epochs',()=>{
   let now=100;const callbacks=[];
@@ -44,4 +45,29 @@ test('the complete callback following a stall is attached after render and remai
   const d=new BrowserStalls(undefined,()=>0);d.captureFrame({ms:103.1,phase:'manipulation',work:{endedAt:203.1}});
   const frame={raf:203.1,start:207,end:237,renderMs:17};d.finishFrame(frame);frame.renderMs=999;
   assert.equal(d.report().incidents[0].followingFrame.renderMs,17);assert.equal(d.unfinished.size,0);
+});
+
+test('worker journal retains every context beyond 128, including late attribution to evicted main-thread rows',()=>{
+  const journal=new IncidentJournal(),d=new BrowserStalls(undefined,()=>0);
+  d.setArchive(message=>journal.accept(structuredClone(message)));
+  for(let i=1;i<=600;i++){
+    d.captureFrame({ms:72.6,phase:'cutting',work:{endedAt:i*100,render:{i}}});
+    d.finishFrame({raf:i*100,start:i*100+1,end:i*100+12,renderMs:7});
+  }
+  assert.equal(d.incidents.length,32);assert.equal(d.incidentCount,600);assert.equal(d.droppedIncidents,0);
+  d.accept([{entryType:'long-animation-frame',startTime:70,duration:61,scripts:[{sourceFunctionName:'late-original-event'}]}]);
+  d.runtimeSample({type:'gpu',start:80,end:130,raf:80,gpuMs:65});
+  const report=d.report({detach:true});journal.hydrate(report);
+  assert.equal(report.incidents.length,600);assert.equal(report.archive.complete,true);
+  assert.equal(report.incidents[0].followingFrame.renderMs,7);
+  assert.equal(report.incidents[0].browser[0].scripts[0].function,'late-original-event');
+  assert.equal(report.incidents[0].runtime[0].gpuMs,65);
+  assert.deepEqual(report.incidents.map(x=>x.id),Array.from({length:600},(_,i)=>i+1));
+  d.clear();assert.equal(d.report().incidentCount,0);assert.equal(journal.snapshot(report.archive.epoch,600).length,600);
+  assert.throws(()=>journal.snapshot(d.epoch,1),/count mismatch/);
+});
+
+test('without an archive the fallback retains all contexts rather than silently dropping event 129',()=>{
+  const d=new BrowserStalls(undefined,()=>0);for(let i=1;i<=160;i++)d.captureFrame({ms:54,phase:'cutting',work:{endedAt:i*60}});
+  assert.equal(d.report().incidents.length,160);assert.equal(d.report().droppedIncidents,0);
 });

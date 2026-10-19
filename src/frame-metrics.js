@@ -2,11 +2,11 @@
  * never alters the controller, geometry density, render resolution or timestep. */
 export class FrameMetrics {
   constructor(limit=7200){this.limit=limit;this.clear();}
-  clear(){this.rows=[];this.head=0;this.cached={};this.totals={};this.lastSample=null;this.slowFrames=[];this.worstFrames=[];this.presentationChanges=[];this.windows=new Map();}
+  clear(){this.rows=[];this.head=0;this.cached={};this.totals={};this.lastSample=null;this.slowFrames=[];this.worstFrames=[];this.presentationChanges=[];this.windows=new Map();this.activeWindows=new Set();}
   pinWindow(label,at,{beforeMs=100,afterMs=700}={}){
     const key=label+':'+at;if(this.windows.has(key)||!Number.isFinite(at))return;
     const start=at-beforeMs,end=at+afterMs,intervals=this.rows.filter(r=>Number.isFinite(r.endedAt)&&r.endedAt>=start&&r.endedAt-r.ms<=end).map(r=>({...r}));
-    intervals.sort((a,b)=>a.endedAt-b.endedAt);this.windows.set(key,{label,at,start,end,intervals});
+    intervals.sort((a,b)=>a.endedAt-b.endedAt);const window={label,at,start,end,intervals};this.windows.set(key,window);this.activeWindows.add(window);
   }
   observePresentation(fullscreen,width,height,pixelRatio,atMs){
     const last=this.presentationChanges.at(-1);
@@ -27,7 +27,7 @@ export class FrameMetrics {
     total.maxMs=Math.max(total.maxMs,milliseconds);if(milliseconds>33.34)total.over33ms++;if(milliseconds>50)total.over50ms++;
     if(milliseconds>33.34){const row={ms:milliseconds,phase,...(work?{work:structuredClone(work())}:{})};this.slowFrames.push(row);if(this.slowFrames.length>64)this.slowFrames.shift();this.worstFrames.push(row);this.worstFrames.sort((a,b)=>b.ms-a.ms);this.worstFrames.length=Math.min(8,this.worstFrames.length);}
     const row={ms:milliseconds,phase,...(Number.isFinite(endedAt)?{endedAt}:{})};if(this.rows.length<this.limit)this.rows.push(row);else{this.rows[this.head]=row;this.head=(this.head+1)%this.limit;}
-    if(Number.isFinite(endedAt))for(const window of this.windows.values())if(endedAt>=window.start&&endedAt-milliseconds<=window.end)window.intervals.push({...row});
+    if(Number.isFinite(endedAt))for(const window of this.activeWindows){if(endedAt-milliseconds>window.end){this.activeWindows.delete(window);continue;}if(endedAt>=window.start)window.intervals.push({...row});}
     if(milliseconds>50)this.onLongFrame?.(this.slowFrames.at(-1));
   }
   summarize(){
