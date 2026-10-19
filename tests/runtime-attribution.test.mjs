@@ -14,3 +14,13 @@ test('GPU probe never reads an unavailable result, waits, or flushes and release
 test('missing optional GPU extensions and message API cannot prevent rendering or timer observations',()=>{
   const p=new RuntimeAttribution({gl:{getExtension:()=>null},schedule:()=>1,cancel(){},Channel:null,document:null,target:null});assert.equal(p.begin(1),null);p.end(null);p.poll();assert.equal(p.report().gpuTimerSupported,false);p.dispose();
 });
+
+test('independent worker timestamps separate worker scheduling from delivery delay and stop after disposal',()=>{
+  let instance,now=900,terminated=false;
+  class Worker{constructor(url,options){assert.equal(url,'probe.js');assert.equal(options.type,'module');instance=this;}terminate(){terminated=true;}}
+  const p=new RuntimeAttribution({workerUrl:'probe.js',WorkerClass:Worker,timeOrigin:10000,now:()=>now,schedule:()=>1,cancel(){},Channel:null,document:{hidden:false,hasFocus:()=>true},target:null});
+  // The other context kept ticking, but its message waited800ms on this one.
+  instance.onmessage({data:{origin:10050,at:50,intervalMs:50}});
+  assert.equal(p.rows.at(-1).start,100);assert.equal(p.rows.at(-1).workerIntervalMs,50);assert.equal(p.rows.at(-1).deliveryDelayMs,800);assert.equal(p.rows.at(-1).focused,true);
+  p.dispose();assert(terminated);const count=p.rows.length;now=1000;instance.onmessage({data:{origin:10050,at:100,intervalMs:50}});assert.equal(p.rows.length,count);
+});

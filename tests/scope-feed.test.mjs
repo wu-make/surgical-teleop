@@ -52,6 +52,7 @@ test('the endoscope uses a linear HDR target and exactly one official display co
   assert.equal(feed.target.texture.type, THREE.HalfFloatType);
   assert.equal(feed.target.texture.colorSpace, THREE.LinearSRGBColorSpace);
   assert.equal(feed.target.depthBuffer, true);
+  assert.equal(feed.target.resolveDepthBuffer, false);
   for (const material of [feed.outputMaterial, feed.monitorMaterial]) {
     assert.equal(material.isRawShaderMaterial, true);
     assert.equal(material.toneMapped, false);
@@ -83,7 +84,8 @@ test('one endoscope capture is reused by viewport and monitor without recursive 
   feed.capture(renderer, scene, camera, 640, 400);
   assert.equal(renderer.draws.length, 1); assert.equal(renderer.draws[0].target, feed.target);
   assert.deepEqual(renderer.draws[0].visible, [liver], 'the operating-room display is excluded from the scope layer');
-  assert.equal(renderer.draws[0].scissorTest, false);
+  assert.equal(renderer.draws[0].scissorTest, true);
+  assert.deepEqual(feed.target.scissor.toArray(),[0,0,960,600]);
   assert.deepEqual(feed.resolution, { width: 960, height: 600 });
   assert.equal(camera.aspect, 1.6); assert.equal(feed.monitorMaterial.uniforms.feedAspect.value, 1.6);
   assert.equal(renderer.target, previousTarget); assert.equal(renderer.scissorTest, true);
@@ -130,6 +132,7 @@ test('disposing the shared feed releases its target, materials and fullscreen ge
 test('each complete surgical frame captures endoscopy once, draws overview once and blits the same feed once', () => {
   for (const mode of ['endo', 'overview']) {
     const renderer = new RendererProbe(), feed = new ScopeFeed(renderer), scene = new THREE.Scene();
+    scene.matrixWorldAutoUpdate=false;let sceneWalks=0;const updateWorld=scene.updateMatrixWorld.bind(scene);scene.updateMatrixWorld=force=>{sceneWalks++;updateWorld(force);};
     const endoCamera = new THREE.PerspectiveCamera(55); endoCamera.layers.set(1);
     const overviewCamera = new THREE.PerspectiveCamera(42);
     const organ = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshStandardMaterial()); organ.layers.set(1); scene.add(organ);
@@ -140,6 +143,7 @@ test('each complete surgical frame captures endoscopy once, draws overview once 
       stage: { clientWidth: 1000, clientHeight: 620, getBoundingClientRect: () => ({ left: 20, top: 40 }) },
       mini: { getBoundingClientRect: () => ({ left: 720, top: 170, width: 280, height: 180 }) } };
     SurgicalScene.prototype.render.call(view, 1000);
+    assert.equal(sceneWalks,1,'both views share one current complete scene hierarchy even without multi-draw');
     assert.equal(renderer.infoResetCount, 1, `${mode}: statistics reset exactly once for all passes`);
     assert.equal(renderer.draws.length, 3);
     const capture = renderer.draws.filter(draw => draw.camera === endoCamera), overview = renderer.draws.filter(draw => draw.camera === overviewCamera), blit = renderer.draws.filter(draw => draw.object !== scene);

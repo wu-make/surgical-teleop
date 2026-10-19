@@ -39,7 +39,14 @@ function sterileDrape(parent){
 }
 
 function exactSources(view){
-  const sources=[];for(const root of [view.room])root.traverse(m=>{if(m.isMesh)sources.push(m);});
+  // Keep the original articulated CAD hierarchy for IK and collision. Only
+  // transport compatible opaque draw buffers through the existing exact batch.
+  // Camera-dependent cavity visibility is deliberately outside these roots.
+  const a=view.assemblies,sources=[];
+  // Keep the two operative instruments on their original draw path: their
+  // specular edges must remain pixel-identical in the endoscopic image.
+  for(const root of [view.room,a?.scope?.group,a?.scopeArm?.mount])root?.traverse(m=>{if(m.isMesh)sources.push(m);});
+  for(const tool of Object.values(a?.tools??{}))tool.group.traverse(m=>{if(m.isMesh&&!((view.exactBatches?.records.get(m)?.mask??m.layers.mask)&2))sources.push(m);});
   for(const mesh of view.tissue?._meshes.values()??[])sources.push(mesh);
   for(const piece of view.tissue?.fragments.items.values()??[])sources.push(piece.mesh);
   return sources;
@@ -50,7 +57,7 @@ function prepareExactGeometry(view){
     if(view.tissue?.ready&&view.assemblies&&view.robotLoaded&&view.renderer.extensions.has('WEBGL_multi_draw')){
       view.exactBatches??=new ExactRenderBatches(view.scene);
       view.exactBatches.sync(exactSources(view));
-    }
+    }else view.scene.updateMatrixWorld(true);
     const batchEnd=performance.now();
     return {filmEnd,batchEnd};
 }
@@ -65,6 +72,10 @@ export class SurgicalScene{
     checkpoint('webgl-context');this.scopeFeed=new ScopeFeed(this.renderer,1.10);
     checkpoint('scope-feed-construction');
     this.scene=new THREE.Scene();this.scene.background=new THREE.Color('#a4b3b3');
+    // prepareExactGeometry refreshes the complete articulated hierarchy once
+    // before both views. Neither pass changes transforms, so repeating the
+    // same scene walk inside each renderer.render() is unnecessary.
+    this.scene.matrixWorldAutoUpdate=false;
     if(deferPreparation)return;
     const room=new RoomEnvironment(),pmrem=new THREE.PMREMGenerator(this.renderer);this.env=pmrem.fromScene(room,.04);this.scene.environment=this.env.texture;pmrem.dispose();room.dispose();
     checkpoint('environment-pmrem');runImmediately(this._constructSteps(canvas));

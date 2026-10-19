@@ -20,6 +20,9 @@ export class ScopeFeed {
       minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, depthBuffer: true, samples:sampleCount(renderer,hdr) });
     this.target.texture.colorSpace = THREE.LinearSRGBColorSpace;
     this.target.texture.name = 'Linear_Real_Time_Endoscope_Feed';
+    // Depth is needed while drawing, but no later pass samples it. Keep the
+    // original depth test and MSAA; avoid resolving an unused depth image.
+    this.target.resolveDepthBuffer = false;
     const uniforms = THREE.UniformsUtils.clone(OutputShader.uniforms);
     uniforms.feedScale = { value: new THREE.Vector2(1, 1) };
     uniforms.feedClamp = { value:new THREE.Vector4(.5,.5,.5,.5) };
@@ -57,6 +60,7 @@ gl_FragColor = texture2D( tDiffuse, clamp(feedUV * feedScale,feedClamp.xy,feedCl
     const ratio = renderer.getPixelRatio(), w = Math.max(1, Math.round(width * ratio)), h = Math.max(1, Math.round(height * ratio));
     if (this.target.width < w || this.target.height < h) this.target.setSize(Math.max(this.target.width,w),Math.max(this.target.height,h));
     this.target.viewport.set(0,0,w,h);
+    this.target.scissor.set(0,0,w,h);this.target.scissorTest=true;
     this.outputMaterial.uniforms.feedScale.value.set(w/this.target.width,h/this.target.height);
     this.outputMaterial.uniforms.feedClamp.value.set(.5/this.target.width,.5/this.target.height,(w-.5)/this.target.width,(h-.5)/this.target.height);
     this.resolution = { width: w, height: h };
@@ -64,7 +68,9 @@ gl_FragColor = texture2D( tDiffuse, clamp(feedUV * feedScale,feedClamp.xy,feedCl
     this.monitorMaterial.uniforms.feedAspect.value = camera.aspect;
     const previousTarget = renderer.getRenderTarget(), previousScissor = renderer.getScissorTest();
     try {
-      renderer.setRenderTarget(this.target); renderer.setScissorTest(false);
+      // Render-target scissor uses physical pixels. It also clips the MSAA
+      // resolve to the active image, excluding unused fullscreen reserve.
+      renderer.setRenderTarget(this.target); renderer.setScissorTest(true);
       renderer.clear(); renderer.render(scene, camera);
     } finally { renderer.setRenderTarget(previousTarget); renderer.setScissorTest(previousScissor); }
   }
