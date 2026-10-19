@@ -60,3 +60,15 @@ test('explicit cancellation keeps delayed preparation from restarting automatic 
     d.update(.05);assert.deepEqual(s.state.tools,tools);d.stop('');release();assert.equal(await pending,false);assert.equal(d.active,false);assert.equal(s.canUndo,false);
   }finally{t.dispose();}
 });
+
+function withdrawalFixture(){const f=fixture();f.s.state.tools.left.position=[-.086,1.034,.110];f.s.state.tools.right.position=[-.070,1.034,.092];f.s.state.tools.left.jaw=f.s.state.tools.right.jaw=0;f.i.grasp={kind:'fragment',fragmentId:'held'};f.d.active=true;f.d.mode='example';f.d.plan={worldNormal:new THREE.Vector3(0,0,1)};f.d.leftAway=new THREE.Vector3(-.086,1.059,.155);return f;}
+test('yielded specimen withdrawal keeps every real collision check and the synchronous accepted route',async()=>{
+  const a=withdrawalFixture(),b=withdrawalFixture();try{
+    a.d._beginFragmentMove();const tools=structuredClone(b.s.state.tools);let frames=0;
+    assert(await b.d._beginFragmentMoveAsync({budgetMs:0,yieldFrame:async()=>{frames++;b.d.update(.016);assert.deepEqual(b.s.state.tools,tools);}}));
+    assert(frames>3);assert.equal(b.d.phase,'retract');assert.equal(b.d.mode,'example');assert.deepEqual(b.d.rightRetractEnd,a.d.rightRetractEnd);assert.deepEqual(b.d.leftAway,a.d.leftAway);assert.deepEqual(b.s.state.tools,a.s.state.tools);
+  }finally{a.t.dispose();b.t.dispose();}
+});
+test('manual cancellation prevents a late withdrawal planner from moving or reopening either instrument',async()=>{
+  const f=withdrawalFixture();try{let release;const tools=structuredClone(f.s.state.tools),pending=f.d._beginFragmentMoveAsync({yieldFrame:()=>new Promise(resolve=>release=resolve)});f.d.stop('');release();assert.equal(await pending,false);assert.deepEqual(f.s.state.tools,tools);assert.equal(f.d.active,false);}finally{f.t.dispose();}
+});

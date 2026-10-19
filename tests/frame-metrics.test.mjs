@@ -57,3 +57,16 @@ test('fullscreen acceptance exports actual resolution transitions without duplic
   assert.equal(metrics.report().presentationChanges.length,3);assert.equal(metrics.report().presentationChanges[1].fullscreen,true);
   metrics.clear();assert.deepEqual(metrics.report().presentationChanges,[]);
 });
+
+test('cut transition windows retain raw preceding and following intervals after the recent ring expires',()=>{
+  const m=new FrameMetrics(4);for(let t=16;t<=160;t+=16)m.record(16,'cutting',null,t);
+  m.pinWindow('separation',150,{beforeMs:40,afterMs:60});m.pinWindow('separation',150,{beforeMs:40,afterMs:60});
+  for(let t=176;t<=800;t+=16)m.record(16,'manipulation',null,t);
+  const report=m.report({includeIntervals:true});assert.equal(report.pinnedWindows.length,1);assert.deepEqual(report.pinnedWindows[0].intervals.map(r=>r.endedAt),[112,128,144,160,176,192,208,224]);
+  assert(report.recentWindow.intervals.every(r=>r.endedAt>700));report.pinnedWindows[0].intervals[0].ms=999;assert.equal(m.report().pinnedWindows[0].intervals[0].ms,16);m.clear();assert.deepEqual(m.report().pinnedWindows,[]);
+});
+test('long-frame evidence callbacks run after recording the anomalous interval exactly once',()=>{
+  const m=new FrameMetrics();m.onLongFrame=row=>m.pinWindow('stall',row.work.endedAt,{beforeMs:200,afterMs:50});
+  m.record(16,'cutting',null,100);m.record(157.5,'cutting',()=>({endedAt:257.5}),257.5);m.record(16,'cutting',null,273.5);
+  assert.deepEqual(m.report().pinnedWindows[0].intervals.map(r=>r.ms),[16,157.5,16]);
+});

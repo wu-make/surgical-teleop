@@ -31,3 +31,12 @@ test('a first-input long frame crossing the reset boundary is preserved in full 
   let now=100;const d=new BrowserStalls(undefined,()=>now);d.accept([{entryType:'long-animation-frame',startTime:90,duration:157.5}]);
   assert.equal(d.worst[0].ms,157.5);assert.equal(d.worst[0].overlapsReset,true);now=1000;d.clear();d.accept([{entryType:'longtask',startTime:90,duration:157.5}]);assert.equal(d.recent.length,0);
 });
+
+test('each slow incident keeps its original context and late observer attribution after rolling lists expire',()=>{
+  const d=new BrowserStalls(undefined,()=>0),frame={ms:157.5,phase:'cutting',work:{endedAt:200,render:{batchMs:4}}};
+  d.captureFrame(frame,[{endedAt:30,ms:16},{endedAt:200,ms:157.5}]);frame.work.render.batchMs=999;
+  d.accept([{entryType:'long-animation-frame',startTime:40,duration:157.5,scripts:[{duration:100,sourceFunctionName:'animate'}]}]);
+  for(let i=0;i<100;i++)d.accept([{entryType:'longtask',startTime:1000+i*300,duration:250}]);
+  const report=d.report({detach:true});assert.equal(report.incidents.length,1);assert.equal(report.incidents[0].frame.work.render.batchMs,4);assert.equal(report.incidents[0].browser[0].ms,157.5);assert.equal(report.incidents[0].intervals.length,2);assert.equal(report.droppedIncidents,0);assert.equal(d.report({compact:true}).incidents,undefined);
+  d.clear();assert.equal(d.incidentCount,0);
+});

@@ -5,7 +5,9 @@ import {RoomEnvironment} from 'three/addons/environments/RoomEnvironment.js';
 import {RoundedBoxGeometry} from 'three/addons/geometries/RoundedBoxGeometry.js';
 import {loadAssemblies,G1_GRIP} from './authentic-assemblies.js';
 import {ScopeFeed} from './scope-feed.js';
-import {buildOperatingRoom} from './operating-room.js';
+import {buildOperatingRoom,buildOperatingRoomSteps} from './operating-room.js';
+import {prepareEnvironment} from './environment-preparation.js';
+import {runCooperatively,runImmediately} from './cooperative-work.js';
 import {ExactRenderBatches} from './exact-render-batches.js';
 
 const V=new THREE.Vector3(), Y=new THREE.Vector3(0,1,0), Q=new THREE.Quaternion();
@@ -21,7 +23,7 @@ function setSegment(m,a,b){V.subVectors(b,a);const length=V.length();m.position.
 function labelSprite(text,color='#d6e9df'){
   const c=document.createElement('canvas');c.width=512;c.height=96;const x=c.getContext('2d');x.fillStyle='#12221ee0';x.roundRect(0,0,512,96,14);x.fill();x.fillStyle=color;x.font='500 28px sans-serif';x.textAlign='center';x.fillText(text,256,59);const m=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(c),transparent:true,depthTest:false}));m.scale.set(.29,.054,1);return m;
 }
-function tissueTexture(){const c=document.createElement('canvas');c.width=c.height=256;const x=c.getContext('2d');let seed=1234;const rnd=()=>{seed=(Math.imul(seed,1664525)+1013904223)|0;return(seed>>>0)/4294967296};x.fillStyle='#b39e91';x.fillRect(0,0,256,256);for(let i=0;i<7500;i++){const a=rnd(),b=rnd(),r=rnd()*2+.3;x.fillStyle=`rgba(${rnd()>.5?'205,182,160':'104,83,78'},${rnd()*.15})`;x.beginPath();x.ellipse(a*256,b*256,r,r*.6,0,0,7);x.fill();}const tex=new THREE.CanvasTexture(c);tex.wrapS=tex.wrapT=THREE.RepeatWrapping;tex.repeat.set(3,3);tex.colorSpace=THREE.SRGBColorSpace;return tex;}
+function* tissueTextureSteps(){const c=document.createElement('canvas');c.width=c.height=256;const x=c.getContext('2d');let seed=1234;const rnd=()=>{seed=(Math.imul(seed,1664525)+1013904223)|0;return(seed>>>0)/4294967296};x.fillStyle='#b39e91';x.fillRect(0,0,256,256);for(let i=0;i<7500;i++){const a=rnd(),b=rnd(),r=rnd()*2+.3;x.fillStyle=`rgba(${rnd()>.5?'205,182,160':'104,83,78'},${rnd()*.15})`;x.beginPath();x.ellipse(a*256,b*256,r,r*.6,0,0,7);x.fill();if(i%256===255)yield;}const tex=new THREE.CanvasTexture(c);tex.wrapS=tex.wrapT=THREE.RepeatWrapping;tex.repeat.set(3,3);tex.colorSpace=THREE.SRGBColorSpace;return tex;}
 function sterileDrape(parent){
   const geometry=new THREE.PlaneGeometry(.78,.96,40,48),p=geometry.attributes.position;
   for(let i=0;i<p.count;i++){const x=p.getX(i),y=p.getY(i),edge=Math.abs(x)/.39;p.setZ(i,-.075*edge**4+.0028*Math.sin(31*x+7*y)*Math.sin(23*y)+.0015*Math.cos(57*x-19*y));}
@@ -36,29 +38,47 @@ function sterileDrape(parent){
   return cover;
 }
 
+function exactSources(view){
+  const sources=[];for(const root of [view.room])root.traverse(m=>{if(m.isMesh)sources.push(m);});
+  for(const mesh of view.tissue?._meshes.values()??[])sources.push(mesh);
+  for(const piece of view.tissue?.fragments.items.values()??[])sources.push(piece.mesh);
+  return sources;
+}
 function prepareExactGeometry(view){
     view.tissue?.blood?.flushRender();view.tissue?.blood?.surfaceFilm?.syncDisplay();view.tissue?.blood?.pooledFilm?.syncDisplay();
     const filmEnd=performance.now();
     if(view.tissue?.ready&&view.assemblies&&view.robotLoaded&&view.renderer.extensions.has('WEBGL_multi_draw')){
       view.exactBatches??=new ExactRenderBatches(view.scene);
-      const sources=[];view.room.traverse(m=>{if(m.isMesh)sources.push(m);});
-      for(const mesh of view.tissue?._meshes.values()??[])sources.push(mesh);
-      for(const piece of view.tissue?.fragments.items.values()??[])sources.push(piece.mesh);
-      view.exactBatches.sync(sources);
+      view.exactBatches.sync(exactSources(view));
     }
     const batchEnd=performance.now();
     return {filmEnd,batchEnd};
 }
 
 export class SurgicalScene{
-  constructor(canvas,stage,mini){
+  constructor(canvas,stage,mini,{deferPreparation=false}={}){
+    this.startupTimings=[];let began=performance.now();const checkpoint=name=>{const end=performance.now();this.startupTimings.push({name,start:began,end,ms:end-began});began=end;};
     this.stage=stage;this.mini=mini;this.mode='endo';this.disposed=false;this.ready=false;
     this.renderer=new THREE.WebGLRenderer({canvas,antialias:true,powerPreference:'high-performance',preserveDrawingBuffer:false});
     this.renderer.setPixelRatio(Math.min(devicePixelRatio,1.5));this.renderer.setSize(stage.clientWidth,stage.clientHeight,false);this.renderer.outputColorSpace=THREE.SRGBColorSpace;this.renderer.toneMapping=THREE.ACESFilmicToneMapping;this.renderer.toneMappingExposure=1.15;
     this.renderer.shadowMap.enabled=true;this.renderer.shadowMap.type=THREE.PCFSoftShadowMap;this.renderer.info.autoReset=false;
-    this.scopeFeed=new ScopeFeed(this.renderer,1.10);
+    checkpoint('webgl-context');this.scopeFeed=new ScopeFeed(this.renderer,1.10);
+    checkpoint('scope-feed-construction');
     this.scene=new THREE.Scene();this.scene.background=new THREE.Color('#a4b3b3');
-    const pmrem=new THREE.PMREMGenerator(this.renderer);this.env=pmrem.fromScene(new RoomEnvironment(),.04);this.scene.environment=this.env.texture;pmrem.dispose();
+    if(deferPreparation)return;
+    const room=new RoomEnvironment(),pmrem=new THREE.PMREMGenerator(this.renderer);this.env=pmrem.fromScene(room,.04);this.scene.environment=this.env.texture;pmrem.dispose();room.dispose();
+    checkpoint('environment-pmrem');runImmediately(this._constructSteps(canvas));
+  }
+  static async create(canvas,stage,mini){
+    await new Promise(resolve=>requestAnimationFrame(resolve));
+    const view=new SurgicalScene(canvas,stage,mini,{deferPreparation:true});
+    view.env=await prepareEnvironment(view.renderer,{onStage:row=>view.startupTimings.push(row)});view.scene.environment=view.env.texture;
+    const work=await runCooperatively(view._constructSteps(canvas),{budgetMs:3});
+    view.startupTimings.push({name:'scene-construction-slices',...work.stats});return view;
+  }
+  *_constructSteps(canvas){
+    const checkpoint=name=>{const end=performance.now();this.startupTimings.push({name,start:this._stepStart??end,end,ms:end-(this._stepStart??end)});this._stepStart=end;};
+    this._stepStart=performance.now();
     this.overviewCamera=new THREE.PerspectiveCamera(42,1,.015,30);this.overviewCamera.position.set(1.68,2.02,-1.92);
     this.endoCamera=new THREE.PerspectiveCamera(55,1,.003,5);this.endoCamera.layers.set(1);
     this.controls=new OrbitControls(this.overviewCamera,canvas);this.controls.target.set(0,1.20,.18);this.controls.enableDamping=true;this.controls.minDistance=.3;this.controls.maxDistance=4;this.controls.maxPolarAngle=Math.PI*.49;this.controls.enabled=false;
@@ -67,12 +87,16 @@ export class SurgicalScene{
     const light=new THREE.DirectionalLight('#fff5e8',2.1);light.position.set(-1.6,3.2,-1.4);light.castShadow=true;light.shadow.mapSize.set(1024,1024);light.shadow.camera.left=-1.6;light.shadow.camera.right=1.6;light.shadow.camera.top=1.6;light.shadow.camera.bottom=-1.6;light.shadow.normalBias=.0015;this.scene.add(light);
     const fill=new THREE.DirectionalLight('#dcebf0',.75);fill.position.set(2.2,1.8,.7);this.scene.add(fill);
     this.scopeLight=new THREE.SpotLight('#fffaf5',.14,.6,.72,.82,1);this.scopeLight.layers.set(1);this.scopeLight.target=new THREE.Object3D();this.scene.add(this.scopeLight,this.scopeLight.target);
-    this._makeRoom();this._makePatient();this._makeTools();this._makeScopeArm();
+    checkpoint('cameras-and-lights');yield;
+    const built=yield* buildOperatingRoomSteps(this.scene,this.scopeFeed.monitorMaterial);
+    this.room=built.room;this.monitor=built.monitor;this.monitorScreen=built.monitorScreen;this.robotPlatform=built.platform;
+    yield;yield* this._makePatientSteps();yield;this._stepStart=performance.now();this._makeTools();this._makeScopeArm();
     this.robot=new THREE.Group();this.robot.position.set(0,1.0922729,.42);this.robot.rotation.y=Math.PI/2;this.scene.add(this.robot);
     this.joints=[];this.robotLoaded=false;this.armTargets={left:new THREE.Vector3(),right:new THREE.Vector3()};this.armErrors={left:0,right:0};this.handPositions={left:new THREE.Vector3(),right:new THREE.Vector3()};this.conceptDecoupled=false;this.kinematicLimited=false;
     this.targetMarker=mesh(new THREE.SphereGeometry(.0011,12,8),new THREE.MeshBasicMaterial({color:'#9de3c6'}),this.scene);this.targetMarker.layers.set(1);this.targetMarker.visible=false;
     this._makeCollisionMarkers();
-    this.resizeObserver=new ResizeObserver(()=>this.resize());this.resizeObserver.observe(stage);this.lastMini=0;
+    this.resizeObserver=new ResizeObserver(()=>this.resize());this.resizeObserver.observe(this.stage);this.lastMini=0;
+    checkpoint('tools-and-markers');
   }
   async loadRobot(){
     const loader=new GLTFLoader();const [gltf,res]=await Promise.all([loader.loadAsync(BASE+'assets/g1.glb'),fetch(BASE+'assets/g1-kinematics.json')]);const meta=await res.json();this.robot.add(gltf.scene);this.robot.updateMatrixWorld(true);
@@ -116,23 +140,24 @@ export class SurgicalScene{
     const built=buildOperatingRoom(this.scene,this.scopeFeed.monitorMaterial);
     this.room=built.room;this.monitor=built.monitor;this.monitorScreen=built.monitorScreen;this.robotPlatform=built.platform;
   }
-  _makePatient(){
+  _makePatient(){return runImmediately(this._makePatientSteps());}
+  *_makePatientSteps(){
     const outer=new THREE.Group();this.patientOuter=outer;this.scene.add(outer);const drape=material('#436c70',.05,.94);drape.normalMap=null;
     sphere([.22,.12,.52],[0,.99,-.13],drape,outer);box([.49,.035,.48],[0,1.03,-.63],drape,outer);box([.49,.035,.46],[0,1.03,.38],drape,outer);
-    const skin=material('#bb8d75',0,.7);sphere([.10,.105,.125],[0,1.035,-.76],skin,outer);sphere([.105,.044,.105],[0,1.11,-.76],material('#558c89',0,.7),outer);
+    yield;const skin=material('#bb8d75',0,.7);sphere([.10,.105,.125],[0,1.035,-.76],skin,outer);sphere([.105,.044,.105],[0,1.11,-.76],material('#558c89',0,.7),outer);
     // A transparent teaching window exposes the anatomical working volume in overview.
     const cutoutMat=material('#c99882',0,.65);cutoutMat.transparent=true;cutoutMat.opacity=.22;cutoutMat.depthWrite=false;
     sphere([.17,.095,.23],[0,1.09,-.02],cutoutMat,outer);
     // Drape portions flank an open work window instead of hiding the intracorporeal scene.
     for(const x of [-.22,.22])box([.11,.04,.51],[x,1.105,-.02],drape,outer);
-    this.cavity=new THREE.Group();this.scene.add(this.cavity);const cavityMat=new THREE.MeshPhysicalMaterial({color:'#b6afa2',roughness:.76,metalness:0,side:THREE.BackSide,map:tissueTexture(),clearcoat:.08,clearcoatRoughness:.58});
+    yield;const cavityTexture=yield* tissueTextureSteps();this.cavity=new THREE.Group();this.scene.add(this.cavity);const cavityMat=new THREE.MeshPhysicalMaterial({color:'#b6afa2',roughness:.76,metalness:0,side:THREE.BackSide,map:cavityTexture,clearcoat:.08,clearcoatRoughness:.58});
     const inner=sphere([.25,.16,.29],[0,1.085,0],cavityMat,this.cavity);inner.layers.set(1);inner.castShadow=false;
     const diaphragm=sphere([.18,.028,.13],[0,1.00,-.14],material('#ac7b74',0,.55),this.cavity);diaphragm.layers.enable(1);
-    this.gallbladder=sphere([.012,.017,.032],[-.032,1.001,.055],new THREE.MeshPhysicalMaterial({color:'#68804b',roughness:.3,clearcoat:.6}),this.cavity);this.gallbladder.rotation.z=.3;this.gallbladder.layers.enable(1);
+    yield;this.gallbladder=sphere([.012,.017,.032],[-.032,1.001,.055],new THREE.MeshPhysicalMaterial({color:'#68804b',roughness:.3,clearcoat:.6}),this.cavity);this.gallbladder.rotation.z=.3;this.gallbladder.layers.enable(1);
     // Small vessels are schematic context; the liver surface itself comes from an anatomical source.
     this.schematicVessels=new THREE.Group();this.cavity.add(this.schematicVessels);
     const vesselMat=material('#794240',.05,.4);for(let i=0;i<3;i++){const curve=new THREE.CatmullRomCurve3([new THREE.Vector3(-.035+i*.014,.997,-.02),new THREE.Vector3(-.025+i*.013,1.003,.016),new THREE.Vector3(-.038+i*.02,1.002,.05)]);const vessel=mesh(new THREE.TubeGeometry(curve,16,.0015,6,false),vesselMat,this.schematicVessels);vessel.layers.enable(1);}
-    this.portMeshes=[];for(const [x,z]of[[-.08,.1],[.08,.1],[0,.14]]){const p=new THREE.Group();p.position.set(x,1.18,z);this.scene.add(p);const ring=mesh(new THREE.TorusGeometry(.009,.0016,8,24),material('#73a7a4',.3,.42),p);ring.rotation.x=Math.PI/2;const cap=mesh(new THREE.CylinderGeometry(.007,.006,.015,20),black,p);cap.position.y=-.006;const sleeve=mesh(new THREE.CylinderGeometry(.0054,.0048,.064,16),steelDark,p);sleeve.position.y=.032;const seal=mesh(new THREE.TorusGeometry(.0061,.0011,8,20),black,p);seal.rotation.x=Math.PI/2;seal.position.y=-.014;this.portMeshes.push(p);}
+    yield;this.portMeshes=[];for(const [x,z]of[[-.08,.1],[.08,.1],[0,.14]]){const p=new THREE.Group();p.position.set(x,1.18,z);this.scene.add(p);const ring=mesh(new THREE.TorusGeometry(.009,.0016,8,24),material('#73a7a4',.3,.42),p);ring.rotation.x=Math.PI/2;const cap=mesh(new THREE.CylinderGeometry(.007,.006,.015,20),black,p);cap.position.y=-.006;const sleeve=mesh(new THREE.CylinderGeometry(.0054,.0048,.064,16),steelDark,p);sleeve.position.y=.032;const seal=mesh(new THREE.TorusGeometry(.0061,.0011,8,20),black,p);seal.rotation.x=Math.PI/2;seal.position.y=-.014;this.portMeshes.push(p);}
   }
   _makeTools(){
     // Empty loading placeholders; all visible instruments come from source CAD.
@@ -276,6 +301,15 @@ export class SurgicalScene{
     this.controls.update();
   }
   prepareRenderGeometry(){return prepareExactGeometry(this);}
+  async prepareRenderGeometryAsync(){
+    if(!this.exactBatches&&this.tissue?.ready&&this.assemblies&&this.robotLoaded&&this.renderer.extensions.has('WEBGL_multi_draw')){
+      this.exactBatches=new ExactRenderBatches(this.scene);
+      const start=performance.now(),work=await runCooperatively(this.exactBatches.syncSteps(exactSources(this)),{budgetMs:3,valid:()=>!this.disposed});
+      if(work.cancelled)throw new Error('Scene preparation cancelled');
+      this.geometryPreparation={name:'initial-exact-batches',start,end:performance.now(),work:work.stats};
+    }
+    return prepareExactGeometry(this);
+  }
   render(now=0){
     const renderStart=performance.now();
     const {filmEnd,batchEnd}=prepareExactGeometry(this);
@@ -303,5 +337,5 @@ export class SurgicalScene{
     r.setScissorTest(false);
     this.renderTimings={filmMs:filmEnd-renderStart,batchMs:batchEnd-filmEnd,layoutMs:captureStart-batchEnd,scopeOnlyMs:scopeEnd-captureStart,scopeMs:scopeEnd-renderStart,overviewMs:performance.now()-scopeEnd,scopeCalls,overviewCalls:(r.info.render?.calls??0)-scopeCalls,multiDraw:r.extensions?.has?.('WEBGL_multi_draw')??false,batching:this.exactBatches?.metrics,resources:{geometries:r.info.memory?.geometries??null,textures:r.info.memory?.textures??null,programs:r.info.programs?.length}};
   }
-  dispose(){this.disposed=true;this.exactBatches?.dispose();this.resizeObserver.disconnect();this.controls.dispose();this.env.dispose();this.scene.traverse(o=>{o.geometry?.dispose();if(o.material){for(const m of Array.isArray(o.material)?o.material:[o.material])if(m!==this.scopeFeed.monitorMaterial)m.dispose();}});this.scopeFeed.dispose();this.renderer.dispose();}
+  dispose(){this.disposed=true;this.exactBatches?.dispose();this.resizeObserver.disconnect();this.controls.dispose();this.env?.dispose();this.scene.traverse(o=>{o.geometry?.dispose();if(o.material){for(const m of Array.isArray(o.material)?o.material:[o.material])if(m!==this.scopeFeed.monitorMaterial)m.dispose();}});this.scopeFeed.dispose();this.renderer.dispose();}
 }

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import {runImmediately} from './cooperative-work.js';
 
 /** Multi-draw transport only. Original meshes remain the authoritative source
  * for CAD, tissue contact, deformation, history and per-part bounds. No vertex,
@@ -39,7 +40,8 @@ export class ExactRenderBatches {
     if(!geometry.references){group.mesh.deleteGeometry(geometry.id);group.geometries.delete(record.sourceGeometry);}
     source.layers.mask=record.mask;this.records.delete(source);
   }
-  sync(sources){
+  sync(sources){return runImmediately(this.syncSteps(sources));}
+  *syncSteps(sources){
     const eligible=new Set(sources.filter(m=>m.isMesh&&!m.isInstancedMesh&&!m.isBatchedMesh&&!m.isSkinnedMesh&&!Array.isArray(m.material)&&!m.material.transparent&&!Object.keys(m.geometry.morphAttributes).length&&m.geometry.drawRange.start===0&&m.geometry.drawRange.count===Infinity));
     for(const [source,record]of this.records){const g=source.geometry;if(!eligible.has(source)||g!==record.sourceGeometry||g.attributes.position.count!==record.geometry.vertices||(g.index?.count??0)!==record.geometry.indices||this._key(source,source.layers.mask||record.mask)!==record.key)this._remove(source,record);}
     const newGroups=new Map();for(const source of eligible)if(!this.records.has(source)){const key=this._key(source,source.layers.mask);if(!newGroups.has(key))newGroups.set(key,[]);newGroups.get(key).push(source);}
@@ -49,6 +51,7 @@ export class ExactRenderBatches {
         if(group.active+1>group.instances){group.instances=Math.ceil(group.instances*1.5);group.mesh.setInstanceCount(group.instances);}
         const geometry=this._geometry(group,source.geometry),instance=group.mesh.addInstance(geometry.id);geometry.references++;group.active++;
         this.records.set(source,{key,group,geometry,instance,sourceGeometry:source.geometry,mask:source.layers.mask,matrix:new THREE.Matrix4().makeScale(0,0,0),visible:null});source.layers.mask=0;
+        yield;
       }
     }
     this.root.updateMatrixWorld(true);this.inverse.copy(this.root.matrixWorld).invert();

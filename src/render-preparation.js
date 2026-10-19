@@ -6,7 +6,8 @@ import {runCooperatively} from './cooperative-work.js';
 export async function prepareSceneMaterials(view,{width,height,yieldFrame=()=>new Promise(resolve=>requestAnimationFrame(resolve))}={}){
   const r=view.renderer,scene=view.scene,inner=view.cavity.children[0];
   const saved={target:r.getRenderTarget(),background:scene.background,environmentIntensity:scene.environmentIntensity,exposure:r.toneMappingExposure,visible:inner.visible};
-  view.prepareRenderGeometry();view.scopeFeed.reserve(r,width,height);
+  if(view.prepareRenderGeometryAsync)await view.prepareRenderGeometryAsync();else view.prepareRenderGeometry();
+  view.scopeFeed.reserve(r,width,height);
   try{
     await yieldFrame();
     inner.visible=true;scene.environmentIntensity=.34;r.toneMappingExposure=1.10;

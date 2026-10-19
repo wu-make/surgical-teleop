@@ -2,7 +2,12 @@
  * never alters the controller, geometry density, render resolution or timestep. */
 export class FrameMetrics {
   constructor(limit=7200){this.limit=limit;this.clear();}
-  clear(){this.rows=[];this.head=0;this.cached={};this.totals={};this.lastSample=null;this.slowFrames=[];this.worstFrames=[];this.presentationChanges=[];}
+  clear(){this.rows=[];this.head=0;this.cached={};this.totals={};this.lastSample=null;this.slowFrames=[];this.worstFrames=[];this.presentationChanges=[];this.windows=new Map();}
+  pinWindow(label,at,{beforeMs=100,afterMs=700}={}){
+    const key=label+':'+at;if(this.windows.has(key)||!Number.isFinite(at))return;
+    const start=at-beforeMs,end=at+afterMs,intervals=this.rows.filter(r=>Number.isFinite(r.endedAt)&&r.endedAt>=start&&r.endedAt-r.ms<=end).map(r=>({...r}));
+    intervals.sort((a,b)=>a.endedAt-b.endedAt);this.windows.set(key,{label,at,start,end,intervals});
+  }
   observePresentation(fullscreen,width,height,pixelRatio,atMs){
     const last=this.presentationChanges.at(-1);
     if(last&&last.fullscreen===fullscreen&&last.width===width&&last.height===height&&last.pixelRatio===pixelRatio)return;
@@ -22,6 +27,8 @@ export class FrameMetrics {
     total.maxMs=Math.max(total.maxMs,milliseconds);if(milliseconds>33.34)total.over33ms++;if(milliseconds>50)total.over50ms++;
     if(milliseconds>33.34){const row={ms:milliseconds,phase,...(work?{work:structuredClone(work())}:{})};this.slowFrames.push(row);if(this.slowFrames.length>64)this.slowFrames.shift();this.worstFrames.push(row);this.worstFrames.sort((a,b)=>b.ms-a.ms);this.worstFrames.length=Math.min(8,this.worstFrames.length);}
     const row={ms:milliseconds,phase,...(Number.isFinite(endedAt)?{endedAt}:{})};if(this.rows.length<this.limit)this.rows.push(row);else{this.rows[this.head]=row;this.head=(this.head+1)%this.limit;}
+    if(Number.isFinite(endedAt))for(const window of this.windows.values())if(endedAt>=window.start&&endedAt-milliseconds<=window.end)window.intervals.push({...row});
+    if(milliseconds>50)this.onLongFrame?.(this.slowFrames.at(-1));
   }
   summarize(){
     const groups=new Map();for(const row of this.rows){if(!groups.has(row.phase))groups.set(row.phase,[]);groups.get(row.phase).push(row.ms);}
@@ -31,7 +38,7 @@ export class FrameMetrics {
   report({includeIntervals=false}={}){
     const report={units:'milliseconds for intervals; seconds for measured duration',
       scope:'Since reset or example start; excludes paused, hidden and history restoration intervals. Frame time is not simulation time.',
-      session:structuredClone(this.totals),slowFrames:structuredClone(this.slowFrames),worstFrames:structuredClone(this.worstFrames),presentationChanges:structuredClone(this.presentationChanges),recentWindow:{capacityFrames:this.limit,retainedFrames:this.rows.length,phases:this.summarize()}};
+      session:structuredClone(this.totals),slowFrames:structuredClone(this.slowFrames),worstFrames:structuredClone(this.worstFrames),presentationChanges:structuredClone(this.presentationChanges),pinnedWindows:structuredClone([...this.windows.values()]),recentWindow:{capacityFrames:this.limit,retainedFrames:this.rows.length,phases:this.summarize()}};
     if(includeIntervals)report.recentWindow.intervals=[...this.rows.slice(this.head),...this.rows.slice(0,this.head)].map(row=>({...row}));
     return report;
   }

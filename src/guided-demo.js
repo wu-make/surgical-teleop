@@ -249,8 +249,21 @@ export class GuidedDemo {
     return this.tissue.group.localToWorld((this.tissue.deformPoint?.(point)??point).clone());
   }
 
-  _beginFragmentMove() {
-    this.sim.setCutting(false);
+  _beginFragmentMove(){
+    this.sim.setCutting(false);this._acceptFragmentRoute(runImmediately(this._fragmentRouteSteps()));
+  }
+  async _beginFragmentMoveAsync(options={}){
+    this.sim.setCutting(false);const token=this._planningToken=(this._planningToken??0)+1,epoch=this.tissue._epoch,held=this.interaction.grasp?.fragmentId,tools=JSON.stringify(this.sim.state.tools);
+    this.mode='planning';this.phase='planning-move';this.phaseTime=0;
+    const valid=()=>this.active&&this._planningToken===token&&this.tissue._epoch===epoch&&this.interaction.grasp?.fragmentId===held&&JSON.stringify(this.sim.state.tools)===tools;
+    try{
+      const result=await runCooperatively(this._fragmentRouteSteps(),{...options,valid});
+      if(result.cancelled||!valid()){if(this._planningToken===token)this.stop('移开路径准备已取消，标本仍由实际夹持状态决定');return false;}
+      this.fragmentRouteTimings=result.stats;this.mode='example';this._acceptFragmentRoute(result.value);return !!result.value;
+    }catch(error){if(this._planningToken===token)this.stop('移开路径准备未完成，请手动退出右剪');throw error;}
+  }
+  *_fragmentRouteSteps(){
+    const snapshot=this.sim.snapshot();
     this.rightRetractStart=new THREE.Vector3(...this.sim.state.tools.right.position);
     const left=new THREE.Vector3(...this.sim.state.tools.left.position),up=new THREE.Vector3(0,1,0);
     const withdrawal=new THREE.Vector3(...this.sim.state.tools.right.port).sub(this.rightRetractStart).normalize();
@@ -261,14 +274,18 @@ export class GuidedDemo {
     let route=null;
     for(const rightTarget of rightCandidates){
       for(const leftTarget of leftCandidates){
-        const probe=new this.sim.constructor();probe.restore(this.sim.snapshot());probe.setPaused(false);
-        if(probe.moveToolTo(rightTarget.toArray(),'right').limited)continue;
-        probe.setJaw('right',.75);
-        if(probe.state.tools.right.jaw<.7||probe.moveToolTo(leftTarget.toArray(),'left').limited)continue;
+        const probe=new this.sim.constructor();probe.restore(snapshot);probe.setPaused(false);yield;
+        const rightBlocked=probe.moveToolTo(rightTarget.toArray(),'right').limited;yield;if(rightBlocked)continue;
+        probe.setJaw('right',.75);yield;
+        if(probe.state.tools.right.jaw<.7)continue;
+        const leftBlocked=probe.moveToolTo(leftTarget.toArray(),'left').limited;yield;if(leftBlocked)continue;
         route={rightTarget,leftTarget};break;
       }
       if(route)break;
     }
+    return route;
+  }
+  _acceptFragmentRoute(route){
     if(!route){this.stop('独立组织块已切离并仍由左钳夹持，但没有通过双器械防碰撞的自动移开路径，请手动退出右剪');return;}
     this.rightRetractEnd=route.rightTarget;this.leftAway=route.leftTarget;
     this._phase('retract','基底已真正断开：独立组织块仍在左钳上，先退出右剪再移开');
@@ -295,7 +312,7 @@ export class GuidedDemo {
       return;
     }
     if(['close-right','raster','wait-separation'].includes(this.phase)&&this.interaction.grasp?.kind==='fragment'){
-      this._beginFragmentMove();return;
+      void this._beginFragmentMoveAsync().catch(error=>console.error(error));return;
     }
     this.phaseTime+=dt;
     const progress=seconds=>smooth(Math.min(1,this.phaseTime/seconds));

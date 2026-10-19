@@ -18,6 +18,11 @@ test('material preparation restores target and lighting after compile rejection 
   const f=fixture(true);await assert.rejects(prepareSceneMaterials(f.view,{width:1920,height:1080,yieldFrame:f.yieldFrame}),/compile failed/);
   assert.equal(f.view.renderer.target,f.previous);assert.equal(f.inner.visible,true);assert.equal(f.view.scene.environmentIntensity,2);assert.equal(f.view.renderer.toneMappingExposure,1.7);
 });
+test('all exact initial buffers complete cooperatively before compiling either real view',async()=>{
+  const f=fixture();f.view.prepareRenderGeometryAsync=async()=>{f.calls.push({kind:'buffer-start'});await f.yieldFrame();f.calls.push({kind:'buffer-complete'});};
+  await prepareSceneMaterials(f.view,{width:1920,height:1080,yieldFrame:f.yieldFrame});
+  assert.deepEqual(f.calls.map(c=>c.kind),['buffer-start','yield','buffer-complete','reserve','yield','compile','yield','compile']);
+});
 
 test('first-use warming uploads complete real geometry in bounded units and restores exact layers and culling',async()=>{
   const {warmSceneDisplay}=await import('../src/render-preparation.js');const f=fixture(),objects=[1,2,3].map((mask,i)=>({isMesh:true,visible:true,layers:{mask},frustumCulled:true,geometry:{id:i,vertices:new Float32Array([i,2,3])},material:{id:i}}));

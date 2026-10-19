@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import {ExactRenderBatches} from '../src/exact-render-batches.js';
+import {runCooperatively} from '../src/cooperative-work.js';
 function verify(batcher,source){
   const record=batcher.records.get(source);assert(record);const batch=record.group.mesh,range=batch.getGeometryRangeAt(record.geometry.id),matrix=new THREE.Matrix4();batch.getMatrixAt(record.instance,matrix);matrix.premultiply(batcher.root.matrixWorld);
   const expected=new THREE.Vector3(),actual=new THREE.Vector3(),g=source.geometry;
@@ -45,4 +46,10 @@ test('batch capacity operations retain precise timestamps while preserving every
     assert(batches.metrics.operationCounts.compact>0);assert(batches.metrics.operationCounts.resize>0);
     for(const row of batches.metrics.operations){assert(row.end>=row.start);assert(row.ms>=0);assert(row.vertexCapacity>0);}assert(batches.metrics.operations.length<=32);assert(batches.metrics.worstOperations.length<=8);
   }finally{batches.dispose();sources.forEach(m=>m.geometry.dispose());material.dispose();}
+});
+
+test('initial batch preparation yields between full geometries and preserves identical final buffers',async()=>{
+  const root=new THREE.Scene(),material=new THREE.MeshStandardMaterial(),sources=Array.from({length:12},(_,i)=>{const m=new THREE.Mesh(new THREE.SphereGeometry(.01+i*.001,12,8),material);m.position.set(i*.01,.03,.1);root.add(m);return m;}),batches=new ExactRenderBatches(root);let yields=0;
+  try{const result=await runCooperatively(batches.syncSteps(sources),{budgetMs:0,yieldFrame:async()=>{yields++;}});assert.equal(result.cancelled,false);assert(yields>sources.length);assert.equal(batches.records.size,sources.length);for(const source of sources)verify(batches,source);}
+  finally{batches.dispose();sources.forEach(m=>m.geometry.dispose());material.dispose();}
 });
