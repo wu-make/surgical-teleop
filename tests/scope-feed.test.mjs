@@ -41,6 +41,12 @@ class RendererProbe {
   }
 }
 
+test('endoscope uses supported HDR color/depth MSAA intersection without changing active pixels',()=>{
+  const renderer=new RendererProbe(),gl={RENDERBUFFER:1,RGBA16F:2,RGBA8:3,DEPTH_COMPONENT24:4,SAMPLES:5,getInternalformatParameter:(_,format)=>format===4?new Int32Array([4,2]):new Int32Array([8,4,2])};renderer.getContext=()=>gl;
+  const feed=new ScopeFeed(renderer);try{assert.equal(feed.target.samples,4);feed.reserve(renderer,1000,800);feed.capture(renderer,new THREE.Scene(),new THREE.PerspectiveCamera(),640,400);assert.deepEqual(feed.resolution,{width:960,height:600});assert.deepEqual(feed.outputMaterial.uniforms.feedClamp.value.toArray(),[.5/1500,.5/1200,959.5/1500,599.5/1200]);assert.equal(feed.monitorMaterial.uniforms.feedClamp,feed.outputMaterial.uniforms.feedClamp);}finally{feed.dispose();}
+  gl.getInternalformatParameter=(_,format)=>format===4?new Int32Array([2]):new Int32Array([4,2]);const two=new ScopeFeed(renderer);assert.equal(two.target.samples,2);two.dispose();gl.getInternalformatParameter=()=>new Int32Array([]);const none=new ScopeFeed(renderer);assert.equal(none.target.samples,0);none.dispose();
+});
+
 test('the endoscope uses a linear HDR target and exactly one official display conversion per output', () => {
   const feed = new ScopeFeed(new RendererProbe(), 1.10);
   assert.equal(feed.target.texture.type, THREE.HalfFloatType);

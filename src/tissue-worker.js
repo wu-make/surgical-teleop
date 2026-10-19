@@ -629,6 +629,7 @@ function statistics(state) { return { removedVolumeMm3: state.removedVolumeMm3, 
 if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScope) {
   let state;const woundChunks=new Map(),woundFragments=new Map();
   self.onmessage = ({ data }) => {
+    const started=performance.now();let phaseAt=started;const work={};const phase=name=>{const at=performance.now();work[name]=at-phaseAt;phaseAt=at;};
     try {
       let chunks, changedSamples = 0, removedMm3 = 0, fragments = [], exclusions = { nodeIndices: new Uint32Array(), positiveValues: new Float32Array() };
       if (data.type === 'init') {
@@ -656,18 +657,27 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
         fragments = restored.fragments; exclusions = restored.exclusions;
         chunks = buildChunks(state, allChunkKeys(state));
       } else throw new Error(`Unknown tissue operation: ${data.type}`);
+      phase('volumeAndChunksMs');
       if(data.type!=='cut'){woundChunks.clear();woundFragments.clear();}
       for(const chunk of chunks){woundChunks.delete(chunk.key);if(chunk.positions.length)woundChunks.set(chunk.key,chunk.woundSurface);delete chunk.woundSurface;}
       for(const fragment of fragments)woundFragments.set(fragment.id,{id:fragment.id,surface:prepareWoundSurface(fragment,true)});
-      const woundSelection=selectWoundSurface(woundChunks.values(),woundFragments.values());
+      // A repeated/air pass with no changed chunks has exactly the previous
+      // exposed surface. Reuse it on the receiver; do not rebuild/retransfer
+      // the same 320-cell selection while the instrument continues moving.
+      const reuseWoundSelection=data.type==='cut'&&!chunks.length&&!fragments.length&&!exclusions.nodeIndices.length;
+      const woundSelection=reuseWoundSelection?null:selectWoundSurface(woundChunks.values(),woundFragments.values());
+      phase('woundSelectionMs');
       for(const fragment of fragments)fragment.display=prepareFragmentDisplay(fragment);
+      phase('fragmentDisplayMs');
       for(const chunk of chunks)if(chunk.positions.length)chunk.contactTree=buildSurfaceTree(chunk.positions,chunk.indices);
+      phase('contactTreesMs');
       const transfer = chunks.flatMap(chunk => [chunk.positions.buffer, chunk.normals.buffer, chunk.colors.buffer, chunk.cutMasks.buffer, chunk.indices.buffer]);
       for (const fragment of fragments)transfer.push(fragment.positions.buffer, fragment.normals.buffer, fragment.colors.buffer, fragment.cutMasks.buffer, fragment.indices.buffer, fragment.volume.values.buffer,fragment.display.positions.buffer,fragment.display.normals.buffer,fragment.display.support.buffer);
       for(const owner of [...chunks,...fragments.map(f=>f.display)])if(owner.contactTree)transfer.push(owner.contactTree.boundsStore.buffer,owner.contactTree.triangles.buffer);
-      transfer.push(woundSelection.edges.buffer);
+      if(woundSelection)transfer.push(woundSelection.edges.buffer);
       transfer.push(exclusions.nodeIndices.buffer, exclusions.positiveValues.buffer);
-      self.postMessage({ id: data.id, epoch: data.epoch, type: data.type, chunks,woundSelection, statistics: statistics(state), changedSamples, removedMm3, fragments,
+      work.totalMs=performance.now()-started;
+      self.postMessage({ id: data.id, epoch: data.epoch, type: data.type, chunks,woundSelection,reuseWoundSelection,work, statistics: statistics(state), changedSamples, removedMm3, fragments,
         exclusions: { reset: data.type !== 'cut', ...exclusions }, separations: state.separations.map(event => ({ ...event })) }, transfer);
     } catch (error) { self.postMessage({ id: data.id, epoch: data.epoch, error: error.message }); }
   };

@@ -2,34 +2,45 @@ import * as THREE from 'three';
 import { OutputShader } from 'three/addons/shaders/OutputShader.js';
 import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 
+function sampleCount(renderer,hdr){
+  const gl=renderer.getContext?.();if(!gl?.getInternalformatParameter)return 0;
+  try{
+    const color=Array.from(gl.getInternalformatParameter(gl.RENDERBUFFER,hdr?gl.RGBA16F:gl.RGBA8,gl.SAMPLES));
+    const depth=Array.from(gl.getInternalformatParameter(gl.RENDERBUFFER,gl.DEPTH_COMPONENT24,gl.SAMPLES));
+    return Math.max(0,...color.filter(n=>n>0&&n<=4&&depth.includes(n)));
+  }catch{return 0;}
+}
+
 /** One linear endoscope render, reused by the viewport and operating-room LCD.
  * Official Three output conversion applies ACES and sRGB exactly once. */
 export class ScopeFeed {
   constructor(renderer, exposure = 1.10) {
     const hdr = renderer.extensions?.has('EXT_color_buffer_float') ?? false;
     this.target = new THREE.WebGLRenderTarget(1, 1, { type: hdr ? THREE.HalfFloatType : THREE.UnsignedByteType,
-      minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, depthBuffer: true });
+      minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, depthBuffer: true, samples:sampleCount(renderer,hdr) });
     this.target.texture.colorSpace = THREE.LinearSRGBColorSpace;
     this.target.texture.name = 'Linear_Real_Time_Endoscope_Feed';
     const uniforms = THREE.UniformsUtils.clone(OutputShader.uniforms);
     uniforms.feedScale = { value: new THREE.Vector2(1, 1) };
+    uniforms.feedClamp = { value:new THREE.Vector4(.5,.5,.5,.5) };
     uniforms.tDiffuse.value = this.target.texture; uniforms.toneMappingExposure.value = exposure;
     this.outputMaterial = new THREE.RawShaderMaterial({ ...OutputShader, uniforms,
       defines: { ACES_FILMIC_TONE_MAPPING: '', SRGB_TRANSFER: '' }, depthTest: false, depthWrite: false, toneMapped: false,
-      fragmentShader: OutputShader.fragmentShader.replace('varying vec2 vUv;', 'varying vec2 vUv;\nuniform vec2 feedScale;')
-        .replace('texture2D( tDiffuse, vUv )', 'texture2D( tDiffuse, vUv * feedScale )') });
+      fragmentShader: OutputShader.fragmentShader.replace('varying vec2 vUv;', 'varying vec2 vUv;\nuniform vec2 feedScale;\nuniform vec4 feedClamp;')
+        .replace('texture2D( tDiffuse, vUv )', 'texture2D( tDiffuse, clamp(vUv * feedScale,feedClamp.xy,feedClamp.zw) )') });
     const monitorUniforms = THREE.UniformsUtils.clone(OutputShader.uniforms);
     monitorUniforms.tDiffuse.value = this.target.texture; monitorUniforms.toneMappingExposure.value = exposure;
     monitorUniforms.feedAspect = { value: 1 }; monitorUniforms.screenAspect = { value: 1.6 };
     monitorUniforms.feedScale = uniforms.feedScale;
+    monitorUniforms.feedClamp = uniforms.feedClamp;
     this.monitorMaterial = new THREE.RawShaderMaterial({ ...OutputShader, uniforms: monitorUniforms,
       defines: { ACES_FILMIC_TONE_MAPPING: '', SRGB_TRANSFER: '' }, toneMapped: false,
-      fragmentShader: OutputShader.fragmentShader.replace('varying vec2 vUv;', 'varying vec2 vUv;\nuniform vec2 feedScale;\nuniform float feedAspect;\nuniform float screenAspect;')
+      fragmentShader: OutputShader.fragmentShader.replace('varying vec2 vUv;', 'varying vec2 vUv;\nuniform vec2 feedScale;\nuniform vec4 feedClamp;\nuniform float feedAspect;\nuniform float screenAspect;')
         .replace('gl_FragColor = texture2D( tDiffuse, vUv );', `vec2 feedUV=vUv;
 float fit=screenAspect/feedAspect;
 if(fit>1.0)feedUV.x=(feedUV.x-.5)*fit+.5;else feedUV.y=(feedUV.y-.5)/fit+.5;
 if(any(lessThan(feedUV,vec2(0.0)))||any(greaterThan(feedUV,vec2(1.0)))){gl_FragColor=vec4(.008,.012,.016,1.0);return;}
-gl_FragColor = texture2D( tDiffuse, feedUV * feedScale );`) });
+gl_FragColor = texture2D( tDiffuse, clamp(feedUV * feedScale,feedClamp.xy,feedClamp.zw) );`) });
     this.quad = new FullScreenQuad(this.outputMaterial);
     this.resolution = { width: 1, height: 1 }; this.disposed = false;
   }
@@ -47,6 +58,7 @@ gl_FragColor = texture2D( tDiffuse, feedUV * feedScale );`) });
     if (this.target.width < w || this.target.height < h) this.target.setSize(Math.max(this.target.width,w),Math.max(this.target.height,h));
     this.target.viewport.set(0,0,w,h);
     this.outputMaterial.uniforms.feedScale.value.set(w/this.target.width,h/this.target.height);
+    this.outputMaterial.uniforms.feedClamp.value.set(.5/this.target.width,.5/this.target.height,(w-.5)/this.target.width,(h-.5)/this.target.height);
     this.resolution = { width: w, height: h };
     camera.aspect = width / Math.max(1, height); camera.updateProjectionMatrix();
     this.monitorMaterial.uniforms.feedAspect.value = camera.aspect;

@@ -30,6 +30,7 @@ export class TissueVolume {
     this._meshes = new Map();
     this._bloodBroadPhase=new MeshBroadPhase();this._bloodQueryMeshes=[];
     this.updateTimings={};
+    this.operationMetrics={};
     this.transitionTimings=[];
     this._cuts = [];
     this._cutGroups = [];
@@ -492,7 +493,7 @@ export class TissueVolume {
     if (!this.worker) return Promise.reject(new Error('Tissue worker is not available'));
     this.busy = true;
     return new Promise((resolve, reject) => {
-      this._commands.push({ ...operation, epoch: this._epoch, resolve, reject });
+      this._commands.push({ ...operation, epoch: this._epoch,queuedAt:performance.now(), resolve, reject });
       queueMicrotask(() => this._flush());
     });
   }
@@ -510,8 +511,9 @@ export class TissueVolume {
       }
     }
     command.id = ++this._sequence;
+    command.sentAt=performance.now();
     this._inFlight = { command, callbacks };
-    const { resolve, reject, transfer, ...message } = command;
+    const { resolve, reject, transfer,queuedAt,sentAt, ...message } = command;
     this.worker.postMessage(message, transfer ?? []);
   }
 
@@ -540,10 +542,14 @@ export class TissueVolume {
       for (const chunk of data.chunks) this._replaceChunk(chunk);
       Object.assign(this, data.statistics);
       const woundStart=performance.now();
+      if(data.woundSelection)this._lastWoundSelection=data.woundSelection;
+      const woundSelection=data.reuseWoundSelection?this._lastWoundSelection:data.woundSelection;
       if(data.type==='restore'){this.blood.restore(this._restoringBlood);this._restoringBlood=null;if(!this.blood.nodes.length)this.blood.syncSurface({selection:data.woundSelection});}
-      else if(data.type==='cut')this.blood.syncSurface({injury:data.removedMm3>1e-8,selection:data.woundSelection,deferRender:this.blood.surfaceFilm.gpu});
+      else if(data.type==='cut')this.blood.syncSurface({injury:data.removedMm3>1e-8,selection:woundSelection,deferRender:this.blood.surfaceFilm.gpu});
       else if(data.type==='init')this.blood.reset();
-      this.updateTimings={receivedAt:receiveStart,receiveMs:performance.now()-receiveStart,exclusionsMs:fragmentsStart-exclusionsStart,fragmentsMs:fragmentsEnd-fragmentsStart,chunksMs:woundStart-fragmentsEnd,woundMs:performance.now()-woundStart,chunks:data.chunks.length,fragments:data.fragments?.length??0};
+      const roundTripMs=Number.isFinite(active.command.sentAt)?receiveStart-active.command.sentAt:null,queueMs=Number.isFinite(active.command.queuedAt)?active.command.sentAt-active.command.queuedAt:null;
+      this.updateTimings={receivedAt:receiveStart,receiveMs:performance.now()-receiveStart,exclusionsMs:fragmentsStart-exclusionsStart,fragmentsMs:fragmentsEnd-fragmentsStart,chunksMs:woundStart-fragmentsEnd,woundMs:performance.now()-woundStart,chunks:data.chunks.length,fragments:data.fragments?.length??0,roundTripMs,queueMs,worker:data.work??null,reusedWoundSelection:!!data.reuseWoundSelection};
+      const metrics=this.operationMetrics[data.type]??={responses:0,changedResponses:0,reusedSelections:0,roundTripTotalMs:0,roundTripMaxMs:0,workerTotalMs:0,workerMaxMs:0,applyMaxMs:0};metrics.responses++;metrics.changedResponses+=data.chunks.length>0?1:0;metrics.reusedSelections+=data.reuseWoundSelection?1:0;metrics.roundTripTotalMs+=roundTripMs??0;metrics.roundTripMaxMs=Math.max(metrics.roundTripMaxMs,roundTripMs??0);metrics.workerTotalMs+=data.work?.totalMs??0;metrics.workerMaxMs=Math.max(metrics.workerMaxMs,data.work?.totalMs??0);metrics.applyMaxMs=Math.max(metrics.applyMaxMs,this.updateTimings.receiveMs);
       if(data.fragments?.length){this.transitionTimings.push({...this.updateTimings});if(this.transitionTimings.length>8)this.transitionTimings.shift();}
       const result = { changed: !!data.changedSamples || data.type !== 'cut', removedMm3: data.removedMm3, removedVolumeMm3: this.removedVolumeMm3, totalVolumeMm3: this.totalVolumeMm3,
         fragments: (data.fragments ?? []).map(fragment => fragment.id) };

@@ -36,11 +36,12 @@ export function connectWoundNodes(nodes){
 /** Same deterministic source/capsule selection as the original main-thread
  * scan, now prepared beside the geometry worker's persistent chunk cache. */
 export function selectWoundSurface(chunks,fragments=[]){
-  const candidates=new Map(),capsule=[];
+  const candidates=new Map(),capsules=[];
   const collect=(surface,fragmentId=null)=>{
-    for(const [data,cut]of [[surface.cuts,true],[surface.capsule,false]])for(let i=0;i<data.length;i+=8){
-      const reference=Array.from(data.subarray(i,i+3)),key=reference.map(v=>Math.round(v/.0025)).join(':'),entry={key,reference,restNormal:Array.from(data.subarray(i+3,i+6)),area:data[i+6],cut,fragmentId,seed:seedOf(key)};
-      if(!cut){capsule.push(entry);continue;}
+    capsules.push({data:surface.capsule,fragmentId});
+    const data=surface.cuts;
+    for(let i=0;i<data.length;i+=8){
+      const reference=[data[i],data[i+1],data[i+2]],key=reference.map(v=>Math.round(v/.0025)).join(':'),entry={key,reference,restNormal:[data[i+3],data[i+4],data[i+5]],area:data[i+6],cut:true,fragmentId,seed:seedOf(key)};
       const old=candidates.get(key),sourceArea=Math.min(6.25,(old?.sourceArea??0)+data[i+7]);
       if(!old||old.area<entry.area)candidates.set(key,{...entry,sourceArea});else old.sourceArea=sourceArea;
     }
@@ -49,6 +50,16 @@ export function selectWoundSurface(chunks,fragments=[]){
   const cuts=[...candidates.values()].sort((a,b)=>a.seed-b.seed).slice(0,240),low=[Infinity,Infinity,Infinity],high=[-Infinity,-Infinity,-Infinity];
   for(const c of cuts)for(let i=0;i<3;i++){low[i]=Math.min(low[i],c.reference[i]-.012);high[i]=Math.max(high[i],c.reference[i]+.012);}
   const adjacent=[];
-  for(const c of capsule){if(adjacent.length>=80)break;if(c.reference.some((v,i)=>v<low[i]||v>high[i]))continue;if(!candidates.has(c.key)&&cuts.some(n=>n.reference.reduce((s,v,i)=>s+(v-c.reference[i])**2,0)<.000144)){candidates.set(c.key,c);adjacent.push(c);}}
+  // Retain the exact original traversal, keys and neighbours, but reject the
+  // distant capsule records before allocating their temporary JS objects.
+  capsuleScan:for(const {data,fragmentId}of capsules)for(let i=0;i<data.length;i+=8){
+    if(adjacent.length>=80)break capsuleScan;
+    const x=data[i],y=data[i+1],z=data[i+2];
+    if(x<low[0]||x>high[0]||y<low[1]||y>high[1]||z<low[2]||z>high[2])continue;
+    const reference=[x,y,z],key=reference.map(v=>Math.round(v/.0025)).join(':');
+    if(candidates.has(key)||!cuts.some(n=>n.reference.reduce((s,v,k)=>s+(v-reference[k])**2,0)<.000144))continue;
+    const entry={key,reference,restNormal:[data[i+3],data[i+4],data[i+5]],area:data[i+6],cut:false,fragmentId,seed:seedOf(key)};
+    candidates.set(key,entry);adjacent.push(entry);
+  }
   const nodes=[...cuts,...adjacent];return{nodes,edges:new Uint16Array(connectWoundNodes(nodes).flat())};
 }

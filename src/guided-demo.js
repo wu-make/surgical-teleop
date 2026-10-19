@@ -308,7 +308,7 @@ export class GuidedDemo {
         this.end=this.tissue.group.localToWorld(this.approachFragment.anchor.clone().applyQuaternion(piece.quaternion).add(piece.position).addScaledVector(normal,.0007));
       }
       if (!this.move(this.start.clone().lerp(this.end, smooth(Math.min(1, this.time / 1.1))).toArray(), this.side)) return;
-      if (this.time >= 1.1) { this.active = false; this.onMessage(this._bleedingKey?'已闭合接近渗血切面：按住 H 局部压迫，松开后检查是否再渗血':this.approachFragment?'已接近独立标本表面：按 C 闭合重抓，随后可移动或旋转':'已贴近组织表面：C 闭合，E 抬起；右剪需开启剪切'); this.onChange(); }
+      if (this.time >= 1.1) { this.active = false;if(this.side==='right'&&!this._bleedingKey)this.sim.setCutting(true); this.onMessage(this._bleedingKey?'已闭合接近渗血切面：按住 H 局部压迫，松开后检查是否再渗血':this.approachFragment?'已接近独立标本表面：按 C 闭合重抓，随后可移动或旋转':'已贴近组织表面：C 闭合，E 抬起；右剪 C 闭合即可剪切'); this.onChange(); }
       return;
     }
     if(['close-right','raster','wait-separation'].includes(this.phase)&&this.interaction.grasp?.kind==='fragment'){

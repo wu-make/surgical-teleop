@@ -4,7 +4,7 @@ import {CUT_SWEEP,captureBladePose,bladeSpan,sampleBladeSpan} from './blade-swee
 
 const copy = value => value == null ? null : structuredClone(value);
 const localPoint = (tissue, point) => tissue.group.worldToLocal(new THREE.Vector3(...point));
-const contactState=()=>({left:false,right:false,leftFragmentId:null,rightDepthMm:0,cutting:false,bladeContact:false,bladeDistanceMm:null,bladeSource:null,cutContactPointWorld:null,pendingCutSamples:0,pendingCutFrames:0,cutBacklogMm:0,cutStatus:'disabled',cutReason:'按 B 开启剪切模式'});
+const contactState=()=>({left:false,right:false,leftFragmentId:null,rightDepthMm:0,cutting:false,bladeContact:false,bladeDistanceMm:null,bladeSource:null,cutContactPointWorld:null,pendingCutSamples:0,pendingCutFrames:0,cutBacklogMm:0,cutStatus:'ready',cutReason:'右剪就绪：接触组织后按 C 闭合剪切'});
 const finitePoint=point=>point?.isVector3?point.toArray().every(Number.isFinite):Array.isArray(point)&&point.length===3&&point.every(Number.isFinite);
 const asVector=point=>point?.isVector3?point.clone():new THREE.Vector3(...point);
 // CAD TCP is at the jaws. This is a contact tolerance for the 1.5 mm volume,
@@ -385,7 +385,7 @@ export class InteractionController {
     this.contact.cutting = !!this._cutTask;
     const jaw=right.jaw;
     if(compressing){this.lastCut=null;this._breakCutTrajectory();this._setCutStatus('pressure',this.tissue.blood?.pressureContacts?'局部压迫中：观察渗血变化；松开 H 后继续检查':'压迫需稳定接触渗血切面：闭合器械，精细贴近；左钳需先释放组织');}
-    else if(!this.sim.state.cutting){this.lastCut=null;this._noMaterialAttempt=null;this._breakCutTrajectory();this._setCutStatus('disabled','按 B 开启剪切模式');}
+    else if(!this.sim.state.cutting){this.lastCut=null;this._noMaterialAttempt=null;this._breakCutTrajectory();this._setCutStatus('disabled','右剪待命：按 C 闭合剪切');}
     else if(jaw>.22 && !(this._jawObservation!=null && jaw<this._jawObservation-1e-6)){
       // Retain the open CAD pose as the start of a closure, without cutting
       // while opening or parked open. Closing samples the actual opposing edges.
