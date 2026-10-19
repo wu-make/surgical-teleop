@@ -24,9 +24,9 @@ export class BloodFlow {
     this.dropsMesh=new THREE.InstancedMesh(new THREE.SphereGeometry(1,10,7),blood,MAX_DROPS);
     this.fibres=new THREE.InstancedMesh(new THREE.CapsuleGeometry(1,1,2,5),fibre,MAX_NODES);
     for(const m of [this.film,this.poolMesh,this.dropsMesh,this.fibres]){m.layers.enable(1);m.frustumCulled=false;m.castShadow=m.receiveShadow=m===this.fibres;if(m.isInstancedMesh)m.count=0;this.group.add(m);}
-    this._surfaceCache=new Map();this.reset();
+    this._surfaceCache=new Map();this._flowOut=new Float64Array(MAX_NODES);this._flowDelta=new Float64Array(MAX_NODES);this._transfers=[];this.reset();
   }
-  reset(){this.nodes=[];this.drops=[];this.emitted=0;this.escaped=0;this.reservoir=0;this.clock=0;this.pressureExposure=0;this.lastPressureClock=-1;this.lastPressureContacts=0;this.pressureActive=false;this.pressureContacts=0;this._accumulator=0;this._neighbours=[];this._positionCache=new WeakMap();this._poolFieldCache=new WeakMap();this._surfaceCache.clear();this.surfaceFilm.reset();this.pooledFilm.reset();this.render();}
+  reset(){this.nodes=[];this.drops=[];this.emitted=0;this.escaped=0;this.reservoir=0;this.clock=0;this.pressureExposure=0;this.lastPressureClock=-1;this.lastPressureContacts=0;this.pressureActive=false;this.pressureContacts=0;this._accumulator=0;this._neighbours=[];this._positionCache=new WeakMap();this._poolFieldCache=new WeakMap();this._fibreRecords=[];this._surfaceCache.clear();this.surfaceFilm.reset();this.pooledFilm.reset();this.render();}
   snapshot(){return{version:1,nodes:clone(this.nodes.map(n=>{const {display,normal,physicalArea,...saved}=n;return saved;})),drops:clone(this.drops),emitted:this.emitted,escaped:this.escaped,reservoir:this.reservoir,clock:this.clock,pressureExposure:this.pressureExposure,lastPressureClock:this.lastPressureClock,lastPressureContacts:this.lastPressureContacts};}
   restore(s){
     this.reset();if(!s)return;
@@ -158,7 +158,8 @@ export class BloodFlow {
       }
     }
     if(this.pressureContacts){this.lastPressureContacts=this.pressureContacts;this.lastPressureClock=this.clock;this.pressureExposure+=h;}
-    const transfers=[],out=new Float64Array(this.nodes.length),delta=new Float64Array(this.nodes.length);
+    // Reuse storage without changing traversal, summation order or fluid steps.
+    const transfers=this._transfers,out=this._flowOut,delta=this._flowDelta;let transferCount=0;out.fill(0);delta.fill(0);
     for(const [i,j]of this._neighbours){
       const a=this.nodes[i],b=this.nodes[j],distance=a.display.distanceTo(b.display)*1000;
       if(distance>.006*1000||distance<.01)continue;
@@ -166,9 +167,9 @@ export class BloodFlow {
       const from=potential>0?i:j,to=potential>0?j:i,source=this.nodes[from];
       const mobility=.02+.98*(1-Math.max(a.clot,b.clot))**3;
       const volume=Math.min(source.volume,Math.abs(potential)*Math.max(ha,hb)**2*.6*mobility*h/distance);if(volume<=0)continue;
-      transfers.push([from,to,volume]);out[from]+=volume;
+      const transfer=transfers[transferCount++]??(transfers[transferCount-1]=[0,0,0]);transfer[0]=from;transfer[1]=to;transfer[2]=volume;out[from]+=volume;
     }
-    for(const [from,to,volume]of transfers){const amount=volume*Math.min(1,this.nodes[from].volume/Math.max(out[from],1e-20));delta[from]-=amount;delta[to]+=amount;}
+    for(let i=0;i<transferCount;i++){const [from,to,volume]=transfers[i];const amount=volume*Math.min(1,this.nodes[from].volume/Math.max(out[from],1e-20));delta[from]-=amount;delta[to]+=amount;}
     for(let i=0;i<this.nodes.length;i++){
       const n=this.nodes[i];n.volume=Math.max(0,n.volume+delta[i]);
       const limit=n.physicalArea*(n.normal.dot(up)<.1?.25:1.15);
@@ -249,15 +250,20 @@ export class BloodFlow {
     const m=new THREE.Object3D(),up=new THREE.Vector3(0,1,0);let fibres=0;
     this.surfaceFilm.update(this.nodes);
     const pools=[];for(const d of this.drops){if(!d.surface||!d.reference)continue;let field=this._poolFieldCache.get(d);if(!field){field={version:0};this._poolFieldCache.set(d,field);}if(field.area!==d.area||field.fragmentId!==d.fragmentId||!field.reference?.every((v,i)=>v===d.reference[i])||!field.restNormal?.every((v,i)=>v===d.restNormal[i]))field.version++;Object.assign(field,{reference:d.reference,restNormal:d.restNormal,area:d.area,physicalArea:d.area,volume:d.volume,clot:d.clot??0,fragmentId:d.fragmentId??null});pools.push(field);}this.pooledFilm.update(pools);
+    let changed=false;
     for(const n of this.nodes){
-      if(!n.display)continue;
-      const normal=n.normal;
-      if(n.cut){
-        const seed=n.seed??hash(n.reference),tangent=new THREE.Vector3(1,.3,.5).cross(normal).normalize();
-        m.position.copy(n.display).addScaledVector(normal,.00007);m.quaternion.setFromUnitVectors(up,tangent);m.scale.set(.000025,.00020+seed*.00030,.000025);m.updateMatrix();this.fibres.setMatrixAt(fibres++,m.matrix);
+      if(!n.display||!n.cut)continue;
+      const p=n.display,normal=n.normal,seed=n.seed??hash(n.reference),old=this._fibreRecords[fibres];
+      // Fluid volume/clot changes do not alter a static tissue fibre. Preserve
+      // every instance and exact matrix; only rewrite poses that actually moved.
+      if(!old||old.node!==n||old.x!==p.x||old.y!==p.y||old.z!==p.z||old.nx!==normal.x||old.ny!==normal.y||old.nz!==normal.z||old.seed!==seed){
+        const tangent=new THREE.Vector3(1,.3,.5).cross(normal).normalize();
+        m.position.copy(p).addScaledVector(normal,.00007);m.quaternion.setFromUnitVectors(up,tangent);m.scale.set(.000025,.00020+seed*.00030,.000025);m.updateMatrix();this.fibres.setMatrixAt(fibres,m.matrix);
+        this._fibreRecords[fibres]={node:n,x:p.x,y:p.y,z:p.z,nx:normal.x,ny:normal.y,nz:normal.z,seed};changed=true;
       }
+      fibres++;
     }
-    this.fibres.count=fibres;this.fibres.instanceMatrix.needsUpdate=true;
+    this._fibreRecords.length=fibres;this.fibres.count=fibres;if(changed)this.fibres.instanceMatrix.needsUpdate=true;
     let airborne=0;for(const d of this.drops){if(d.surface)continue;const r=Math.cbrt(d.volume*3/(4*Math.PI))*.001;m.position.fromArray(d.position);m.quaternion.identity();m.scale.setScalar(r);m.updateMatrix();this.dropsMesh.setMatrixAt(airborne++,m.matrix);}
     this.dropsMesh.count=airborne;this.dropsMesh.instanceMatrix.needsUpdate=true;
   }

@@ -40,3 +40,8 @@ test('each slow incident keeps its original context and late observer attributio
   const report=d.report({detach:true});assert.equal(report.incidents.length,1);assert.equal(report.incidents[0].frame.work.render.batchMs,4);assert.equal(report.incidents[0].browser[0].ms,157.5);assert.equal(report.incidents[0].intervals.length,2);assert.equal(report.droppedIncidents,0);assert.equal(d.report({compact:true}).incidents,undefined);
   d.clear();assert.equal(d.incidentCount,0);
 });
+test('the complete callback following a stall is attached after render and remains detached',()=>{
+  const d=new BrowserStalls(undefined,()=>0);d.captureFrame({ms:103.1,phase:'manipulation',work:{endedAt:203.1}});
+  const frame={raf:203.1,start:207,end:237,renderMs:17};d.finishFrame(frame);frame.renderMs=999;
+  assert.equal(d.report().incidents[0].followingFrame.renderMs,17);assert.equal(d.unfinished.size,0);
+});

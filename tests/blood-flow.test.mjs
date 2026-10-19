@@ -11,6 +11,17 @@ function bench(){
   b.updatePositions();b.connect();return{t,b,step:(n,options)=>{for(let i=0;i<n;i++)b.update(1/60,options);}};
 }
 
+test('static cut fibres reuse uploads while moved/reordered fibres retain every exact matrix',()=>{
+  const {t,b}=bench();try{
+    const expected=()=>{const m=new THREE.Object3D(),up=new THREE.Vector3(0,1,0),values=[];for(const n of b.nodes){if(!n.display||!n.cut)continue;const tangent=new THREE.Vector3(1,.3,.5).cross(n.normal).normalize();m.position.copy(n.display).addScaledVector(n.normal,.00007);m.quaternion.setFromUnitVectors(up,tangent);m.scale.set(.000025,.00020+n.seed*.00030,.000025);m.updateMatrix();values.push(...m.matrix.elements);}return new Float32Array(values);};
+    b.nodes.forEach((n,i)=>n.seed=i*.2);b.render();assert.deepEqual(b.fibres.instanceMatrix.array.slice(0,b.fibres.count*16),expected());const version=b.fibres.instanceMatrix.version;
+    b.nodes[0].volume+=1;b.render();assert.equal(b.fibres.instanceMatrix.version,version,'blood-only changes must not upload identical fibre matrices');
+    b.nodes[1].display.x+=.002;b.nodes[1].normal.set(.1,.9,.2).normalize();b.render();assert.equal(b.fibres.instanceMatrix.version,version+1);assert.deepEqual(b.fibres.instanceMatrix.array.slice(0,b.fibres.count*16),expected());
+    b.nodes.reverse();b.nodes[1].cut=false;b.render();assert.equal(b.fibres.count,2);assert.deepEqual(b.fibres.instanceMatrix.array.slice(0,b.fibres.count*16),expected());
+    b.reset();assert.equal(b.fibres.count,0);assert.equal(b._fibreRecords.length,0);
+  }finally{t.dispose();}
+});
+
 test('blood material caching is exact through recoil and rigid specimen transport',()=>{
   const {t,b}=bench(),piece={deformation:normalizeDeformation({model:'local-flow',local:[0,.01,0],displacement:[0,.006,.02]}),frozenCenter:new THREE.Vector3(.004,.01,.01),position:new THREE.Vector3(),quaternion:new THREE.Quaternion()};
   t.getFragment=id=>id==='piece'?piece:null;b.nodes[1].fragmentId='piece';let previousMaterial;

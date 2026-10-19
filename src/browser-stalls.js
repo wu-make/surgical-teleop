@@ -1,3 +1,4 @@
+import {incidentEvidence} from './incident-evidence.js';
 // Passive browser attribution complements RAF intervals: a long interval can
 // include worker delivery, layout, input or scheduling outside animate().
 export class BrowserStalls {
@@ -8,13 +9,15 @@ export class BrowserStalls {
       try{const observer=new Observer(list=>this.accept(list.getEntries()));observer.observe({type,buffered:true});this.observers.push(observer);this.supported.push(type);}catch{/* Optional diagnostics must never block simulation. */}
     }
   }
-  clear(){this.since=this.now();this.recent=[];this.worst=[];this.spans=[];this.counts={};this.rafGaps=[];this.incidents=[];this.incidentCount=0;this.droppedIncidents=0;}
+  clear(){this.since=this.now();this.recent=[];this.worst=[];this.spans=[];this.counts={};this.rafGaps=[];this.incidents=[];this.unfinished=new Map();this.incidentCount=0;this.droppedIncidents=0;}
   captureFrame(frame,intervals=[]){
     const end=frame.work?.endedAt;if(!Number.isFinite(end))return;
     const start=end-frame.ms,id=++this.incidentCount;
     if(this.incidents.length>=128){this.droppedIncidents++;return;}
-    this.incidents.push({id,start,end,frame:structuredClone(frame),intervals:intervals.filter(r=>r.endedAt>=start-1000&&r.endedAt<=end).map(r=>({...r})),browser:this.recent.filter(r=>r.start<end+250&&r.end>start-250).map(r=>structuredClone(r)),work:this.spans.filter(r=>r.start<end&&r.end>start-250).map(r=>({...r})),rafGaps:this.rafGaps.filter(r=>r.start<end&&r.end>start-250).map(r=>structuredClone(r))});
+    const incident={id,start,end,frame:structuredClone(frame),intervals:intervals.filter(r=>r.endedAt>=start-1000&&r.endedAt<=end).map(r=>({...r})),browser:this.recent.filter(r=>r.start<end+250&&r.end>start-250).map(r=>structuredClone(r)),runtime:(this.runtime?.rows??[]).filter(r=>r.start<end+500&&r.end>start-1000).map(r=>({...r})),work:this.spans.filter(r=>r.start<end&&r.end>start-250).map(r=>({...r})),rafGaps:this.rafGaps.filter(r=>r.start<end&&r.end>start-250).map(r=>structuredClone(r))};this.incidents.push(incident);this.unfinished.set(end,incident);
   }
+  finishFrame(frame){const incident=this.unfinished.get(frame.raf);if(incident){incident.followingFrame=structuredClone(frame);this.unfinished.delete(frame.raf);}}
+  runtimeSample(row){for(const incident of this.incidents)if(row.start<incident.end+500&&row.end>incident.start-1000)incident.runtime.push({...row});}
   span(name,start,end){if(end-start<4)return;this.spans.push({name,start,end,ms:end-start});if(this.spans.length>128)this.spans.shift();}
   raf(from,to,entered,previous,eligible){
     if(!eligible||!previous?.eligible||!Number.isFinite(from)||to-from<=50)return;
@@ -32,6 +35,6 @@ export class BrowserStalls {
     // incident, even after the rolling recent/worst lists have moved on.
     for(const incident of this.incidents)if(row.start<incident.end+250&&row.end>incident.start-250)incident.browser.push(structuredClone(row));
   }}
-  report({compact=false,detach=false}={}){const report={supported:[...this.supported],since:this.since,counts:{...this.counts},recent:compact?this.recent.slice(-4):this.recent,worst:this.worst,rafGaps:this.rafGaps,incidentCount:this.incidentCount,droppedIncidents:this.droppedIncidents,...(compact?{incidentSummary:this.incidents.map(i=>({id:i.id,start:i.start,ms:i.frame.ms,phase:i.frame.phase,browserEntries:i.browser.length}))}:{incidents:this.incidents})};return detach?structuredClone(report):report;}
+  report({compact=false,detach=false}={}){const report={supported:[...this.supported],since:this.since,counts:{...this.counts},recent:compact?this.recent.slice(-4):this.recent,worst:this.worst,rafGaps:this.rafGaps,incidentCount:this.incidentCount,droppedIncidents:this.droppedIncidents,runtime:this.runtime?.report({compact}),...(compact?{incidentSummary:this.incidents.map(i=>({id:i.id,start:i.start,ms:i.frame.ms,phase:i.frame.phase,browserEntries:i.browser.length}))}:{incidents:this.incidents.map(i=>({...i,observations:incidentEvidence(i)}))})};return detach?structuredClone(report):report;}
   dispose(){for(const observer of this.observers)observer.disconnect();}
 }
