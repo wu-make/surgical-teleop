@@ -32,3 +32,7 @@ test('a free blood parcel lands on actual cut geometry without gaining or losing
     assert(tissue.blood.drops[0].position[1]<.002);assert(Math.abs(tissue.blood.metrics.balanceErrorMm3)<1e-9);
   }finally{tissue.dispose();}
 });
+
+test('later parcel queries cannot mutate earlier returned surface points and normals',()=>{
+  const t=new TissueVolume();t._meshes.set('support',slab(0));try{const p=t.collideBloodDrop(new THREE.Vector3(0,.01,0),new THREE.Vector3(0,-.01,0),.0004),snapshot={p:p.toArray(),n:p.normal.toArray(),travel:p.travel};for(let i=0;i<60;i++)t.collideBloodDrop(new THREE.Vector3(i*.0001,.002,i*.0001),new THREE.Vector3(i*.0001,.0012,i*.0001),.0004);assert.deepEqual({p:p.toArray(),n:p.normal.toArray(),travel:p.travel},snapshot);}finally{t.dispose();}
+});

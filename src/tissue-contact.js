@@ -54,10 +54,11 @@ class SurfaceIndex {
   }
   firstHit(start,end){
     this.refit();
-    const direction=end.clone().sub(start),length=direction.length();if(length<1e-12)return null;
-    direction.divideScalar(length);const ray=new THREE.Ray(start,direction),triangle=new THREE.Triangle(),hit=new THREE.Vector3(),normal=new THREE.Vector3();
-    const bounds=[Math.min(start.x,end.x),Math.min(start.y,end.y),Math.min(start.z,end.z),Math.max(start.x,end.x),Math.max(start.y,end.y),Math.max(start.z,end.z)];
-    let best=length+1e-10,result=null;const stack=[this.root];
+    const s=this.hitScratch??={direction:new THREE.Vector3(),ray:new THREE.Ray(),triangle:new THREE.Triangle(),hit:new THREE.Vector3(),normal:new THREE.Vector3(),bounds:new Array(6),stack:[]};
+    const {direction,ray,triangle,hit,normal,bounds,stack}=s;direction.subVectors(end,start);const length=direction.length();if(length<1e-12)return null;
+    direction.divideScalar(length);ray.origin.copy(start);ray.direction.copy(direction);
+    bounds[0]=Math.min(start.x,end.x);bounds[1]=Math.min(start.y,end.y);bounds[2]=Math.min(start.z,end.z);bounds[3]=Math.max(start.x,end.x);bounds[4]=Math.max(start.y,end.y);bounds[5]=Math.max(start.z,end.z);
+    let best=length+1e-10,result=null;stack.length=0;stack.push(this.root);
     while(stack.length){
       const node=stack.pop();if(boxesDistanceSquared(bounds,node.bounds)>0)continue;
       if(!node.triangles){stack.push(node.left,node.right);continue;}
@@ -66,15 +67,16 @@ class SurfaceIndex {
         triangle.getNormal(normal);if(normal.dot(direction)>=-1e-12)continue;
         if(!ray.intersectTriangle(triangle.a,triangle.b,triangle.c,false,hit))continue;
         const distance=hit.distanceTo(start);if(distance>best)continue;
-        best=distance;result=hit.clone();result.normal=normal.clone();result.travel=distance;
+        best=distance;if(!result){result=new THREE.Vector3();result.normal=new THREE.Vector3();}result.copy(hit);result.normal.copy(normal);result.travel=distance;
       }
     }
     return result;
   }
   nearest(point,maximum){
     this.refit();let best=maximum*maximum,result=null;
-    const triangle=new THREE.Triangle(),candidate=new THREE.Vector3(),barycentric=new THREE.Vector3(),temporary=new THREE.Vector3();
-    const positions=this.positions,normals=this.geometry.attributes.normal,indices=this.indices,stack=[this.root];
+    const s=this.nearestScratch??={triangle:new THREE.Triangle(),candidate:new THREE.Vector3(),barycentric:new THREE.Vector3(),temporary:new THREE.Vector3(),stack:[]};
+    const {triangle,candidate,barycentric,temporary,stack}=s;stack.length=0;stack.push(this.root);
+    const positions=this.positions,normals=this.geometry.attributes.normal,indices=this.indices;
     while(stack.length){
       const node=stack.pop();if(boxDistanceSquared(point,node.bounds)>best)continue;
       if(!node.triangles){
@@ -86,26 +88,26 @@ class SurfaceIndex {
         triangle.a.fromBufferAttribute(positions,a);triangle.b.fromBufferAttribute(positions,b);triangle.c.fromBufferAttribute(positions,c);
         triangle.closestPointToPoint(point,candidate);const distance=point.distanceToSquared(candidate);if(distance>best)continue;
         best=distance;triangle.getBarycoord(candidate,barycentric);
-        const normal=new THREE.Vector3().fromBufferAttribute(normals,a).multiplyScalar(barycentric.x);
+        if(!result){result=new THREE.Vector3();result.normal=new THREE.Vector3();}
+        const normal=result.normal.fromBufferAttribute(normals,a).multiplyScalar(barycentric.x);
         normal.addScaledVector(temporary.fromBufferAttribute(normals,b),barycentric.y).addScaledVector(temporary.fromBufferAttribute(normals,c),barycentric.z);
         if(!Number.isFinite(normal.lengthSq())||normal.lengthSq()<1e-12)triangle.getNormal(normal);else normal.normalize();
-        result=candidate.clone();result.normal=normal;
+        result.copy(candidate);
       }
     }
     return result;
   }
   nearestSegment(start,end,maximum){
     this.refit();let best=maximum*maximum,result=null;
-    const direction=new THREE.Vector3().subVectors(end,start),length=direction.length(),ray=new THREE.Ray(start,length?direction.clone().divideScalar(length):new THREE.Vector3(0,0,1));
-    const bounds=[Math.min(start.x,end.x),Math.min(start.y,end.y),Math.min(start.z,end.z),Math.max(start.x,end.x),Math.max(start.y,end.y),Math.max(start.z,end.z)];
-    const triangle=new THREE.Triangle(),blade=new THREE.Vector3(),surface=new THREE.Vector3(),hit=new THREE.Vector3(),normal=new THREE.Vector3();
-    const u=new THREE.Vector3(),v=new THREE.Vector3(),r=new THREE.Vector3(),offset=new THREE.Vector3();
-    const p=this.positions,indices=this.indices,stack=[this.root];
+    const s=this.segmentScratch??={direction:new THREE.Vector3(),ray:new THREE.Ray(),bounds:new Array(6),triangle:new THREE.Triangle(),blade:new THREE.Vector3(),surface:new THREE.Vector3(),hit:new THREE.Vector3(),normal:new THREE.Vector3(),u:new THREE.Vector3(),v:new THREE.Vector3(),r:new THREE.Vector3(),offset:new THREE.Vector3(),stack:[]};
+    const {direction,ray,bounds,triangle,blade,surface,hit,normal,u,v,r,offset,stack}=s;direction.subVectors(end,start);const length=direction.length();ray.origin.copy(start);if(length)ray.direction.copy(direction).divideScalar(length);else ray.direction.set(0,0,1);
+    bounds[0]=Math.min(start.x,end.x);bounds[1]=Math.min(start.y,end.y);bounds[2]=Math.min(start.z,end.z);bounds[3]=Math.max(start.x,end.x);bounds[4]=Math.max(start.y,end.y);bounds[5]=Math.max(start.z,end.z);
+    const p=this.positions,indices=this.indices;stack.length=0;stack.push(this.root);
     const accept=()=>{
       const squared=blade.distanceToSquared(surface);if(squared>best)return;
       best=squared;triangle.getNormal(normal);
-      result={point:blade.clone(),surface:surface.clone(),normal:normal.clone(),distance:Math.sqrt(best),
-        t:length?THREE.MathUtils.clamp(offset.subVectors(blade,start).dot(direction)/(length*length),0,1):0};
+      result??={point:new THREE.Vector3(),surface:new THREE.Vector3(),normal:new THREE.Vector3()};result.point.copy(blade);result.surface.copy(surface);result.normal.copy(normal);result.distance=Math.sqrt(best);
+      result.t=length?THREE.MathUtils.clamp(offset.subVectors(blade,start).dot(direction)/(length*length),0,1):0;
     };
     while(stack.length){
       const node=stack.pop();if(boxesDistanceSquared(bounds,node.bounds)>best)continue;

@@ -36,9 +36,13 @@ function material(gpu,fields){
       s.vertexShader=s.vertexShader.replace('vFilmThickness=filmThickness;vFilmClot=filmClot;vFilmPosition=position;',`float height=0.0,clotMass=0.0;
         for(int i=0;i<${fields.capacity};i++){
           if(i>=filmNodeCount)break;
-          vec4 a=texelFetch(filmFields,ivec2(i*3,0),0),b=texelFetch(filmFields,ivec2(i*3+1,0),0),c=texelFetch(filmFields,ivec2(i*3+2,0),0);
+          vec4 a=texelFetch(filmFields,ivec2(i*3,0),0);
           vec3 delta=filmReference-a.xyz;float q=dot(delta,delta)/a.w;
-          if(abs(filmOwner-c.y)>.1||q>=1.0||dot(filmRestNormal,b.xyz)<.15)continue;
+          if(q>=1.0)continue;
+          vec4 b=texelFetch(filmFields,ivec2(i*3+1,0),0);
+          if(dot(filmRestNormal,b.xyz)<.15)continue;
+          vec4 c=texelFetch(filmFields,ivec2(i*3+2,0),0);
+          if(abs(filmOwner-c.y)>.1)continue;
           float h=(1.0-q)*(1.0-q)*b.w;height+=h;clotMass+=h*c.x;
         }
         transformed+=normal*(height+.000012);

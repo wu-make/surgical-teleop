@@ -28,7 +28,7 @@ export class TissueVolume {
     this.voxelMm = 1.5;
     this.error = null;
     this._meshes = new Map();
-    this._bloodBroadPhase=new MeshBroadPhase();
+    this._bloodBroadPhase=new MeshBroadPhase();this._bloodQueryMeshes=[];
     this.updateTimings={};
     this.transitionTimings=[];
     this._cuts = [];
@@ -142,7 +142,7 @@ export class TissueVolume {
   prepareBloodContacts(){this._bloodBroadPhase.sync(this._meshes.values());}
   collideBloodDrop(start,end,radius,prepared=false){
     if(!prepared)this.prepareBloodContacts();
-    const meshes=this._bloodBroadPhase.query(start,end,radius+.00005);
+    const meshes=this._bloodBroadPhase.query(start,end,radius+.00005,this._bloodQueryMeshes);
     let crossing=firstParentHit(meshes,start,end),surface=crossing?null:closestParentSurface(meshes,end,radius+.00005);
     if(surface&&end.clone().sub(surface).dot(surface.normal)>=radius)surface=null;
     let best=surface?surface.distanceToSquared(end):Infinity;

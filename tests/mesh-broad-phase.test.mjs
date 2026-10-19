@@ -13,3 +13,8 @@ test('parcel broad phase conservatively includes every intersected chunk after m
   }};
   try{verify();meshes[0].geometry.translate(.2,.13,0);meshes[0].geometry.computeBoundingBox();const removed=meshes.splice(5,1)[0];index.sync(meshes);verify();assert(!index.query(new THREE.Vector3(-1,-1,-1),new THREE.Vector3(1,1,1),0).includes(removed));removed.geometry.dispose();}finally{for(const m of meshes)m.geometry.dispose();}
 });
+
+test('reusable parcel query output keeps legacy cell/insertion order and independent default results',()=>{
+  const meshes=Array.from({length:8},(_,i)=>{const g=new THREE.BoxGeometry(.017,.012,.013);g.translate(i*.009,0,0);g.computeBoundingBox();return new THREE.Mesh(g);}),index=new MeshBroadPhase(),buffer=[];index.sync(meshes);
+  try{for(let i=0;i<70;i++){const a=new THREE.Vector3(i*.001-.01,0,-.01),b=a.clone().add(new THREE.Vector3(.009,.002,.02)),r=.001;const expected=new Set();index._keys([Math.min(a.x,b.x)-r,Math.min(a.y,b.y)-r,Math.min(a.z,b.z)-r],[Math.max(a.x,b.x)+r,Math.max(a.y,b.y)+r,Math.max(a.z,b.z)+r],key=>{for(const mesh of index.grid.get(key)??[])expected.add(mesh);});assert.equal(index.query(a,b,r,buffer),buffer);assert.deepEqual(buffer,[...expected]);const detached=index.query(a,b,r);index.query(new THREE.Vector3(5,5,5),new THREE.Vector3(6,6,6),0,buffer);assert.deepEqual(detached,[...expected]);}index.queryEpoch=Number.MAX_SAFE_INTEGER;index.query(new THREE.Vector3(),new THREE.Vector3(),.01,buffer);assert.equal(index.queryEpoch,1);}finally{for(const m of meshes)m.geometry.dispose();}
+});
