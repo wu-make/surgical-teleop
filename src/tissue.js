@@ -223,12 +223,12 @@ export class TissueVolume {
     let nearMesh=this._meshes.size===0;
     for(const mesh of this._meshes.values())if(mesh.geometry.boundingBox.distanceToPoint(initial)<=margin){nearMesh=true;break;}
     if(nearMesh&&Number.isFinite(raw)&&Math.abs(raw)*scale<=margin){
-      const surface=initial.clone(),gradient=new THREE.Vector3();
+      const surface=initial.clone(),gradient=new THREE.Vector3(),low=new THREE.Vector3(),high=new THREE.Vector3();
       const epsilon=Math.min(Math.min(...this.metadata.spacing)*.2,.00025);
       for(let iteration=0;iteration<14;iteration++){
         const d=this.sampleDistance(surface);if(!Number.isFinite(d))break;
         for(let axis=0;axis<3;axis++){
-          const low=surface.clone(),high=surface.clone();low.setComponent(axis,low.getComponent(axis)-epsilon);high.setComponent(axis,high.getComponent(axis)+epsilon);
+          low.copy(surface);high.copy(surface);low.setComponent(axis,low.getComponent(axis)-epsilon);high.setComponent(axis,high.getComponent(axis)+epsilon);
           gradient.setComponent(axis,(this.sampleDistance(high)-this.sampleDistance(low))/(2*epsilon));
         }
         const squared=gradient.lengthSq();if(!Number.isFinite(squared)||squared<1e-12)break;
@@ -253,14 +253,15 @@ export class TissueVolume {
   _sampleReferenceDistance(p) {
     const meta = this.metadata;
     if (p.some(v => !Number.isFinite(v))) return Infinity;
-    const grid = p.map((v, axis) => (v - meta.origin[axis]) / meta.spacing[axis]);
-    if (grid.some((v, axis) => v < 0 || v > meta.dims[axis] - 1)) return Infinity;
-    const low = grid.map((v, axis) => Math.min(Math.floor(v), meta.dims[axis] - 2));
-    const fraction = grid.map((v, axis) => v - low[axis]);
+    // Same eight voxels, weights and accumulation order, without four short
+    // arrays per SDF call in each contact/gradient projection iteration.
+    const gx=(p[0]-meta.origin[0])/meta.spacing[0],gy=(p[1]-meta.origin[1])/meta.spacing[1],gz=(p[2]-meta.origin[2])/meta.spacing[2];
+    if(gx<0||gx>meta.dims[0]-1||gy<0||gy>meta.dims[1]-1||gz<0||gz>meta.dims[2]-1)return Infinity;
+    const lx=Math.min(Math.floor(gx),meta.dims[0]-2),ly=Math.min(Math.floor(gy),meta.dims[1]-2),lz=Math.min(Math.floor(gz),meta.dims[2]-2),fx=gx-lx,fy=gy-ly,fz=gz-lz;
     let distance = 0;
     for (let z = 0; z <= 1; z++) for (let y = 0; y <= 1; y++) for (let x = 0; x <= 1; x++) {
-      const weight = (x ? fraction[0] : 1 - fraction[0]) * (y ? fraction[1] : 1 - fraction[1]) * (z ? fraction[2] : 1 - fraction[2]);
-      const index = nodeIndex(meta, low[0] + x, low[1] + y, low[2] + z);
+      const weight = (x ? fx : 1 - fx) * (y ? fy : 1 - fy) * (z ? fz : 1 - fz);
+      const index = nodeIndex(meta, lx + x, ly + y, lz + z);
       distance += weight * (this._excludedValues.get(index) ?? this._baseField[index]);
     }
     this._ensureCutIndex();
