@@ -30,6 +30,7 @@ export async function prepareSceneMaterials(view,{width,height,yieldFrame=()=>ne
 // before the first complete visible frame.
 export async function warmSceneDisplay(view,options={}){
   const r=view.renderer,scene=view.scene,inner=view.cavity.children[0],objects=[];
+  const width=view.frameLayout?.width??view.stage.clientWidth,height=view.frameLayout?.height??view.stage.clientHeight;
   scene.traverse(object=>{if(object.isMesh||object.isLine||object.isPoints||object.isSprite)objects.push({object,mask:object.layers.mask,culled:object.frustumCulled});});
   const saved={target:r.getRenderTarget(),intensity:scene.environmentIntensity,exposure:r.toneMappingExposure,visible:inner.visible};
   function* draws(){
@@ -40,12 +41,12 @@ export async function warmSceneDisplay(view,options={}){
       for(const record of objects){
         const {object,mask}=record;if(!(mask&camera.layers.mask)||!object.visible)continue;
         object.layers.mask=mask;object.frustumCulled=false;
-        if(endoscopy)view.scopeFeed.capture(r,scene,camera,view.stage.clientWidth,view.stage.clientHeight);
+        if(endoscopy)view.scopeFeed.capture(r,scene,camera,width,height);
         else{r.setRenderTarget(null);r.render(scene,camera);}
         object.layers.mask=0;object.frustumCulled=record.culled;yield;
       }
     }
-    r.setRenderTarget(null);view.scopeFeed.blit(r,0,0,view.stage.clientWidth,view.stage.clientHeight);yield;
+    r.setRenderTarget(null);view.scopeFeed.blit(r,0,0,width,height);yield;
   }
   try{return await runCooperatively(draws(),options);}
   finally{

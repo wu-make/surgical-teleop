@@ -2,7 +2,7 @@
 // GPU, flushes it, spins, or changes a render/simulation timestep.
 export class RuntimeAttribution{
   constructor({gl=null,gpuIntervalMs=200,measureGpu=false,workerUrl=null,WorkerClass=globalThis.Worker,timeOrigin=globalThis.performance?.timeOrigin,now=()=>performance.now(),schedule=(fn,ms)=>setTimeout(fn,ms),cancel=id=>clearTimeout(id),Channel=globalThis.MessageChannel,document=globalThis.document,target=globalThis.window,onSample=()=>{}}={}){
-    Object.assign(this,{gl,now,schedule,cancel,document,target,onSample});this.rows=[];this.pending=[];this.sequence=0;this.counts={};this.skippedGpu=0;this.disjointGpu=0;this.disposed=false;
+    Object.assign(this,{gl,now,schedule,cancel,document,target,onSample});this.rows=[];this.pending=[];this.sequence=0;this.counts={};this.summary={};this.skippedGpu=0;this.disjointGpu=0;this.disposed=false;
     try{this.extension=gl?.getExtension('EXT_disjoint_timer_query_webgl2')??null;}catch{this.extension=null;}
     this.gpuSupported=!!(this.extension&&gl?.createQuery);this.fenceSupported=!!gl?.fenceSync;
     this.measureGpu=measureGpu;this.gpuIntervalMs=gpuIntervalMs;this.lastGpuAt=-Infinity;this.probeWork={calls:0,totalInclusiveMs:0,maxMs:0,byStage:{}};
@@ -13,7 +13,7 @@ export class RuntimeAttribution{
     this.nextTick();
   }
   visibility(){return{hidden:this.document?.hidden??null,focused:this.document?.hasFocus?.()??null};}
-  record(row){row.ms=row.end-row.start;this.counts[row.type]=(this.counts[row.type]??0)+1;this.rows.push(row);if(this.rows.length>2048)this.rows.shift();this.onSample(row);}
+  record(row){row.ms=row.end-row.start;this.counts[row.type]=(this.counts[row.type]??0)+1;for(const key of row.type==='gpu'?['gpuMs','completionUpperBoundMs']:row.type==='worker-heartbeat'?['workerIntervalMs','deliveryDelayMs']:row.type==='timer'?['lateMs']:row.type==='message'?['ms']:[]){const value=row[key];if(!Number.isFinite(value))continue;const name=row.type+'.'+key,s=this.summary[name]??={count:0,totalMs:0,maxMs:0,over16ms:0,over33ms:0,over50ms:0};s.count++;s.totalMs+=value;s.maxMs=Math.max(s.maxMs,value);if(value>16.67)s.over16ms++;if(value>33.34)s.over33ms++;if(value>50)s.over50ms++;}this.rows.push(row);if(this.rows.length>2048)this.rows.shift();this.onSample(row);}
   measure(stage,fn){const start=this.now();try{return fn();}finally{const end=this.now(),ms=end-start,stats=this.probeWork,part=stats.byStage[stage]??={calls:0,totalMs:0,maxMs:0};stats.calls++;stats.totalInclusiveMs+=ms;stats.maxMs=Math.max(stats.maxMs,ms);part.calls++;part.totalMs+=ms;part.maxMs=Math.max(part.maxMs,ms);if(ms>2)this.record({type:'probe-work',stage,start,end});}}
   nextTick(){if(this.disposed)return;const scheduled=this.now();this.timer=this.schedule(()=>this.measure('timer',()=>{if(this.disposed)return;const at=this.now();this.record({type:'timer',start:scheduled,end:at,dueAt:scheduled+16,lateMs:Math.max(0,at-scheduled-16),...this.visibility()});this.poll();this.nextTick();}),16);}
   begin(raf){return this.measure('begin',()=>this._begin(raf));}
@@ -45,6 +45,6 @@ export class RuntimeAttribution{
     this.pending=remaining;
   }
   afterFrame(raf){if(!this.channel||this.messagePending||this.disposed)return;this.messagePending={raf,at:this.now()};this.channel.port2.postMessage(0);}
-  report({compact=false}={}){const report={device:this.device,workerHeartbeatEnabled:!!this.heartbeat,gpuTimerSupported:this.gpuSupported,fenceSupported:this.fenceSupported,gpuMeasurementEnabled:this.measureGpu,gpuIntervalMs:this.gpuIntervalMs,probeWork:{...this.probeWork},pending:this.pending.length,skippedGpu:this.skippedGpu,disjointGpu:this.disjointGpu,counts:{...this.counts},recent:compact?this.rows.slice(-8):this.rows};return report;}
+  report({compact=false}={}){const report={device:this.device,workerHeartbeatEnabled:!!this.heartbeat,gpuTimerSupported:this.gpuSupported,fenceSupported:this.fenceSupported,gpuMeasurementEnabled:this.measureGpu,gpuIntervalMs:this.gpuIntervalMs,summary:structuredClone(this.summary),probeWork:{...this.probeWork},pending:this.pending.length,skippedGpu:this.skippedGpu,disjointGpu:this.disjointGpu,counts:{...this.counts},recent:compact?this.rows.slice(-8):this.rows};return report;}
   dispose(){this.disposed=true;this.heartbeat?.terminate();this.cancel(this.timer);for(const [host,name,fn]of this.listeners)host.removeEventListener(name,fn);this.channel?.port1.close();this.channel?.port2.close();for(const p of this.pending){if(p.query)this.gl.deleteQuery(p.query);if(p.fence)this.gl.deleteSync(p.fence);}this.pending.length=0;}
 }

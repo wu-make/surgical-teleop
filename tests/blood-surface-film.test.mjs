@@ -85,14 +85,16 @@ test('moving pools upload the complete volume kernel without rebuilding unchange
     const mesh=plane(t),b=t.blood;
     b.drops=[{position:[0,.010015,0],velocity:[0,0,0],volume:2,surface:true,reference:[0,.01,0],restNormal:[0,1,0],surfaceNormal:[0,1,0],area:6.25,clot:.3,fragmentId:null}];b.emitted=2;b.render();
     const f=b.pooledFilm,indices=Array.from(mesh.geometry.index.array),g=f.geometry;
-    assert.equal(g.drawRange.count,indices.length,'the GPU keeps every selected source triangle');
-    const layer=f.overlays.get(mesh);assert.notEqual(layer.overlay.geometry,mesh.geometry);assert.equal(layer.overlay.geometry.index.array,mesh.geometry.index.array);assert.equal(layer.overlay.geometry.attributes.position.array,mesh.geometry.attributes.position.array);assert.equal(layer.overlay.geometry.attributes.filmReference.array,mesh.geometry.attributes.tissueRestPosition.array);assert.equal(mesh.geometry.attributes.filmReference,undefined,'the parent batching schema remains unchanged');
+    assert(g.drawRange.count>0&&g.drawRange.count<indices.length,'only certainly invisible triangles are omitted from the overlay draw');
+    const layer=f.overlays.get(mesh);assert.notEqual(layer.overlay.geometry,mesh.geometry);assert.equal(layer.overlay.geometry.userData.fullFilmIndex.array,mesh.geometry.index.array);assert.equal(layer.overlay.geometry.attributes.position.array,mesh.geometry.attributes.position.array);assert.equal(layer.overlay.geometry.attributes.filmReference.array,mesh.geometry.attributes.tissueRestPosition.array);assert.equal(mesh.geometry.attributes.filmReference,undefined,'the parent batching schema remains unchanged');
     const r=Math.sqrt(6.25/Math.PI)*.001*1.9,data=f.fields.texture.image.data;
     assert(Math.abs(data[3]-r*r)<1e-12);assert(Math.abs(data[7]-2*3/(Math.PI*(r*1000)**2)*.001)<1e-10);assert(Math.abs(data[8]-.3)<1e-7);
     const version=mesh.geometry.attributes.position.version;
     b.drops[0].reference[0]+=.00001;b.drops[0].volume=3;b.render();
     assert.equal(f.overlays.get(mesh),layer,'moving liquid changes field data, not the unchanged triangle buffers');assert.equal(mesh.geometry.attributes.position.version,version);assert(Math.abs(data[0]-.00001)<1e-11);
     assert(Math.abs(data[7]-3*3/(Math.PI*(r*1000)**2)*.001)<1e-10);
+    const stableIndex=layer.overlay.geometry.index,stableArray=stableIndex.array;
+    for(let i=0;i<120;i++){b.drops[0].reference[0]=.004*Math.sin(i*.1);b.render();assert.equal(layer.overlay.geometry.index,stableIndex);assert.equal(stableIndex.array,stableArray);assert.equal(layer.overlay.geometry.drawRange.count,layer.support.index.count);}
   }finally{t.dispose();}
 });
 
@@ -103,7 +105,7 @@ test('browser GPU blood retains exact source geometry, conservative chunk suppor
     cpu.blood.updatePositions();gpu.blood.updatePositions();cpu.blood.render();gpu.blood.render();
     assert.deepEqual(gpu.blood.snapshot(),cpu.blood.snapshot(),'render backend changes no fluid state');
     const layer=gpu.blood.surfaceFilm.overlays.get(c);assert(layer);assert.equal(layer.fields.count.value,2,'a completely distant support sphere is excluded');
-    assert.equal(layer.overlay.geometry.index.array,c.geometry.index.array);assert.equal(layer.overlay.geometry.attributes.position.array,c.geometry.attributes.position.array);assert.equal(layer.overlay.geometry.attributes.filmReference.array,c.geometry.attributes.tissueRestPosition.array);
+    assert.equal(layer.overlay.geometry.userData.fullFilmIndex.array,c.geometry.index.array);assert.equal(layer.overlay.geometry.attributes.position.array,c.geometry.attributes.position.array);assert.equal(layer.overlay.geometry.attributes.filmReference.array,c.geometry.attributes.tissueRestPosition.array);
     assert.deepEqual(Object.keys(c.geometry.attributes),Object.keys(a.geometry.attributes),'the original batching schema is unchanged');
     const saved=gpu.blood.snapshot();gpu.blood.restore(saved);assert.deepEqual(gpu.blood.snapshot(),saved);gpu.blood.reset();assert.equal(gpu.blood.surfaceFilm.overlays.size,0);assert.equal(gpu.blood.film.geometry.drawRange.count,0);
   }finally{cpu.dispose();gpu.dispose();}

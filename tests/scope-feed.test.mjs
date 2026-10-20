@@ -142,7 +142,7 @@ test('each complete surgical frame captures endoscopy once, draws overview once 
     const view = { mode, renderer, scopeFeed: feed, scene, cavity, endoCamera, overviewCamera,
       stage: { clientWidth: 1000, clientHeight: 620, getBoundingClientRect: () => ({ left: 20, top: 40 }) },
       mini: { getBoundingClientRect: () => ({ left: 720, top: 170, width: 280, height: 180 }) } };
-    SurgicalScene.prototype.render.call(view, 1000);
+    Object.setPrototypeOf(view,SurgicalScene.prototype);SurgicalScene.prototype.render.call(view, 1000);
     assert.equal(sceneWalks,1,'both views share one current complete scene hierarchy even without multi-draw');
     assert.equal(renderer.infoResetCount, 1, `${mode}: statistics reset exactly once for all passes`);
     assert.equal(renderer.draws.length, 3);
@@ -204,6 +204,6 @@ test('preallocated HDR storage retains every active pixel across fullscreen and 
 
 test('unchanged viewport notifications do not reallocate the drawing buffer',()=>{
   let sizes=[];const view={stage:{clientWidth:863,clientHeight:556},renderer:{setSize:(w,h)=>sizes.push([w,h])},overviewCamera:new THREE.PerspectiveCamera(),endoCamera:new THREE.PerspectiveCamera()};
-  SurgicalScene.prototype.resize.call(view);SurgicalScene.prototype.resize.call(view);assert.deepEqual(sizes,[[863,556]]);
+  Object.setPrototypeOf(view,SurgicalScene.prototype);view.renderer.getPixelRatio=()=>1;view.stage.getBoundingClientRect=()=>({left:0,top:0});view.mini={getBoundingClientRect:()=>({left:0,top:0,width:100,height:100})};SurgicalScene.prototype.resize.call(view);SurgicalScene.prototype.resize.call(view);assert.deepEqual(sizes,[[863,556]]);
   view.stage.clientWidth=1746;view.stage.clientHeight=984;SurgicalScene.prototype.resize.call(view);assert.deepEqual(sizes.at(-1),[1746,984]);assert.equal(view.endoCamera.aspect,1746/984);
 });

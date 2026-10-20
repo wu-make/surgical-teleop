@@ -24,3 +24,14 @@ test('independent worker timestamps separate worker scheduling from delivery del
   assert.equal(p.rows.at(-1).start,100);assert.equal(p.rows.at(-1).workerIntervalMs,50);assert.equal(p.rows.at(-1).deliveryDelayMs,800);assert.equal(p.rows.at(-1).focused,true);
   p.dispose();assert(terminated);const count=p.rows.length;now=1000;instance.onmessage({data:{origin:10050,at:100,intervalMs:50}});assert.equal(p.rows.length,count);
 });
+
+test('session GPU and thread extrema survive rollover and returned summaries cannot mutate the probe',()=>{
+  const p=new RuntimeAttribution({schedule:()=>1,cancel(){},Channel:null,document:null,target:null});
+  p.record({type:'gpu',start:0,end:818,gpuMs:17,completionUpperBoundMs:800});
+  p.record({type:'worker-heartbeat',start:50,end:850,workerIntervalMs:50,deliveryDelayMs:800});
+  for(let i=0;i<2100;i++)p.record({type:'gpu',start:i,end:i+5,gpuMs:4,completionUpperBoundMs:5});
+  assert.equal(p.rows.length,2048);const s=p.report().summary;
+  assert.equal(s['gpu.gpuMs'].count,2101);assert.equal(s['gpu.gpuMs'].maxMs,17);
+  assert.equal(s['gpu.completionUpperBoundMs'].maxMs,800);assert.equal(s['worker-heartbeat.deliveryDelayMs'].maxMs,800);
+  s['gpu.gpuMs'].maxMs=0;assert.equal(p.report().summary['gpu.gpuMs'].maxMs,17);p.dispose();
+});

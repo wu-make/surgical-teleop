@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import {filmSupport} from './film-support.js';
 
 // A liquid height field on the *existing* organ/specimen triangles, rather
 // than a collection of ellipsoids. Material-space kernels advect with tissue;
@@ -180,7 +181,7 @@ export class BloodSurfaceFilm {
       let record=this.records.get(g);if(!record){record={bounds:g.userData.restBox??boundsOf(g)};this.records.set(g,record);this.stats.cacheBuilds++;}
       if(!record.bounds.intersectsBox(owner.box))return;
       const candidates=owner.list.filter(e=>boxDistanceSq(record.bounds,e.node.reference)<e.r2);if(!candidates.length)return;
-      active.add(mesh);total+=g.index?.count??g.attributes.position.count;
+      active.add(mesh);
       let layer=this.overlays.get(mesh);
       if(!layer){
         // Alias exact source arrays with independently owned GPU attributes.
@@ -189,7 +190,9 @@ export class BloodSurfaceFilm {
         for(const name of ['position','normal']){const a=g.attributes[name];surface.setAttribute(name,new THREE.BufferAttribute(a.array,a.itemSize,a.normalized));}
         const rest=g.attributes.tissueRestPosition??g.attributes.position;
         surface.setAttribute('filmReference',new THREE.BufferAttribute(rest.array,3));surface.setAttribute('filmRestNormal',new THREE.BufferAttribute(g.userData.materialNormals??g.userData.restNormals??g.attributes.normal.array,3));
-        if(g.index)surface.setIndex(new THREE.BufferAttribute(g.index.array,1));
+        if(g.index)surface.setIndex(new THREE.BufferAttribute(g.index.array,1));else surface.setIndex(Array.from({length:g.attributes.position.count},(_,i)=>i));
+        surface.userData.fullFilmIndex=surface.index;
+        surface.setIndex(new THREE.BufferAttribute(new surface.index.array.constructor(surface.index.count),1).setUsage(THREE.DynamicDrawUsage));
         const fields=makeFields(this.fields.capacity),overlay=new THREE.Mesh(surface,material(true,fields));overlay.name='Wet_Film_On_Exact_Source_Buffer';overlay.layers.enable(1);overlay.renderOrder=3;overlay.frustumCulled=false;
         layer={mesh,piece,overlay,fields,positionVersion:g.attributes.position.version,normalVersion:g.attributes.normal.version};this.mesh.add(overlay);this.overlays.set(mesh,layer);
       }
@@ -197,6 +200,10 @@ export class BloodSurfaceFilm {
       // misses the source bounds. All surviving normal/distance decisions are
       // made by the same GPU kernel on every original vertex.
       candidates.forEach((e,i)=>encode(layer.fields.texture.image.data,e.node,i));layer.fields.count.value=candidates.length;layer.fields.texture.needsUpdate=true;
+      layer.overlay.geometry.userData.filmReferenceVersion=(g.attributes.tissueRestPosition??g.attributes.position).version+':'+(g.userData.materialNormals||g.userData.restNormals?'fixed':g.attributes.normal.version);
+      const support=filmSupport(layer.overlay.geometry,layer.fields,layer.support);
+      if(support!==layer.support){const index=layer.overlay.geometry.index;index.array.set(support.index.array);index.clearUpdateRanges();if(support.index.count)index.addUpdateRange(0,support.index.count);index.needsUpdate=true;layer.overlay.geometry.setDrawRange(0,support.index.count);layer.support=support;}
+      total+=support.index.count;
     };
     for(const mesh of this.tissue._meshes.values())visit(mesh,null,null);
     for(const piece of this.tissue.fragments.items.values())visit(piece.mesh,piece.id,piece);

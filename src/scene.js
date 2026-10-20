@@ -9,6 +9,7 @@ import {buildOperatingRoom,buildOperatingRoomSteps} from './operating-room.js';
 import {prepareEnvironment} from './environment-preparation.js';
 import {runCooperatively,runImmediately} from './cooperative-work.js';
 import {ExactRenderBatches} from './exact-render-batches.js';
+import {fixedRenderFrame,frameLayout,styleFixedPreview} from './render-frame.js';
 
 const V=new THREE.Vector3(), Y=new THREE.Vector3(0,1,0), Q=new THREE.Quaternion();
 const BASE=import.meta.env?.BASE_URL??'/';
@@ -67,7 +68,7 @@ export class SurgicalScene{
     this.startupTimings=[];let began=performance.now();const checkpoint=name=>{const end=performance.now();this.startupTimings.push({name,start:began,end,ms:end-began});began=end;};
     this.stage=stage;this.mini=mini;this.mode='endo';this.disposed=false;this.ready=false;
     this.renderer=new THREE.WebGLRenderer({canvas,antialias:true,powerPreference:'high-performance',preserveDrawingBuffer:false});
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio,1.5));this.renderer.setSize(stage.clientWidth,stage.clientHeight,false);this.renderer.outputColorSpace=THREE.SRGBColorSpace;this.renderer.toneMapping=THREE.ACESFilmicToneMapping;this.renderer.toneMappingExposure=1.15;
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio,1.5));this.fixedFrame=fixedRenderFrame(globalThis.location?.search);styleFixedPreview(stage,mini,this.renderer.getPixelRatio(),this.fixedFrame);const initial=this.frameLayout;this.renderer.setSize(initial.width,initial.height,false);this.renderer.outputColorSpace=THREE.SRGBColorSpace;this.renderer.toneMapping=THREE.ACESFilmicToneMapping;this.renderer.toneMappingExposure=1.15;
     this.renderer.shadowMap.enabled=true;this.renderer.shadowMap.type=THREE.PCFSoftShadowMap;this.renderer.info.autoReset=false;
     checkpoint('webgl-context');this.scopeFeed=new ScopeFeed(this.renderer,1.10);
     checkpoint('scope-feed-construction');
@@ -178,14 +179,16 @@ export class SurgicalScene{
   _makeScopeArm(){this.scopeArm=new THREE.Group();}
   addTissue(tissue){this.tissue=tissue;tissue.group.position.set(0,1.035,0);this.scene.add(tissue.group);tissue.group.traverse(m=>{m.layers.enable(1);if(m.isMesh){m.castShadow=true;m.receiveShadow=true;}});}
   resize(){
-    const w=this.stage.clientWidth,h=this.stage.clientHeight;if(w<1||h<1)return;
+    const {width:w,height:h}=this.frameLayout;if(w<1||h<1)return;
     if(this._width===w&&this._height===h)return;
     const start=performance.now();this._width=w;this._height=h;
     this.renderer.setSize(w,h,false);this.overviewCamera.aspect=w/h;this.overviewCamera.updateProjectionMatrix();this.endoCamera.aspect=w/h;this.endoCamera.updateProjectionMatrix();
     this.resizeTimings??=[];this.resizeTimings.push({at:start,width:w,height:h,ms:performance.now()-start});if(this.resizeTimings.length>32)this.resizeTimings.shift();
   }
   setMode(mode){this.mode=mode;this.controls.enabled=mode==='overview';}
-  get scopeAspect(){const area=this.mode==='endo'?this.stage:this.mini;if(area===this.stage)return Math.max(1,area.clientWidth)/Math.max(1,area.clientHeight);const bounds=area.getBoundingClientRect();return Math.max(1,bounds.width)/Math.max(1,bounds.height);}
+  get frameLayout(){return frameLayout(this.stage,this.mini,this.renderer.getPixelRatio(),this.fixedFrame);}
+  get renderFrame(){const size=this.renderer.getDrawingBufferSize(new THREE.Vector2());return{fixed:!!this.fixedFrame,width:size.x,height:size.y,previewWidth:this.stage.clientWidth,previewHeight:this.stage.clientHeight,layout:this.frameLayout};}
+  get scopeAspect(){const frame=this.frameLayout,area=this.mode==='endo'?frame:frame.mini;return Math.max(1,area.width)/Math.max(1,area.height);}
   home(){const damping=this.controls.enableDamping;this.controls.enableDamping=false;this.controls.update();this.overviewCamera.position.set(1.68,2.02,-1.92);this.controls.target.set(0,1.20,.18);this.controls.update();this.controls.enableDamping=damping;}
   /** Reset is a deliberate offscreen relocation, distinct from undo/history
    * cache invalidation. Start every source joint from the same seed, then solve
@@ -324,10 +327,9 @@ export class SurgicalScene{
   render(now=0){
     const renderStart=performance.now();
     const {filmEnd,batchEnd}=prepareExactGeometry(this);
-    const r=this.renderer,w=this.stage.clientWidth,h=this.stage.clientHeight;
+    const r=this.renderer,{width:w,height:h,mini}=this.frameLayout;
     if(w<1||h<1)return;
-    const stageRect=this.stage.getBoundingClientRect(),miniRect=this.mini.getBoundingClientRect();
-    const mx=miniRect.left-stageRect.left,my=h-(miniRect.top-stageRect.top)-miniRect.height,mw=miniRect.width,mh=miniRect.height;
+    const {x:mx,y:my,width:mw,height:mh}=mini;
     r.info.reset();r.setScissorTest(false);r.setViewport(0,0,w,h);
     // Capture the intracorporeal scene once. The LCD and viewport reuse this frame.
     this.cavity.children[0].visible=true;this.scene.background=new THREE.Color('#6b4a42');
