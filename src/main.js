@@ -14,6 +14,7 @@ import {browserStalls} from './startup-observer.js';
 import {RuntimeAttribution} from './runtime-attribution.js';
 import {SessionExporter} from './session-exporter.js';
 import {prepareSceneMaterials,warmSceneDisplay} from './render-preparation.js';
+import {PausedPresentation} from './paused-presentation.js';
 
 const $=id=>document.getElementById(id),base=import.meta.env.BASE_URL;
 const held=new Set(),pointerHeld=new Set(),allMotion=new Set(['KeyW','KeyA','KeyS','KeyD','KeyQ','KeyE','KeyZ','KeyX','KeyC','KeyV','KeyH','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','BracketLeft','BracketRight','Space','ShiftLeft','ShiftRight']);
@@ -24,6 +25,7 @@ const inputTimings=[];let exportPending=false;const sessionExporter=new SessionE
 sessionExporter.options.onArchiveError=error=>reportError(new Error('异常记录归档失败：'+error));
 browserStalls.setArchive(message=>sessionExporter.worker.postMessage(message));
 const record=[],maxRecords=3000;let toastTimer,inputFrames=0,inputEpoch=0;const timings={},frameStats=new FrameMetrics();
+const pausedPresentation=new PausedPresentation();
 frameStats.onLongFrame=row=>{browserStalls.captureFrame(row,frameStats.rows);frameStats.pinWindow('stall-'+browserStalls.incidentCount,row.work?.endedAt,{beforeMs:1000,afterMs:500});};
 function toast(message){const host=document.fullscreenElement||$('app');if($('toast').parentElement!==host)host.append($('toast'));$('toast').textContent=message;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,3000);}
 function updateCollisionUI(){
@@ -159,6 +161,10 @@ function enforceScopeClearance(){
 }
 function animate(now){
   frameHandle=requestAnimationFrame(animate);const dt=Math.max(0,Math.min(.05,(now-lastFrame)/1000));const priorRaf=lastFrame;lastFrame=now;if(!ready||contextLost)return;
+  if(!pausedPresentation.needsFrame(sim.state.paused,()=>JSON.stringify([sim.state,view.mode,view.frameLayout,view.overviewCamera.position.toArray(),view.overviewCamera.quaternion.toArray(),view.controls.target.toArray(),tissue._epoch,tissue._contactRevision,tissue.updateTimings.receivedAt,tissue.blood.clock,tissue.blood.renderDirty,historyBusy]))){
+    frameStats.sample(now,'manipulation',false);previousFrame.eligible=false;previousFrame.rendered=false;fpsSince=now;fpsFrames=0;
+    if(now-lastUI>1000){lastUI=now;updateUI();setText($('fps'),'已暂停');}return;
+  }
   const start=performance.now();browserStalls.raf(priorRaf,now,start,previousFrame,!sim.state.paused&&!historyBusy&&!document.hidden);const keys=new Set([...held,...pointerHeld]);if(precision==='fine')keys.add('ShiftLeft');if(historyBusy)keys.clear();
   if(!historyBusy)sim.setScopeContext({...makeScopeContext(sim,tissue,interactionController,now),viewAspect:view.scopeAspect});
   if(!historyBusy&&!keys.has('Space'))demo.update(dt);
