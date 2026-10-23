@@ -4,7 +4,7 @@
 
 [**▶ 进入在线演示**](https://wu-make.github.io/surgical-teleop/) · [常用按键](#常用按键) · [本地运行](#本地运行)
 
-[![MIRA 操作界面：左侧为内窥镜术野，右侧为器械控制台，右上小窗为机器人总览](docs/images/workspace.png)](https://wu-make.github.io/surgical-teleop/)
+[![MIRA 操作界面：左侧为内窥镜术野，右侧为器械控制台，右上小窗为机器人总览](docs/images/workspace.jpg)](https://wu-make.github.io/surgical-teleop/)
 
 左侧看内窥镜画面，右侧调整器械；右上小窗可以查看机器人和手术台的整体位置。图片均为项目实际运行截图。
 
@@ -29,7 +29,7 @@
 | 松开、重新夹取 | **V** 松钳；需要重抓时，点击「左钳接近标本」，再按 **C** |
 | 尝试局部止血 | 点击「右端接近渗血切面」，等器械就位后按住 **H**，观察局部渗血变化 |
 
-![左钳夹持已经切离的独立组织块，可继续抬起、移动或旋转](docs/images/held-specimen.png)
+![左钳夹持已经切离的独立组织块，可继续抬起、移动或旋转](docs/images/held-specimen.jpg)
 
 *切离后的组织块由左钳夹持；按 V 松开后会落下，仍可重新夹取。*
 
@@ -37,7 +37,7 @@
 <summary><strong>看看切面，以及几个容易卡住的操作</strong></summary>
 
 <p align="center">
-  <img src="docs/images/cut-surface.png" alt="切离后的组织块与暴露切面实际运行截图" width="340">
+  <img src="docs/images/cut-surface.jpg" alt="切离后的组织块与暴露切面实际运行截图" width="340">
 </p>
 
 - **剪口闭合了，组织还连着？** 剪口要实际接触组织，且必须剪断全部连接，组织块才会分离。
