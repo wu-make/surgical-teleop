@@ -7,6 +7,18 @@ function fixture(fail=false){
   const view={renderer,scene,cavity:{children:[inner]},endoCamera:{name:'endo'},overviewCamera:{name:'overview'},prepareRenderGeometry(){calls.push({kind:'exact-geometry'});},scopeFeed:{target,reserve(r,w,h){calls.push({kind:'reserve',w,h});}}};
   return {view,calls,previous,inner,yieldFrame:async()=>calls.push({kind:'yield'})};
 }
+
+test('empty particle and fibre draws execute both real render variants during loading and restore all instance data even on failure',async()=>{
+  const {warmSceneDisplay}=await import('../src/render-preparation.js');
+  for(const fail of [false,true]){
+    const f=fixture(),array=new Float32Array(32).fill(.37),before=array.slice(),object={isMesh:true,isInstancedMesh:true,count:0,visible:true,instanceMatrix:{array,needsUpdate:false},layers:{mask:3},frustumCulled:true};
+    f.view.scene.traverse=fn=>fn(object);f.view.endoCamera.layers={mask:2};f.view.overviewCamera.layers={mask:1};f.view.stage={clientWidth:949,clientHeight:612};let draws=0;
+    f.view.renderer.render=()=>{draws++;assert.equal(object.count,1);assert(Math.abs(array[0]-.0001)<1e-10);assert.equal(array[15],1);if(fail)throw new Error('draw interrupted');};
+    f.view.scopeFeed.capture=(r,s,c)=>r.render(s,c);f.view.scopeFeed.blit=()=>{};
+    if(fail)await assert.rejects(warmSceneDisplay(f.view,{yieldFrame:f.yieldFrame}),/draw interrupted/);else{await warmSceneDisplay(f.view,{yieldFrame:f.yieldFrame});assert.equal(draws,2);}
+    assert.equal(object.count,0);assert.deepEqual(array,before);assert.equal(object.layers.mask,3);assert.equal(object.frustumCulled,true);
+  }
+});
 test('complete real HDR and window variants compile before any initial draw with unchanged geometry and resolution',async()=>{
   const f=fixture();await prepareSceneMaterials(f.view,{width:1920,height:1080,yieldFrame:f.yieldFrame});
   assert.deepEqual(f.calls.map(c=>c.kind),['exact-geometry','reserve','yield','compile','yield','compile']);

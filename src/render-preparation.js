@@ -31,10 +31,13 @@ export async function prepareSceneMaterials(view,{width,height,yieldFrame=()=>ne
 export async function warmSceneDisplay(view,options={}){
   const r=view.renderer,scene=view.scene,inner=view.cavity.children[0],objects=[];
   const width=view.frameLayout?.width??view.stage.clientWidth,height=view.frameLayout?.height??view.stage.clientHeight;
-  scene.traverse(object=>{if(object.isMesh||object.isLine||object.isPoints||object.isSprite)objects.push({object,mask:object.layers.mask,culled:object.frustumCulled});});
+  scene.traverse(object=>{if(object.isMesh||object.isLine||object.isPoints||object.isSprite)objects.push({object,mask:object.layers.mask,culled:object.frustumCulled,count:object.isInstancedMesh?object.count:null,matrix:object.isInstancedMesh&&object.count===0&&object.instanceMatrix.array.length>=16?object.instanceMatrix.array.slice(0,16):null});});
   const saved={target:r.getRenderTarget(),intensity:scene.environmentIntensity,exposure:r.toneMappingExposure,visible:inner.visible};
   function* draws(){
-    for(const record of objects)record.object.layers.mask=0;
+    // Zero-instance particles/fibres compile but never exercise their actual
+    // instanced draw or shadow path. Prime one original instance while loading;
+    // restore every matrix/count without advancing the physical simulation.
+    for(const record of objects){record.object.layers.mask=0;if(record.matrix){record.object.count=1;record.object.instanceMatrix.array.set([.0001,0,0,0,0,.0001,0,0,0,0,.0001,0,0,0,0,1]);record.object.instanceMatrix.needsUpdate=true;}}
     for(const endoscopy of [true,false]){
       const camera=endoscopy?view.endoCamera:view.overviewCamera;
       inner.visible=endoscopy;scene.environmentIntensity=endoscopy?.34:.80;r.toneMappingExposure=endoscopy?1.10:1.0;
@@ -50,7 +53,7 @@ export async function warmSceneDisplay(view,options={}){
   }
   try{return await runCooperatively(draws(),options);}
   finally{
-    for(const {object,mask,culled}of objects){object.layers.mask=mask;object.frustumCulled=culled;}
+    for(const {object,mask,culled,count,matrix}of objects){object.layers.mask=mask;object.frustumCulled=culled;if(matrix){object.count=count;object.instanceMatrix.array.set(matrix);object.instanceMatrix.needsUpdate=true;}}
     r.setRenderTarget(saved.target);scene.environmentIntensity=saved.intensity;r.toneMappingExposure=saved.exposure;inner.visible=saved.visible;
     if(r.shadowMap)r.shadowMap.needsUpdate=true;
   }
