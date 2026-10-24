@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import {readFile} from 'node:fs/promises';
 import {Simulation,instrumentClearance} from '../src/simulation.js';
 import {TissueVolume} from '../src/tissue.js';
-import {InteractionController} from '../src/interaction-controller.js';
+import {InteractionController,CUT_RADIUS} from '../src/interaction-controller.js';
 import {createVolumeState,applyCapsuleCut,allChunkKeys,polygonizeChunk} from '../src/tissue-worker.js';
 import {loadAssemblies} from '../src/authentic-assemblies.js';
 
@@ -179,8 +179,10 @@ test('real curved CAD blades cut a 35 mm raised BodyParts liver tent with clear 
     const displacement=new THREE.Vector3(0,0,.035);f.tissue.setGrasp(anchor,displacement);
     const held=f.tissue.group.localToWorld(f.tissue.deformPoint(anchor));
     const left=f.sim.state.tools.left,right=f.sim.state.tools.right;
-    left.position=held.toArray();left.jaw=0;left.wrist=[-2.9989633371462627,-1.7522124481673962,-1.8711020171722994];
-    right.position=[-.021213295416704214,1.1418066237048135,-.01838100938528305];
+    // The narrower CAD-sized kerf requires physical middle-blade contact:
+    // rotate the left wrist clear, then place the right jaw 1 mm closer.
+    left.position=held.toArray();left.jaw=0;left.wrist=[-2.9989633371462627,-1.7522124481673962,-1.3711020171722994];
+    right.position=[-.021213295416704214,1.1408066237048135,-.01838100938528305];
     right.wrist=[.23878295820621145,-2.3446010070384746,2.216962990561834];right.jaw=0;
     for(const tool of [left,right])tool.alignment=new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,0,1),new THREE.Vector3(...tool.position).sub(new THREE.Vector3(...tool.port)).normalize()).toArray();
     assert.ok(instrumentClearance(left,right)>.0001,'the regression must not bypass a genuine two-tool collision');
@@ -188,8 +190,8 @@ test('real curved CAD blades cut a 35 mm raised BodyParts liver tent with clear 
     assert.ok(assemblies.tools.left.rcmError<1e-9&&assemblies.tools.right.rcmError<1e-9,'both source shafts still pass their commanded ports');
     const blade=assemblies.toolBlade('right');
     const wholeEnds=[blade.segments[0].a,blade.segments[5].b,blade.segments[6].a,blade.segments[11].b];
-    assert.ok(wholeEnds.every(point=>f.tissue.contactDistance(f.tissue.group.worldToLocal(point.clone()),.0032)>.0032),'both ends of each complete source jaw remain in air');
-    assert.ok(blade.segments.some(segment=>f.tissue.contactSegment(f.tissue.group.worldToLocal(segment.a.clone()),f.tissue.group.worldToLocal(segment.b.clone()),.0032).contact));
+    assert.ok(wholeEnds.every(point=>f.tissue.contactDistance(f.tissue.group.worldToLocal(point.clone()),CUT_RADIUS)>CUT_RADIUS),'both ends of each complete source jaw remain in air');
+    assert.ok(blade.segments.some(segment=>f.tissue.contactSegment(f.tissue.group.worldToLocal(segment.a.clone()),f.tissue.group.worldToLocal(segment.b.clone()),CUT_RADIUS).contact));
     const interaction=new InteractionController(f.sim,f.tissue,{toolBlade:side=>assemblies.toolBlade(side),toolQuaternion:side=>assemblies.tools[side].tipQuaternion});
     interaction.grasp={kind:'tissue',fragmentId:null,deformationModel:'local-flow',local:anchor.toArray(),reference:anchor.toArray(),displacement:displacement.toArray()};
     await interaction.update(1/60);

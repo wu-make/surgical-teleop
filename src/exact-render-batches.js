@@ -24,7 +24,8 @@ export class ExactRenderBatches {
   }
   _geometry(group,geometry){
     let record=group.geometries.get(geometry);if(record)return record;
-    const v=geometry.attributes.position.count,i=geometry.index?.count??0;
+    const vertices=geometry.attributes.position.count,indices=geometry.index?.count??0,reusable=!!geometry.attributes.tissueRestPosition;
+    const v=reusable?Math.ceil(vertices*1.35):vertices,i=reusable?Math.ceil(indices*1.35):indices;
     if(group.vCursor+v>group.vCapacity||group.iCursor+i>group.iCapacity){
       const optimizeStart=performance.now();group.mesh.optimize();this._operation('compact',optimizeStart,group,true);group.vCursor=0;group.iCursor=0;
       for(const value of group.geometries.values()){const range=group.mesh.getGeometryRangeAt(value.id);group.vCursor=Math.max(group.vCursor,range.vertexStart+range.reservedVertexCount);group.iCursor=Math.max(group.iCursor,range.indexStart+range.reservedIndexCount);}
@@ -33,7 +34,7 @@ export class ExactRenderBatches {
     // addGeometry already copies every attribute/index. Recording its versions
     // avoids immediately copying the whole new cut surface a second time.
     const attributes=Object.values(geometry.attributes);
-    const addStart=performance.now();record={id:group.mesh.addGeometry(geometry),references:0,attributes,versions:attributes.map(a=>a.version),indexVersion:geometry.index?.version??0,vertices:v,indices:i};group.vCursor+=v;group.iCursor+=i;group.geometries.set(geometry,record);this._operation('add',addStart,group);return record;
+    const addStart=performance.now();record={id:group.mesh.addGeometry(geometry,v,i),references:0,attributes,versions:attributes.map(a=>a.version),indexVersion:geometry.index?.version??0,vertices,indices};group.vCursor+=v;group.iCursor+=i;group.geometries.set(geometry,record);this._operation('add',addStart,group);return record;
   }
   _remove(source,record){
     const {group,geometry}=record;group.mesh.deleteInstance(record.instance);group.active--;geometry.references--;
@@ -41,9 +42,18 @@ export class ExactRenderBatches {
     source.layers.mask=record.mask;this.records.delete(source);
   }
   sync(sources){return runImmediately(this.syncSteps(sources));}
+  _reuse(source,record){
+    const geometry=source.geometry,old=record.geometry,group=record.group;
+    if(old.references!==1||!geometry.attributes.tissueRestPosition||this._key(source,source.layers.mask||record.mask)!==record.key)return false;
+    const range=group.mesh.getGeometryRangeAt(old.id);
+    if(geometry.attributes.position.count>range.reservedVertexCount||(geometry.index?.count??0)>range.reservedIndexCount)return false;
+    const start=performance.now();group.mesh.setGeometryAt(old.id,geometry);group.geometries.delete(record.sourceGeometry);
+    old.attributes=Object.values(geometry.attributes);old.versions=old.attributes.map(a=>a.version);old.indexVersion=geometry.index?.version??0;old.vertices=geometry.attributes.position.count;old.indices=geometry.index?.count??0;
+    record.sourceGeometry=geometry;group.geometries.set(geometry,old);this._operation('reuse',start,group);return true;
+  }
   *syncSteps(sources){
     const eligible=new Set(sources.filter(m=>m.isMesh&&!m.isInstancedMesh&&!m.isBatchedMesh&&!m.isSkinnedMesh&&!Array.isArray(m.material)&&!m.material.transparent&&!Object.keys(m.geometry.morphAttributes).length&&m.geometry.drawRange.start===0&&m.geometry.drawRange.count===Infinity));
-    for(const [source,record]of this.records){const g=source.geometry;if(!eligible.has(source)||g!==record.sourceGeometry||g.attributes.position.count!==record.geometry.vertices||(g.index?.count??0)!==record.geometry.indices||this._key(source,source.layers.mask||record.mask)!==record.key)this._remove(source,record);}
+    for(const [source,record]of this.records){const g=source.geometry;if(!eligible.has(source)){this._remove(source,record);continue;}if(g!==record.sourceGeometry&&this._reuse(source,record))continue;if(g!==record.sourceGeometry||g.attributes.position.count!==record.geometry.vertices||(g.index?.count??0)!==record.geometry.indices||this._key(source,source.layers.mask||record.mask)!==record.key)this._remove(source,record);}
     const newGroups=new Map();for(const source of eligible)if(!this.records.has(source)){const key=this._key(source,source.layers.mask);if(!newGroups.has(key))newGroups.set(key,[]);newGroups.get(key).push(source);}
     for(const [key,list]of newGroups){
       let group=this.groups.get(key);if(!group&&list.length<2)continue;group??=this._group(key,list);

@@ -3,6 +3,18 @@ import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import {filmSupport} from '../src/film-support.js';
 
+test('spatial kernel bins produce exactly the exhaustive wet-triangle support for dense moving fields',()=>{
+  const g=new THREE.PlaneGeometry(.08,.06,70,60);g.setAttribute('filmReference',g.attributes.position);g.setAttribute('filmRestNormal',g.attributes.normal);g.userData.fullFilmIndex=g.index;
+  const fields={count:{value:64},texture:{image:{data:new Float32Array(64*12)}}},data=fields.texture.image.data,p=g.attributes.position,n=g.attributes.normal;
+  for(let phase=0;phase<4;phase++){
+    for(let j=0;j<64;j++)data.set([Math.sin(j*31+phase)*.043,Math.cos(j*17-phase)*.032,0,(.0015+j%5*.001)**2,0,0,j%7===0?-1:1,1,0,0,0,0],j*12);
+    const wet=new Uint8Array(p.count);
+    for(let i=0;i<p.count;i++)for(let j=0;j<64;j++){const k=j*12,dx=p.getX(i)-data[k],dy=p.getY(i)-data[k+1],dz=p.getZ(i)-data[k+2];if(dx*dx+dy*dy+dz*dz<=data[k+3]*1.00001+1e-12&&n.getX(i)*data[k+4]+n.getY(i)*data[k+5]+n.getZ(i)*data[k+6]>=.14999){wet[i]=1;break;}}
+    const expected=[];for(let i=0;i<g.index.count;i+=3){const [a,b,c]=g.index.array.subarray(i,i+3);if(wet[a]||wet[b]||wet[c])expected.push(a,b,c);}
+    assert.deepEqual(Array.from(filmSupport(g,fields).index.array),expected);
+  }g.dispose();
+});
+
 test('conservative film support retains every possibly wet triangle in source order through kernel motion',()=>{
   const g=new THREE.PlaneGeometry(.06,.04,60,40);g.setAttribute('filmReference',g.attributes.position);g.setAttribute('filmRestNormal',g.attributes.normal);g.userData.fullFilmIndex=g.index;
   const fields={count:{value:3},texture:{image:{data:new Float32Array(36)}}};let prior=null;

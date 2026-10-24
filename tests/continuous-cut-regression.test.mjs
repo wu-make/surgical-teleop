@@ -40,6 +40,15 @@ function bench({plate=false,holdFirst=false}={}){
     field(point){const grid=point.map((v,i)=>Math.round((v-origin[i])/spacing[i]));return volume.field[nodeIndex(volume.meta,...grid)];}};
 }
 
+test('partial opening and movement cannot cut; the next actual closure resumes cutting',async()=>{
+  const f=bench();try{
+    await f.interaction.update(1/60);const before=f.operations.length;
+    f.interaction.breakCutTrajectory();f.sim.state.tools.right.jaw=.08;f.at(-.006);await f.interaction.update(1/60);
+    f.at(.006);await f.interaction.update(1/60);assert.equal(f.operations.length,before,'opening or parking partly open must not scrape a groove');
+    f.sim.state.tools.right.jaw=.02;await f.interaction.update(1/60);assert(f.operations.length>before,'actual closing bites the newly positioned tissue');
+  }finally{f.tissue.dispose();}
+});
+
 test('a busy worker preserves the entire 24 mm path as bounded complete-CAD passes',async()=>{
   const f=bench({holdFirst:true});
   try{

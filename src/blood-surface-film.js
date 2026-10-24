@@ -71,8 +71,15 @@ export class BloodSurfaceFilm {
       this.mesh.geometry=this.geometry;this.mesh.material=material(true,this.fields);
       // Compile and upload during the existing loading render, before the
       // first wet contact. Retain the program through reset/history replay.
-      this.warmGeometry=new THREE.BufferGeometry();for(const name of ['position','normal','filmReference','filmRestNormal'])this.warmGeometry.setAttribute(name,new THREE.BufferAttribute(new Float32Array(9),3));this.warmGeometry.setDrawRange(0,0);
-      this.warmMesh=new THREE.Mesh(this.warmGeometry,this.mesh.material);this.warmMesh.layers.enable(1);this.warmMesh.frustumCulled=false;this.warmMesh.onAfterRender=()=>{this.warmMesh.visible=false;};this.mesh.add(this.warmMesh);
+      // A zero-count draw compiles GLSL but does not execute a wet vertex,
+      // initialise its VAO or exercise the field texture. Use an isolated real
+      // triangle/kernel during loading, without adding any simulated blood.
+      this.warmFields=makeFields(capacity);this.warmFields.count.value=capacity;
+      for(let i=0;i<capacity;i++)encode(this.warmFields.texture.image.data,{reference:[0,0,0],restNormal:[0,0,1],area:6.25,volume:.000001},i);
+      this.warmFields.texture.needsUpdate=true;
+      this.warmGeometry=new THREE.BufferGeometry();for(const name of ['position','normal','filmReference','filmRestNormal'])this.warmGeometry.setAttribute(name,new THREE.BufferAttribute(new Float32Array(9),3));
+      this.warmGeometry.attributes.position.array.set([0,0,0,.0001,0,0,0,.0001,0]);for(const name of ['normal','filmRestNormal'])this.warmGeometry.attributes[name].array.set([0,0,1,0,0,1,0,0,1]);this.warmGeometry.setDrawRange(0,3);
+      this.warmMesh=new THREE.Mesh(this.warmGeometry,material(true,this.warmFields));this.warmMesh.layers.enable(1);this.warmMesh.frustumCulled=false;this.warmMesh.onAfterRender=()=>{this.warmMesh.visible=false;};this.mesh.add(this.warmMesh);
     }
     this.mesh.name='Connected_Blood_Film_On_Actual_Tissue_Triangles';this.mesh.layers.enable(1);this.mesh.frustumCulled=false;this.mesh.renderOrder=2;
     this.kernelOwners=new Map();this.kernelEntries=[];this.records=new WeakMap();this.owners=new Map();this.displayRecords=[];this.gpuMaterials=new Map();this.overlays=new Map();this.capacity=0;if(!gpu)this._reserve(65536);this.geometry.setDrawRange(0,0);
@@ -183,7 +190,7 @@ export class BloodSurfaceFilm {
       const candidates=owner.list.filter(e=>boxDistanceSq(record.bounds,e.node.reference)<e.r2);if(!candidates.length)return;
       active.add(mesh);
       let layer=this.overlays.get(mesh);
-      if(!layer){
+      if(!layer||layer.sourceGeometry!==g){
         // Alias exact source arrays with independently owned GPU attributes.
         // Do not change the parent's batching schema or share GL disposal.
         const surface=new THREE.BufferGeometry();
@@ -193,8 +200,10 @@ export class BloodSurfaceFilm {
         if(g.index)surface.setIndex(new THREE.BufferAttribute(g.index.array,1));else surface.setIndex(Array.from({length:g.attributes.position.count},(_,i)=>i));
         surface.userData.fullFilmIndex=surface.index;
         surface.setIndex(new THREE.BufferAttribute(new surface.index.array.constructor(surface.index.count),1).setUsage(THREE.DynamicDrawUsage));
-        const fields=makeFields(this.fields.capacity),overlay=new THREE.Mesh(surface,material(true,fields));overlay.name='Wet_Film_On_Exact_Source_Buffer';overlay.layers.enable(1);overlay.renderOrder=3;overlay.frustumCulled=false;
-        layer={mesh,piece,overlay,fields,positionVersion:g.attributes.position.version,normalVersion:g.attributes.normal.version};this.mesh.add(overlay);this.overlays.set(mesh,layer);
+        const fields=layer?.fields??makeFields(this.fields.capacity),overlay=layer?.overlay??new THREE.Mesh(surface,material(true,fields));
+        if(layer){overlay.geometry.dispose();overlay.geometry=surface;}
+        else{overlay.name='Wet_Film_On_Exact_Source_Buffer';overlay.layers.enable(1);overlay.renderOrder=3;overlay.frustumCulled=false;this.mesh.add(overlay);}
+        layer={mesh,piece,overlay,fields,sourceGeometry:g,positionVersion:g.attributes.position.version,normalVersion:g.attributes.normal.version};this.overlays.set(mesh,layer);
       }
       // Conservative chunk support rejects only kernels whose entire sphere
       // misses the source bounds. All surviving normal/distance decisions are
@@ -233,5 +242,5 @@ export class BloodSurfaceFilm {
     }
     if(changed)for(const a of [out.position,out.normal]){a.clearUpdateRanges();a.addUpdateRange(0,this.stats.vertices*3);a.needsUpdate=true;}
   }
-  dispose(){if(this.gpu)this.reset();this.geometry.dispose();this.warmGeometry?.dispose();this.fields.texture.dispose();this.mesh.material.dispose();this.mesh.removeFromParent();}
+  dispose(){if(this.gpu)this.reset();this.geometry.dispose();this.warmGeometry?.dispose();this.warmFields?.texture.dispose();this.warmMesh?.material.dispose();this.fields.texture.dispose();this.mesh.material.dispose();this.mesh.removeFromParent();}
 }

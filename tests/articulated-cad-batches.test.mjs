@@ -19,6 +19,7 @@ test('real articulated CAD retains every source attribute/index, layer and world
       state.tools.left.jaw=phase;state.tools.right.jaw=1-phase;state.tools.left.wrist=[phase*.2,-phase*.3,phase*7];state.tools.right.wrist=[-phase*.3,phase*.4,-phase*6];assembly.update(state,1/30);
       g1.scene.getObjectByName('left_shoulder_pitch_joint').rotation.x=phase*.8;g1.scene.getObjectByName('right_elbow_joint').rotation.y=-phase*.6;
       SurgicalScene.prototype.prepareRenderGeometry.call(view);
+      let robotParts=0;g1.scene.traverse(source=>{if(source.isMesh){robotParts++;assert(view.exactBatches.records.has(source),'every original G1 CAD part uses the exact batch transport');}});assert(robotParts>20);
       for(const [source,mask]of toolLayers)if(mask&2){assert.equal(source.layers.mask,mask,'operative CAD keeps its original draw path');assert(!view.exactBatches.records.has(source));}
       assert(view.exactBatches.records.size>20);assert(view.exactBatches.metrics.batches<view.exactBatches.records.size);
       for(const [source,record]of view.exactBatches.records){

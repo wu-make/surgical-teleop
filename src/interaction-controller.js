@@ -10,7 +10,10 @@ const asVector=point=>point?.isVector3?point.clone():new THREE.Vector3(...point)
 // CAD TCP is at the jaws. This is a contact tolerance for the 1.5 mm volume,
 // not a magnetic pickup radius or a claimed material precision.
 const GRASP_CONTACT_MARGIN=.002;
-const CUT_RADIUS=.0024;
+// A 3.3 mm kerf follows the source CAD distal transverse envelope (~3.26 mm)
+// instead of treating the TCP as a 4.8 mm circular cutter.
+// The complete curved CAD edges still define its length and closing sweep.
+export const CUT_RADIUS=.00165;
 
 /** Shared interaction path for manual input and the optional guided example. */
 export class InteractionController {
@@ -95,8 +98,8 @@ export class InteractionController {
 
   _setCutStatus(status,reason){this.contact.cutStatus=status;this.contact.cutReason=reason;}
 
-  _clearCutTrajectory(){this._jawObservation=null;this._cutSpans=[];this._cutTail=null;this._pendingCutSamples=0;this._cutOverflow=false;}
-  _breakCutTrajectory(){this._cutTail=null;this._cutOverflow=false;this._jawObservation=null;}
+  _clearCutTrajectory(){this._jawObservation=null;this._jawOpening=false;this._cutSpans=[];this._cutTail=null;this._pendingCutSamples=0;this._cutOverflow=false;}
+  _breakCutTrajectory(){this._cutTail=null;this._cutOverflow=false;}
   /** Call on discrete B/pause/clutch transitions as well as rendered frames,
    * so an off/on pair between two renders can never bridge the disabled gap. */
   breakCutTrajectory(){this._breakCutTrajectory();}
@@ -384,14 +387,17 @@ export class InteractionController {
     this.timings={graspMs:graspEnd-updateStart,contactMs:bloodStart-graspEnd,bloodMs:bloodEnd-bloodStart,bladeMs:performance.now()-bloodEnd};
     this.contact.cutting = !!this._cutTask;
     const jaw=right.jaw;
+    const closing=this._jawObservation!=null&&jaw<this._jawObservation-1e-6;
+    if(this._jawObservation!=null&&jaw>this._jawObservation+1e-6)this._jawOpening=true;
+    if(closing)this._jawOpening=false;
     if(compressing){this.lastCut=null;this._breakCutTrajectory();this._setCutStatus('pressure',this.tissue.blood?.pressureContacts?'局部压迫中：观察渗血变化；松开 H 后继续检查':'压迫需稳定接触渗血切面：闭合器械，精细贴近；左钳需先释放组织');}
     else if(!this.sim.state.cutting){this.lastCut=null;this._noMaterialAttempt=null;this._breakCutTrajectory();this._setCutStatus('disabled','右剪待命：按 C 闭合剪切');}
-    else if(jaw>.22 && !(this._jawObservation!=null && jaw<this._jawObservation-1e-6)){
+    else if(this._jawOpening||(jaw>.22&&!closing)){
       // Retain the open CAD pose as the start of a closure, without cutting
       // while opening or parked open. Closing samples the actual opposing edges.
       this.lastCut=null;this._noMaterialAttempt=null;this._breakCutTrajectory();
       this._cutTail=captureBladePose(blade,point,this._toolQuaternionLocal('right'),jaw,right.wrist,this.tissue._deformation??null);
-      this._setCutStatus('jaw-open','右剪已待命：让组织位于剪口之间，再按 C 闭合');
+      this._setCutStatus('jaw-open',this._jawOpening?'剪口张开时不切削：将组织置于剪口之间，再按 C 闭合':'右剪已待命：让组织位于剪口之间，再按 C 闭合');
     }
     else if(clutched){this.lastCut=null;this._breakCutTrajectory();this._setCutStatus('clutched','松开空格离合后继续剪切');}
     else{

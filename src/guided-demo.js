@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { surfacePose } from './interaction-controller.js';
+import { surfacePose,CUT_RADIUS } from './interaction-controller.js';
 import { deformPoint as materialDisplay, normalizeDeformation } from './tissue-worker.js';
 import {runCooperatively,runImmediately} from './cooperative-work.js';
 
@@ -10,11 +10,11 @@ const defaults = { left: [-.025, 1.106, -.015], right: [.025, 1.108, -.015] };
  * The raster covers the whole occupied cross-section, rather than drawing one
  * groove and pretending it detached. Returned positions are material coordinates.
  */
-export function planPeripheralResections(tissue, {depth=.012,cutRadius=.0024}={}) {
+export function planPeripheralResections(tissue, {depth=.012,cutRadius=CUT_RADIUS}={}) {
   return runImmediately(planPeripheralResectionSteps(tissue,{depth,cutRadius}));
 }
 
-export function* planPeripheralResectionSteps(tissue, {depth=.012,cutRadius=.0024}={}) {
+export function* planPeripheralResectionSteps(tissue, {depth=.012,cutRadius=CUT_RADIUS}={}) {
   if(!tissue.queryReferenceDistance||!tissue.metadata)return [];
   const meta=tissue.metadata,spacing=Math.max(...meta.spacing),step=Math.min(cutRadius*1.45,Math.max(.0025,spacing*1.8));
   const bounds=meta.bounds??[meta.origin.map(v=>v+spacing*2),meta.origin.map((v,i)=>v+(meta.dims[i]-3)*meta.spacing[i])];
@@ -336,7 +336,10 @@ export class GuidedDemo {
       this.sim.setJaw('right',.85*(1-progress(.6)));
       if(this.phaseTime>=.7)this._phase('raster');
     }else if(this.phase==='raster'){
-      if(this.tissue.busy||this.interaction.cuttingBusy)return;
+      // Preserve the real continuous CAD path in the bounded input queue.
+      // Waiting for every single mesh reply prevented adjacent shear samples
+      // from sharing a worker rebuild and visibly stopped the scissors.
+      if((this.interaction.contact?.pendingCutSamples??0)>12||(this.interaction.contact?.cutBacklogMm??0)>CUT_RADIUS*2000)return;
       const next=this.plan.path[this.pathIndex+1];
       if(!next){this.sim.setCutting(false);this.sim.setJaw('right',.7);this._phase('wait-separation','基底扫描完成，正在确认真实体素连通性');return;}
       const remaining=this.pathPoint.distanceTo(next),step=Math.min(.00085,.028*dt,remaining);

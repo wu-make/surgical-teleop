@@ -3,6 +3,16 @@ import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import {ExactRenderBatches} from '../src/exact-render-batches.js';
 import {runCooperatively} from '../src/cooperative-work.js';
+
+test('a live tissue chunk retains its exact instance and reserved GPU slot when its cut geometry changes',()=>{
+  const scene=new THREE.Scene(),material=new THREE.MeshPhysicalMaterial(),make=()=>{const g=new THREE.BoxGeometry(.01,.01,.01);g.setAttribute('tissueRestPosition',g.attributes.position.clone());g.setAttribute('tissueCutMask',new THREE.BufferAttribute(new Float32Array(g.attributes.position.count),1));return g;};
+  const sources=[new THREE.Mesh(make(),material),new THREE.Mesh(make(),material)];for(const m of sources){m.layers.enable(1);scene.add(m);}
+  const batch=new ExactRenderBatches(scene);try{
+    batch.sync(sources);const original=batch.records.get(sources[0]),instance=original.instance,slot=original.geometry.id,buffer=original.group.mesh.geometry.attributes.position.array;
+    for(let i=0;i<120;i++){const old=sources[0].geometry,g=make();g.attributes.position.setX(0,.005+i*.000001);sources[0].geometry=g;old.dispose();batch.sync(sources);assert.equal(batch.records.get(sources[0]).instance,instance);assert.equal(batch.records.get(sources[0]).geometry.id,slot);assert.equal(original.group.mesh.geometry.attributes.position.array,buffer);verify(batch,sources[0]);}
+    assert.equal(batch.metrics.operationCounts.reuse,120);assert.equal(batch.metrics.operationCounts.compact??0,0);
+  }finally{batch.dispose();sources.forEach(m=>m.geometry.dispose());material.dispose();}
+});
 function verify(batcher,source){
   const record=batcher.records.get(source);assert(record);const batch=record.group.mesh,range=batch.getGeometryRangeAt(record.geometry.id),matrix=new THREE.Matrix4();batch.getMatrixAt(record.instance,matrix);matrix.premultiply(batcher.root.matrixWorld);
   const expected=new THREE.Vector3(),actual=new THREE.Vector3(),g=source.geometry;

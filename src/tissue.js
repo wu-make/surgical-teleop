@@ -565,8 +565,8 @@ export class TissueVolume {
     this._contactQueryCache.clear();
     const previous = this._meshes.get(chunk.key);
     if (previous?.geometry.userData.deformed) this._affectedVertices -= previous.geometry.userData.deformationCache?.activeCount ?? 0;
-    if (previous) { previous.geometry.dispose(); this.group.remove(previous); this._meshes.delete(chunk.key); }
-    if (!chunk.positions.length) return;
+    if (previous) previous.geometry.dispose();
+    if (!chunk.positions.length) {if(previous){this.group.remove(previous);this._meshes.delete(chunk.key);}return;}
     const geometry = new THREE.BufferGeometry();
     geometry.userData.restPositions = chunk.positions;
     geometry.userData.restNormals = chunk.normals;
@@ -581,13 +581,15 @@ export class TissueVolume {
     geometry.computeBoundingSphere();
     geometry.userData.restSphere = geometry.boundingSphere.clone();
     geometry.computeBoundingBox(); geometry.userData.restBox = geometry.boundingBox.clone();
-    const mesh = new THREE.Mesh(geometry, this.material);
+    // Keep chunk identity so the exact multi-draw slot and blood layer can be
+    // updated in place instead of churning instances on each scissor sample.
+    const mesh = previous??new THREE.Mesh(geometry, this.material);mesh.geometry=geometry;
     mesh.name = `liver-chunk-${chunk.key}`;
     mesh.castShadow = true; mesh.receiveShadow = true;
-    mesh.layers.enable(1);
+    if(!previous)mesh.layers.enable(1);
     mesh.userData.tissue = true;
     this._affectedVertices += this._applyDeformation(mesh);
-    this.group.add(mesh); this._meshes.set(chunk.key, mesh);
+    if(!previous)this.group.add(mesh);this._meshes.set(chunk.key, mesh);this.blood._surfaceCache.delete(mesh.uuid);
   }
 
   _fail(error) {

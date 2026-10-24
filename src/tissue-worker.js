@@ -1,4 +1,5 @@
 import {prepareWoundSurface,selectWoundSurface} from './wound-surface.js';
+import {refineIncisionSurface} from './incision-surface.js';
 import {buildSurfaceTree} from './surface-tree.js';
 // Anatomy is sampled in metres. The field is negative inside the source organ.
 // These exports deliberately have no browser dependencies so the same geometry
@@ -379,6 +380,13 @@ function surfaceColor(point, originalDistance, width) {
   return [(0.19 + 0.14 * cut) * noise, (0.027 + 0.027 * cut) * noise, (0.018 + 0.024 * cut) * noise];
 }
 
+function sampleVolumeField(state,point,original=false){
+  const {meta}=state,field=original?state.base:state.field;
+  const gx=clamp((point[0]-meta.origin[0])/meta.spacing[0],0,meta.dims[0]-1),gy=clamp((point[1]-meta.origin[1])/meta.spacing[1],0,meta.dims[1]-1),gz=clamp((point[2]-meta.origin[2])/meta.spacing[2],0,meta.dims[2]-1);
+  const lx=Math.min(Math.floor(gx),meta.dims[0]-2),ly=Math.min(Math.floor(gy),meta.dims[1]-2),lz=Math.min(Math.floor(gz),meta.dims[2]-2),fx=gx-lx,fy=gy-ly,fz=gz-lz;let result=0;
+  for(let z=0;z<=1;z++)for(let y=0;y<=1;y++)for(let x=0;x<=1;x++)result+=field[nodeIndex(meta,lx+x,ly+y,lz+z)]*(x?fx:1-fx)*(y?fy:1-fy)*(z?fz:1-fz);
+  return result;
+}
 export function polygonizeChunk(state, key) {
   const [cx, cy, cz] = key.split(',').map(Number);
   const { meta, field, base, chunkSize } = state;
@@ -437,7 +445,8 @@ export function polygonizeChunk(state, key) {
       }
     }
   }
-  return { key, positions: new Float32Array(positions), normals: new Float32Array(normals), colors: new Float32Array(colors), cutMasks: new Float32Array(cutMasks), indices: new Uint32Array(indices) };
+  const mesh={ key, positions: new Float32Array(positions), normals: new Float32Array(normals), colors: new Float32Array(colors), cutMasks: new Float32Array(cutMasks), indices: new Uint32Array(indices) };
+  return refineIncisionSurface(mesh,{spacing:meta.spacing,sampleField:p=>sampleVolumeField(state,p),sampleOriginal:p=>sampleVolumeField(state,p,true),colour:(p,d)=>surfaceColor(p,d,state.bandWidth),mask:d=>cutSurfaceMask(d,state.bandWidth)});
 }
 
 function scanComponents(state, values, labels = null) {

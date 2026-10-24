@@ -46,7 +46,7 @@ function exactSources(view){
   const a=view.assemblies,sources=[];
   // Keep the two operative instruments on their original draw path: their
   // specular edges must remain pixel-identical in the endoscopic image.
-  for(const root of [view.room,a?.scope?.group,a?.scopeArm?.mount])root?.traverse(m=>{if(m.isMesh)sources.push(m);});
+  for(const root of [view.room,view.robotModel,a?.scope?.group,a?.scopeArm?.mount])root?.traverse(m=>{if(m.isMesh)sources.push(m);});
   for(const tool of Object.values(a?.tools??{}))tool.group.traverse(m=>{if(m.isMesh&&!((view.exactBatches?.records.get(m)?.mask??m.layers.mask)&2))sources.push(m);});
   for(const mesh of view.tissue?._meshes.values()??[])sources.push(mesh);
   for(const piece of view.tissue?.fragments.items.values()??[])sources.push(piece.mesh);

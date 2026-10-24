@@ -11,6 +11,22 @@ function plane(t,{slope=0,gap=false}={}){
 }
 const source=(x,volume=1)=>({key:String(x),reference:[x,.01,0],restNormal:[0,1,0],area:6.25,physicalArea:6.25,volume,clot:0,cut:true,injured:false,fragmentId:null});
 
+test('loading warmup executes a real wet-field triangle while keeping the physical blood state pristine',()=>{
+  const t=new TissueVolume({gpuBlood:true});try{
+    const f=t.blood.surfaceFilm;assert.equal(f.warmGeometry.drawRange.count,3);assert(f.warmFields.count.value>0);assert.notEqual(f.warmFields,f.fields);assert.equal(f.fields.count.value,0);assert.equal(t.blood.emitted,0);assert.equal(t.blood.nodes.length,0);
+    assert(f.warmFields.texture.image.data.every(Number.isFinite));assert(f.warmGeometry.attributes.normal.array.some(v=>v===1));
+    f.warmMesh.onAfterRender();assert.equal(f.warmMesh.visible,false);
+  }finally{t.dispose();}
+});
+
+test('a cut replacing a live chunk reuses its blood material and field texture while binding the complete new surface',()=>{
+  const t=new TissueVolume({gpuBlood:true});try{
+    const mesh=plane(t),b=t.blood;b.nodes=[source(0)];b.render();const original=b.surfaceFilm.overlays.get(mesh),material=original.overlay.material,texture=original.fields.texture,overlay=original.overlay;
+    const old=mesh.geometry,next=old.clone();next.attributes.position.setY(0,.0101);next.attributes.position.needsUpdate=true;next.computeBoundingBox();next.userData.restBox=next.boundingBox.clone();mesh.geometry=next;old.dispose();b.render();
+    const updated=b.surfaceFilm.overlays.get(mesh);assert.equal(updated.overlay,overlay);assert.equal(updated.overlay.material,material);assert.equal(updated.fields.texture,texture);assert.equal(updated.overlay.geometry.attributes.position.array,next.attributes.position.array);assert.equal(updated.overlay.geometry.userData.fullFilmIndex.array,next.index.array);
+  }finally{t.dispose();}
+});
+
 test('adjacent blood cells form a continuous physical layer on the original tissue triangles',()=>{
   const t=new TissueVolume();try{
     plane(t);const b=t.blood;b.nodes=[source(-.00125),source(.00125)];b.updatePositions();b.render();
