@@ -4,6 +4,9 @@ import {createVolumeState,allChunkKeys,applyCapsuleCut,polygonizeChunk,normalize
 import {refineIncisionSurface} from '../src/incision-surface.js';
 import {TissueVolume} from '../src/tissue.js';
 import {CUT_RADIUS} from '../src/interaction-controller.js';
+import * as THREE from 'three';
+import {buildSurfaceTree,surfaceTreeBounds} from '../src/surface-tree.js';
+import {closestParentSurface,firstParentHit} from '../src/tissue-contact.js';
 
 function organ(){
   const n=25,spacing=.0015,origin=-.018,field=new Float32Array(n**3);
@@ -74,11 +77,18 @@ test('worker-prepared raised chunk preserves exact Float32 positions, normals an
   }finally{tissue.dispose();}
 });
 
-test('stale worker mapping and its contact bounds are rejected when the hand releases before the response',()=>{
+test('release before a worker response rejects stale mapping and bounds while preserving exact parent contact',()=>{
   const state=organ(),mesh=polygonizeChunk(state,'1,1,2'),d=normalizeDeformation({model:'local-flow',local:[0,0,.012],displacement:[0,0,.027]}),tissue=new TissueVolume();
   try{
-    tissue._replaceChunk({...mesh,display:prepareChunkDisplay(mesh,d),contactTree:{wrongPose:true}});const g=tissue._meshes.get(mesh.key).geometry;
-    assert.deepEqual(g.attributes.position.array,mesh.positions);assert.deepEqual(g.attributes.normal.array,mesh.normals);assert.equal(g.userData.surfaceTree,null);
+    const display=prepareChunkDisplay(mesh,d),contactTree=buildSurfaceTree(display.positions,mesh.indices),restContactBounds=surfaceTreeBounds(contactTree,mesh.positions,mesh.indices);
+    tissue._replaceChunk({...mesh,display,contactTree,restContactBounds});const actual=tissue._meshes.get(mesh.key),g=actual.geometry;
+    assert.deepEqual(g.attributes.position.array,mesh.positions);assert.deepEqual(g.attributes.normal.array,mesh.normals);
+    const copy=g.clone();copy.userData={};const expected=new THREE.Mesh(copy);
+    for(let i=0;i<30;i++){
+      const a=new THREE.Vector3(Math.sin(i)*.02,Math.cos(i)*.02,.03),b=a.clone().negate(),x=firstParentHit([actual],a,b),y=firstParentHit([expected],a,b);assert.equal(!!x,!!y);if(y)assert(x.distanceTo(y)<1e-10);
+      const p=closestParentSurface([actual],a,.1),q=closestParentSurface([expected],a,.1);assert.equal(!!p,!!q);if(q)assert(p.distanceTo(q)<1e-10);
+    }
+    copy.dispose();expected.material.dispose();
   }finally{tissue.dispose();}
 });
 

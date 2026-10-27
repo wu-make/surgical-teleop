@@ -10,6 +10,8 @@ import {prepareEnvironment} from './environment-preparation.js';
 import {runCooperatively,runImmediately} from './cooperative-work.js';
 import {ExactRenderBatches} from './exact-render-batches.js';
 import {fixedRenderFrame,frameLayout,styleFixedPreview} from './render-frame.js';
+import {yieldPreparationTask} from './preparation-task.js';
+import {loadModel} from './binary-asset.js';
 
 const V=new THREE.Vector3(), Y=new THREE.Vector3(0,1,0), Q=new THREE.Quaternion();
 const BASE=import.meta.env?.BASE_URL??'/';
@@ -82,10 +84,10 @@ export class SurgicalScene{
     checkpoint('environment-pmrem');runImmediately(this._constructSteps(canvas));
   }
   static async create(canvas,stage,mini){
-    await new Promise(resolve=>requestAnimationFrame(resolve));
+    await yieldPreparationTask();
     const view=new SurgicalScene(canvas,stage,mini,{deferPreparation:true});
-    view.env=await prepareEnvironment(view.renderer,{onStage:row=>view.startupTimings.push(row)});view.scene.environment=view.env.texture;
-    const work=await runCooperatively(view._constructSteps(canvas),{budgetMs:3});
+    view.env=await prepareEnvironment(view.renderer,{yieldFrame:yieldPreparationTask,onStage:row=>view.startupTimings.push(row)});view.scene.environment=view.env.texture;
+    const work=await runCooperatively(view._constructSteps(canvas),{budgetMs:3,yieldFrame:yieldPreparationTask});
     view.startupTimings.push({name:'scene-construction-slices',...work.stats});return view;
   }
   *_constructSteps(canvas){
@@ -111,7 +113,7 @@ export class SurgicalScene{
     checkpoint('tools-and-markers');
   }
   async loadRobot(){
-    const loader=new GLTFLoader();const [gltf,res]=await Promise.all([loader.loadAsync(BASE+'assets/g1.glb'),fetch(BASE+'assets/g1-kinematics.json')]);const meta=await res.json();this.robot.add(gltf.scene);this.robot.updateMatrixWorld(true);
+    const loader=new GLTFLoader();const [gltf,res]=await Promise.all([loadModel(loader,BASE+'assets/g1.glb'),fetch(BASE+'assets/g1-kinematics.json')]);const meta=await res.json();this.robot.add(gltf.scene);this.robot.updateMatrixWorld(true);
     gltf.scene.traverse(m=>{if(m.isMesh){m.castShadow=true;m.receiveShadow=true;if(!m.geometry.attributes.normal)m.geometry.computeVertexNormals();if(m.material){m.material.roughness=.38;m.material.metalness=.11;if(m.material.name==='dark'){m.material.color.set('#141a1e');m.material.roughness=.47;m.material.metalness=.08;}else if(m.material.name==='white')m.material.color.set('#d9dfde');}}});
     this.robotModel=gltf.scene;this.robotMetadata=meta;
     for(const j of meta.joints){const node=gltf.scene.getObjectByName(j.name);if(!node||j.type==='fixed')continue;node.userData.rest=node.quaternion.clone();node.userData.angle=0;node.userData.axis=new THREE.Vector3(...j.axis);node.userData.limit=j.limit||j.limits||{lower:-Math.PI,upper:Math.PI};this.joints.push(node);}
@@ -121,20 +123,20 @@ export class SurgicalScene{
     this.robotLoaded=true;return meta;
   }
   async loadAnatomy(){
-    this.assemblies=await loadAssemblies(this.scene);
+    const loader=new GLTFLoader();
+    const [assemblies,anatomy,context]=await Promise.all([loadAssemblies(this.scene),loadModel(loader,BASE+'assets/patient-skin.glb'),loadModel(loader,BASE+'assets/hepatobiliary-context.glb')]);
+    this.assemblies=assemblies;
     this.assemblies.scopeMount.position.set(this.robot.position.x,this.robot.position.y+.2377271,this.robot.position.z-.17);
     // Clock the vertical plate through 180 degrees so the source Z1 folds down
     // from the elevated chest; the original joint geometry/limits are retained.
     this.assemblies.scopeMount.quaternion.premultiply(Q.setFromAxisAngle(new THREE.Vector3(0,0,1),Math.PI));
     Object.values(this.tools).forEach(t=>t.group.visible=false);this.scopeShaft.visible=false;this.scopeHead.visible=false;this.scopeLens.visible=false;this.scopeArm.visible=false;
-    const anatomy=await new GLTFLoader().loadAsync(BASE+'assets/patient-skin.glb');
     anatomy.scene.rotation.x=-Math.PI/2;anatomy.scene.position.set(0,1.035,0);
     anatomy.scene.traverse(o=>{if(o.isMesh){if(!o.geometry.attributes.normal)o.geometry.computeVertexNormals();o.material=new THREE.MeshStandardMaterial({color:'#bfa08a',roughness:.65,metalness:0,side:THREE.DoubleSide});o.material.onBeforeCompile=shader=>{shader.vertexShader='varying vec3 patientLocal;\n'+shader.vertexShader;shader.vertexShader=shader.vertexShader.replace('#include <begin_vertex>','#include <begin_vertex>\npatientLocal=position;');shader.fragmentShader='varying vec3 patientLocal;\n'+shader.fragmentShader;shader.fragmentShader=shader.fragmentShader.replace('#include <clipping_planes_fragment>','#include <clipping_planes_fragment>\nif(abs(patientLocal.x)<.17&&abs(patientLocal.y)<.20&&patientLocal.z>0.0)discard;\nif(patientLocal.y<-.30)discard;');};o.material.customProgramCacheKey=()=> 'anatomy-teaching-window';o.castShadow=true;o.receiveShadow=true;o.layers.set(0);}});
     this.scene.add(anatomy.scene);this.patientOuter.children[0].visible=false;this.patientOuter.children[3].visible=false;this.patientOuter.children[4].visible=false;
     this.patientOuter.children[1].visible=false;this.patientOuter.children[2].visible=false;this.patientOuter.children[5].visible=false;
     this.patientOuter.children[6].visible=false;this.patientOuter.children[7].visible=false;
     this.drape=sterileDrape(this.patientOuter);
-    const context=await new GLTFLoader().loadAsync(BASE+'assets/hepatobiliary-context.glb');
     this.anatomicContext=context.scene;this.anatomicContext.rotation.x=-Math.PI/2;this.anatomicContext.position.set(0,1.035,0);
     this.anatomicContext.traverse(o=>{if(o.isMesh){o.layers.enable(1);o.castShadow=o.receiveShadow=true;if(!o.geometry.attributes.normal)o.geometry.computeVertexNormals();o.material.roughness=.48;o.material.metalness=0;}});
     this.scene.add(this.anatomicContext);this.gallbladder.visible=false;this.schematicVessels.visible=false;this.cavity.children[1].visible=false;
@@ -318,7 +320,7 @@ export class SurgicalScene{
   async prepareRenderGeometryAsync(){
     if(!this.exactBatches&&this.tissue?.ready&&this.assemblies&&this.robotLoaded&&this.renderer.extensions.has('WEBGL_multi_draw')){
       this.exactBatches=new ExactRenderBatches(this.scene);
-      const start=performance.now(),work=await runCooperatively(this.exactBatches.syncSteps(exactSources(this)),{budgetMs:3,valid:()=>!this.disposed});
+      const start=performance.now(),work=await runCooperatively(this.exactBatches.syncSteps(exactSources(this)),{budgetMs:3,yieldFrame:yieldPreparationTask,valid:()=>!this.disposed});
       if(work.cancelled)throw new Error('Scene preparation cancelled');
       this.geometryPreparation={name:'initial-exact-batches',start,end:performance.now(),work:work.stats};
     }

@@ -140,11 +140,12 @@ export class TissueVolume {
   moveHeldFragment(id, point, quaternion) { return this.fragments.move(id, point, quaternion); }
   releaseFragment(id) { return this.fragments.release(id); }
   updateFragments(dt) { this.fragments.update(dt); }
-  prepareBloodContacts(){this._bloodBroadPhase.sync(this._meshes.values());}
+  prepareBloodContacts(){this.bloodContactTimings={at:performance.now(),rayQueries:0,rayMs:0,nearestQueries:0,nearestMs:0,builds:0,buildMs:0,preparedTrees:0,adoptMs:0,refits:0,refitMs:0,restBoundsCopies:0};this._bloodBroadPhase.sync(this._meshes.values());}
   collideBloodDrop(start,end,radius,prepared=false){
     if(!prepared)this.prepareBloodContacts();
     const meshes=this._bloodBroadPhase.query(start,end,radius+.00005,this._bloodQueryMeshes);
-    let crossing=firstParentHit(meshes,start,end),surface=crossing?null:closestParentSurface(meshes,end,radius+.00005);
+    const profile=this.bloodContactTimings;
+    let crossing=firstParentHit(meshes,start,end,profile),surface=crossing?null:closestParentSurface(meshes,end,radius+.00005,profile);
     if(surface&&end.clone().sub(surface).dot(surface.normal)>=radius)surface=null;
     let best=surface?surface.distanceToSquared(end):Infinity;
     for(const piece of this.fragments.items.values()){
@@ -154,9 +155,9 @@ export class TissueVolume {
       if(box&&(Math.max(start.x,end.x)<box.min.x-margin||Math.min(start.x,end.x)>box.max.x+margin||Math.max(start.y,end.y)<box.min.y-margin||Math.min(start.y,end.y)>box.max.y+margin||Math.max(start.z,end.z)<box.min.z-margin||Math.min(start.z,end.z)>box.max.z+margin))continue;
       const inverse=piece.quaternion.clone().invert(),a=start.clone().sub(piece.position).applyQuaternion(inverse),b=end.clone().sub(piece.position).applyQuaternion(inverse);
       const transform=p=>{p.applyQuaternion(piece.quaternion).add(piece.position);p.normal.applyQuaternion(piece.quaternion);p.fragmentId=piece.id;return p;};
-      const hit=firstParentHit([piece.mesh],a,b);
+      const hit=firstParentHit([piece.mesh],a,b,profile);
       if(hit&&(!crossing||hit.travel<crossing.travel))crossing=transform(hit);
-      const near=crossing?null:closestParentSurface([piece.mesh],b,radius+.00005);
+      const near=crossing?null:closestParentSurface([piece.mesh],b,radius+.00005,profile);
       if(near&&b.clone().sub(near).dot(near.normal)<radius){const distance=near.distanceToSquared(b);if(distance<best){best=distance;surface=transform(near);}}
     }
     return crossing??surface;
@@ -409,6 +410,7 @@ export class TissueVolume {
     const geometry = mesh.geometry, rest = geometry.userData.restPositions, restNormals = geometry.userData.restNormals;
     const positions = geometry.attributes.position.array, normals = geometry.attributes.normal.array;
     const deformation = this._deformation;
+    geometry.userData.useRestSurfaceBounds=!deformation;
     if (!deformation) {
       if (geometry.userData.deformed) {
         positions.set(rest); normals.set(restNormals);
@@ -572,7 +574,12 @@ export class TissueVolume {
     geometry.userData.restNormals = chunk.normals;
     geometry.userData.woundSurface=chunk.woundSurface;
     const prepared=chunk.display?.signature===JSON.stringify(this._deformation)?chunk.display:null;
-    geometry.userData.surfaceTree=chunk.display&&!prepared?null:chunk.contactTree;
+    // A late pose invalidates bounds, not the full-triangle partition. Refit
+    // it against the current display, or adopt exact worker recoil bounds.
+    geometry.userData.surfaceTree=chunk.contactTree;
+    geometry.userData.surfaceTreeNeedsRefit=!!(chunk.display&&!prepared);
+    geometry.userData.restSurfaceBounds=geometry.userData.surfaceTree?chunk.restContactBounds:null;
+    geometry.userData.useRestSurfaceBounds=!this._deformation;
     geometry.setAttribute('position', new THREE.BufferAttribute(prepared?.positions??chunk.positions.slice(), 3).setUsage(THREE.StreamDrawUsage));
     geometry.setAttribute('normal', new THREE.BufferAttribute(prepared?.normals??chunk.normals.slice(), 3).setUsage(THREE.StreamDrawUsage));
     geometry.setAttribute('color', new THREE.BufferAttribute(chunk.colors, 3));

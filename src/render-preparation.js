@@ -1,9 +1,10 @@
 import {runCooperatively} from './cooperative-work.js';
+import {yieldPreparationTask} from './preparation-task.js';
 
 // Compile the real endoscope/HDR and overview/window variants before their
 // first draw. Compiling after render() has already synchronously linked them
 // does not protect the loading UI from the initial driver stall.
-export async function prepareSceneMaterials(view,{width,height,yieldFrame=()=>new Promise(resolve=>requestAnimationFrame(resolve))}={}){
+export async function prepareSceneMaterials(view,{width,height,yieldFrame=yieldPreparationTask}={}){
   const r=view.renderer,scene=view.scene,inner=view.cavity.children[0];
   const saved={target:r.getRenderTarget(),background:scene.background,environmentIntensity:scene.environmentIntensity,exposure:r.toneMappingExposure,visible:inner.visible};
   if(view.prepareRenderGeometryAsync)await view.prepareRenderGeometryAsync();else view.prepareRenderGeometry();
@@ -51,7 +52,7 @@ export async function warmSceneDisplay(view,options={}){
     }
     r.setRenderTarget(null);view.scopeFeed.blit(r,0,0,width,height);yield;
   }
-  try{return await runCooperatively(draws(),options);}
+  try{return await runCooperatively(draws(),{yieldFrame:yieldPreparationTask,...options});}
   finally{
     for(const {object,mask,culled,count,matrix,warmWorld}of objects){object.layers.mask=mask;object.frustumCulled=culled;if(warmWorld){object.visible=false;object.matrixWorld.copy(warmWorld);}if(matrix){object.count=count;object.instanceMatrix.array.set(matrix);object.instanceMatrix.needsUpdate=true;}}
     r.setRenderTarget(saved.target);scene.environmentIntensity=saved.intensity;r.toneMappingExposure=saved.exposure;inner.visible=saved.visible;

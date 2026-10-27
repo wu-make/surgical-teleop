@@ -38,17 +38,22 @@ function closestSegments(a,b,c,d,p,q,u,v,r){
  * when that chunk's displayed positions change. Queries never scan the whole
  * parent organ's triangles and do not mutate render geometry bounds. */
 class SurfaceIndex {
-  constructor(geometry){
+  constructor(geometry,profile){
+    const start=profile?performance.now():0;
     this.geometry=geometry;this.positions=geometry.attributes.position;this.indices=geometry.index.array;
     const prepared=geometry.userData.surfaceTree;
     const tree=prepared??buildSurfaceTree(this.positions.array,this.indices);
     this.root=tree.root;
+    this.boundsStore=tree.boundsStore;
+    if(profile){if(prepared){profile.preparedTrees++;profile.adoptMs+=performance.now()-start;}else{profile.builds++;profile.buildMs+=performance.now()-start;}}
     // A deformed parent chunk refits against its actual displayed vertices.
     // Frozen specimens and unchanged chunks already carry exact bounds.
-    this.version=prepared&&this.positions.version!==0?-1:this.positions.version;
+    this.version=prepared&&(this.positions.version!==0||geometry.userData.surfaceTreeNeedsRefit)?-1:this.positions.version;
   }
-  refit(){
+  refit(profile){
     if(this.version===this.positions.version)return;
+    const start=profile?performance.now():0,rest=this.geometry.userData.restSurfaceBounds;
+    if(rest&&this.geometry.userData.useRestSurfaceBounds&&rest.length===this.boundsStore.length){this.boundsStore.set(rest);this.version=this.positions.version;if(profile){profile.restBoundsCopies++;profile.refitMs+=performance.now()-start;}return;}
     const p=this.positions.array,indices=this.indices;
     const visit=node=>{
       const bounds=node.bounds;bounds.set([Infinity,Infinity,Infinity,-Infinity,-Infinity,-Infinity]);
@@ -62,10 +67,10 @@ class SurfaceIndex {
         for(let axis=0;axis<3;axis++){bounds[axis]=Math.min(node.left.bounds[axis],node.right.bounds[axis]);bounds[axis+3]=Math.max(node.left.bounds[axis+3],node.right.bounds[axis+3]);}
       }
     };
-    visit(this.root);this.version=this.positions.version;
+    visit(this.root);this.version=this.positions.version;if(profile){profile.refits++;profile.refitMs+=performance.now()-start;}
   }
-  firstHit(start,end){
-    this.refit();
+  firstHit(start,end,profile){
+    this.refit(profile);
     const s=this.hitScratch??={direction:new THREE.Vector3(),ray:new THREE.Ray(),triangle:new THREE.Triangle(),hit:new THREE.Vector3(),normal:new THREE.Vector3(),bounds:new Array(6),stack:[]};
     const {direction,ray,triangle,hit,normal,bounds,stack}=s;direction.subVectors(end,start);const length=direction.length();if(length<1e-12)return null;
     direction.divideScalar(length);ray.origin.copy(start);ray.direction.copy(direction);
@@ -84,8 +89,8 @@ class SurfaceIndex {
     }
     return result;
   }
-  nearest(point,maximum){
-    this.refit();let best=maximum*maximum,result=null;
+  nearest(point,maximum,profile){
+    this.refit(profile);let best=maximum*maximum,result=null;
     const s=this.nearestScratch??={triangle:new THREE.Triangle(),candidate:new THREE.Vector3(),barycentric:new THREE.Vector3(),temporary:new THREE.Vector3(),stack:[]};
     const {triangle,candidate,barycentric,temporary,stack}=s;stack.length=0;stack.push(this.root);
     const positions=this.positions,normals=this.geometry.attributes.normal,indices=this.indices;
@@ -141,26 +146,30 @@ class SurfaceIndex {
 const indices=new WeakMap();
 /** Earliest inward centre-line crossing, independent of chunk iteration order.
  * Used together with endpoint sphere overlap for small fluid parcels. */
-export function firstParentHit(meshes,start,end){
+export function firstParentHit(meshes,start,end,profile){
+  const began=profile?performance.now():0;
   let result=null,best=start.distanceTo(end)+1e-10;
   const bounds=[Math.min(start.x,end.x),Math.min(start.y,end.y),Math.min(start.z,end.z),Math.max(start.x,end.x),Math.max(start.y,end.y),Math.max(start.z,end.z)];
   for(const mesh of meshes){
     const geometry=mesh.geometry,box=geometry.boundingBox;
     if(!geometry.index?.count||boxesDistanceSquared(bounds,[box.min.x,box.min.y,box.min.z,box.max.x,box.max.y,box.max.z])>0)continue;
-    let index=indices.get(geometry);if(!index){index=new SurfaceIndex(geometry);indices.set(geometry,index);}
-    const candidate=index.firstHit(start,end);if(candidate&&candidate.travel<best){best=candidate.travel;result=candidate;}
+    let index=indices.get(geometry);if(!index){index=new SurfaceIndex(geometry,profile);indices.set(geometry,index);}
+    const candidate=index.firstHit(start,end,profile);if(candidate&&candidate.travel<best){best=candidate.travel;result=candidate;}
   }
+  if(profile){profile.rayQueries++;profile.rayMs+=performance.now()-began;}
   return result;
 }
-export function closestParentSurface(meshes,point,margin){
+export function closestParentSurface(meshes,point,margin,profile){
+  const began=profile?performance.now():0;
   let result=null,best=margin;
   for(const mesh of meshes){
     const geometry=mesh.geometry;
     if(!geometry.index?.count||geometry.boundingBox?.distanceToPoint(point)>best)continue;
-    let index=indices.get(geometry);if(!index){index=new SurfaceIndex(geometry);indices.set(geometry,index);}
-    const candidate=index.nearest(point,best);if(!candidate)continue;
+    let index=indices.get(geometry);if(!index){index=new SurfaceIndex(geometry,profile);indices.set(geometry,index);}
+    const candidate=index.nearest(point,best,profile);if(!candidate)continue;
     best=candidate.distanceTo(point);result=candidate;
   }
+  if(profile){profile.nearestQueries++;profile.nearestMs+=performance.now()-began;}
   return result;
 }
 

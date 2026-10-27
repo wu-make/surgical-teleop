@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import {instrumentPose} from './instrument-pose.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import {fetchModelBytes} from './binary-asset.js';
 
 const BASE = import.meta.env?.BASE_URL ?? '/';
 const Z = new THREE.Vector3(0, 0, 1);
@@ -151,12 +152,12 @@ function makePalmSaddle(parent, side, color) {
 }
 
 async function asset(loader, name) {
-  const [modelResponse, metadataResponse] = await Promise.all([
-    fetch(`${BASE}assets/${name}.glb`),
+  const [buffer, metadataResponse] = await Promise.all([
+    fetchModelBytes(`${BASE}assets/${name}.glb`),
     fetch(`${BASE}assets/${name}-kinematics.json`),
   ]);
-  if (!modelResponse.ok || !metadataResponse.ok) throw new Error(`无法载入真实模型：${name}`);
-  const [buffer, metadata] = await Promise.all([modelResponse.arrayBuffer(), metadataResponse.json()]);
+  if (!metadataResponse.ok) throw new Error(`无法载入真实模型：${name}`);
+  const metadata = await metadataResponse.json();
   const gltf = await loader.parseAsync(buffer, `${BASE}assets/`);
   const group = new THREE.Group();
   group.name = `Authentic_${name}`;

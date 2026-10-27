@@ -31,3 +31,16 @@ export function buildSurfaceTree(positions,indices){
   };
   return {root:build(0,count),boundsStore,triangles};
 }
+
+/** Alternate exact bounds on the same triangle partition. Preparing recoil
+ * bounds in the geometry worker avoids a first-droplet refit on the UI thread. */
+export function surfaceTreeBounds(tree,positions,indices){
+  const result=new Float64Array(tree.boundsStore.length),base=tree.boundsStore.byteOffset;
+  const visit=node=>{
+    const offset=(node.bounds.byteOffset-base)/8,b=result.subarray(offset,offset+6);b.set([Infinity,Infinity,Infinity,-Infinity,-Infinity,-Infinity]);
+    if(node.triangles){for(const face of node.triangles)for(let j=0;j<3;j++)for(let axis=0;axis<3;axis++){const p=positions[indices[face*3+j]*3+axis];b[axis]=Math.min(b[axis],p);b[axis+3]=Math.max(b[axis+3],p);}}
+    else{const left=visit(node.left),right=visit(node.right);for(let axis=0;axis<3;axis++){b[axis]=Math.min(left[axis],right[axis]);b[axis+3]=Math.max(left[axis+3],right[axis+3]);}}
+    return b;
+  };
+  visit(tree.root);return result;
+}

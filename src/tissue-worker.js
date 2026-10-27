@@ -1,6 +1,6 @@
 import {prepareWoundSurface,selectWoundSurface} from './wound-surface.js';
 import {refineIncisionSurface} from './incision-surface.js';
-import {buildSurfaceTree} from './surface-tree.js';
+import {buildSurfaceTree,surfaceTreeBounds} from './surface-tree.js';
 // Anatomy is sampled in metres. The field is negative inside the source organ.
 // These exports deliberately have no browser dependencies so the same geometry
 // and CSG code can be checked with Node's test runner.
@@ -730,10 +730,11 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
       for(const fragment of fragments)fragment.display=prepareFragmentDisplay(fragment);
       phase('fragmentDisplayMs');
       const displayDeformation=state.cuts.at(-1)?.deformation,sampler=displayDeformation?materialSampler(state,displayDeformation):null;
-      for(const chunk of chunks)if(chunk.positions.length){chunk.display=prepareChunkDisplay(chunk,displayDeformation,sampler);chunk.contactTree=buildSurfaceTree(chunk.display?.positions??chunk.positions,chunk.indices);}
+      for(const chunk of chunks)if(chunk.positions.length){chunk.display=prepareChunkDisplay(chunk,displayDeformation,sampler);chunk.contactTree=buildSurfaceTree(chunk.display?.positions??chunk.positions,chunk.indices);if(chunk.display?.activeCount)chunk.restContactBounds=surfaceTreeBounds(chunk.contactTree,chunk.positions,chunk.indices);}
       phase('contactTreesMs');
       const transfer = chunks.flatMap(chunk => [chunk.positions.buffer, chunk.normals.buffer, chunk.colors.buffer, chunk.cutMasks.buffer, chunk.indices.buffer]);
       for(const chunk of chunks)if(chunk.display)transfer.push(chunk.display.positions.buffer,chunk.display.normals.buffer);
+      for(const chunk of chunks)if(chunk.restContactBounds)transfer.push(chunk.restContactBounds.buffer);
       for (const fragment of fragments)transfer.push(fragment.positions.buffer, fragment.normals.buffer, fragment.colors.buffer, fragment.cutMasks.buffer, fragment.indices.buffer, fragment.volume.values.buffer,fragment.display.positions.buffer,fragment.display.normals.buffer,fragment.display.support.buffer);
       for(const owner of [...chunks,...fragments.map(f=>f.display)])if(owner.contactTree)transfer.push(owner.contactTree.boundsStore.buffer,owner.contactTree.triangles.buffer);
       if(woundSelection)transfer.push(woundSelection.edges.buffer);
