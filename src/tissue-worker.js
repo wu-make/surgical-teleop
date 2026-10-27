@@ -1,6 +1,7 @@
 import {prepareWoundSurface,selectWoundSurface} from './wound-surface.js';
 import {refineIncisionSurface} from './incision-surface.js';
 import {buildSurfaceTree,surfaceTreeBounds} from './surface-tree.js';
+import {prepareFilmIndex} from './film-support-index.js';
 // Anatomy is sampled in metres. The field is negative inside the source organ.
 // These exports deliberately have no browser dependencies so the same geometry
 // and CSG code can be checked with Node's test runner.
@@ -418,7 +419,14 @@ function surfaceColor(point, originalDistance, width) {
   return [(0.19 + 0.14 * cut) * noise, (0.027 + 0.027 * cut) * noise, (0.018 + 0.024 * cut) * noise];
 }
 
-export function polygonizeChunk(state, key) {
+function chunkDeformation(state,key){
+  const deformation=state.meshingDeformation??state.cuts?.at(-1)?.deformation;
+  if(!deformation)return null;
+  const {meta,chunkSize}=state,first=key.split(',').map(v=>Number(v)*chunkSize);
+  return [0,1,2].every(i=>meta.origin[i]+Math.min(first[i]+chunkSize,meta.dims[i]-1)*meta.spacing[i]>=Math.min(deformation.local[i],deformation.local[i]+deformation.displacement[i])-deformation.radius&&meta.origin[i]+first[i]*meta.spacing[i]<=Math.max(deformation.local[i],deformation.local[i]+deformation.displacement[i])+deformation.radius)?deformation:null;
+}
+
+export function polygonizeChunk(state, key,{splitTrace=null}={}) {
   const [cx, cy, cz] = key.split(',').map(Number);
   const { meta, field, base, chunkSize } = state;
   const first = [cx, cy, cz].map(v => v * chunkSize), last = first.map((v, axis) => Math.min(v + chunkSize, meta.dims[axis] - 1));
@@ -480,10 +488,8 @@ export function polygonizeChunk(state, key) {
     }
   }
   const mesh={ key, positions: new Float32Array(positions), normals: new Float32Array(normals), colors: new Float32Array(colors), cutMasks: new Float32Array(cutMasks), indices: new Uint32Array(indices) };
-  const deformation=state.meshingDeformation??state.cuts?.at(-1)?.deformation;
-  const overlaps=deformation&&[0,1,2].every(i=>meta.origin[i]+last[i]*meta.spacing[i]>=Math.min(deformation.local[i],deformation.local[i]+deformation.displacement[i])-deformation.radius&&meta.origin[i]+first[i]*meta.spacing[i]<=Math.max(deformation.local[i],deformation.local[i]+deformation.displacement[i])+deformation.radius);
-  const sampler=overlaps?materialSampler(state,deformation):null;
-  return refineIncisionSurface(mesh,{spacing:meta.spacing,mapPoint:sampler?p=>sampler(p).position:null});
+  const deformation=chunkDeformation(state,key),sampler=deformation?materialSampler(state,deformation):null;
+  return refineIncisionSurface(mesh,{spacing:meta.spacing,mapPoint:sampler?p=>sampler(p).position:null,splitTrace});
 }
 
 function scanComponents(state, values, labels = null) {
@@ -669,17 +675,30 @@ export function restoreVolumeWithSeparations(state, cuts = [], separations = [])
 }
 
 export function buildChunks(state, keys,{force=false}={}) {
-  const cache=state._chunkInputCache??=new Map(),chunks=[],signature=JSON.stringify(state.cuts.at(-1)?.deformation??null),{dims}=state.meta;
-  for(const key of keys){
+  const cache=state._chunkInputCache??=new Map(),chunks=[],requested=new Set(keys),{dims}=state.meta;
+  // A cut changes the scalar field locally, but a new traction pose can also
+  // change subdivision on an otherwise untouched shared edge. Commit the
+  // complete old/new refinement domain in one worker packet, so the rendered
+  // surface never mixes coarse neighbours with newly refined pulled tissue.
+  for(const [key,previous] of cache)if(previous.hasSurface&&previous.signature!==JSON.stringify(chunkDeformation(state,key)))requested.add(key);
+  for(const key of requested){
+    const signature=JSON.stringify(chunkDeformation(state,key));
     const first=key.split(',').map(v=>Number(v)*state.chunkSize),low=first.map(v=>Math.max(0,v-1)),high=first.map((v,i)=>Math.min(dims[i]-1,v+state.chunkSize+1));
-    const previous=cache.get(key);let unchanged=!force&&previous?.signature===signature,index=0;
+    const previous=cache.get(key);let sameInput=!force&&!!previous,index=0;
     // Polygon positions use the cell samples; smooth normals additionally use
     // one neighbour. Compare that complete input exactly, including its halo.
-    if(unchanged)outer:for(let z=low[2];z<=high[2];z++)for(let y=low[1];y<=high[1];y++)for(let x=low[0];x<=high[0];x++)if(previous.values[index++]!==state.field[nodeIndex(state.meta,x,y,z)]){unchanged=false;break outer;}
-    if(unchanged)continue;
-    const values=new Float32Array((high[0]-low[0]+1)*(high[1]-low[1]+1)*(high[2]-low[2]+1));index=0;
-    for(let z=low[2];z<=high[2];z++)for(let y=low[1];y<=high[1];y++)for(let x=low[0];x<=high[0];x++)values[index++]=state.field[nodeIndex(state.meta,x,y,z)];
-    const chunk=polygonizeChunk(state,key);chunk.woundSurface=prepareWoundSurface(chunk);chunks.push(chunk);cache.set(key,{signature,values});
+    if(sameInput)outer:for(let z=low[2];z<=high[2];z++)for(let y=low[1];y<=high[1];y++)for(let x=low[0];x<=high[0];x++)if(previous.values[index++]!==state.field[nodeIndex(state.meta,x,y,z)]){sameInput=false;break outer;}
+    if(sameInput&&previous.signature===signature)continue;
+    const values=sameInput?previous.values:new Float32Array((high[0]-low[0]+1)*(high[1]-low[1]+1)*(high[2]-low[2]+1));index=0;
+    if(!sameInput)for(let z=low[2];z<=high[2];z++)for(let y=low[1];y<=high[1];y++)for(let x=low[0];x<=high[0];x++)values[index++]=state.field[nodeIndex(state.meta,x,y,z)];
+    const splitTrace=[],chunk=polygonizeChunk(state,key,{splitTrace});
+    // A moved grasp often produces the identical complete rest mesh. Compare
+    // every split decision, without hashes or retaining transferred buffers.
+    // Keep its live geometry/film/BVH instead of disposing and uploading it.
+    const sameMesh=sameInput&&previous.splitTrace.length===splitTrace.length&&splitTrace.every((v,i)=>v===previous.splitTrace[i]);
+    cache.set(key,{signature,values,splitTrace:new Uint32Array(splitTrace),hasSurface:chunk.indices.length>0});
+    if(sameMesh)continue;
+    chunk.woundSurface=prepareWoundSurface(chunk);chunks.push(chunk);
   }
   return chunks;
 }
@@ -732,9 +751,12 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
       const displayDeformation=state.cuts.at(-1)?.deformation,sampler=displayDeformation?materialSampler(state,displayDeformation):null;
       for(const chunk of chunks)if(chunk.positions.length){chunk.display=prepareChunkDisplay(chunk,displayDeformation,sampler);chunk.contactTree=buildSurfaceTree(chunk.display?.positions??chunk.positions,chunk.indices);if(chunk.display?.activeCount)chunk.restContactBounds=surfaceTreeBounds(chunk.contactTree,chunk.positions,chunk.indices);}
       phase('contactTreesMs');
+      for(const chunk of chunks)chunk.filmSpatialIndex=prepareFilmIndex(chunk.positions);
+      phase('filmIndexMs');
       const transfer = chunks.flatMap(chunk => [chunk.positions.buffer, chunk.normals.buffer, chunk.colors.buffer, chunk.cutMasks.buffer, chunk.indices.buffer]);
       for(const chunk of chunks)if(chunk.display)transfer.push(chunk.display.positions.buffer,chunk.display.normals.buffer);
       for(const chunk of chunks)if(chunk.restContactBounds)transfer.push(chunk.restContactBounds.buffer);
+      for(const chunk of chunks)if(chunk.filmSpatialIndex)transfer.push(chunk.filmSpatialIndex.offsets.buffer,chunk.filmSpatialIndex.vertices.buffer);
       for (const fragment of fragments)transfer.push(fragment.positions.buffer, fragment.normals.buffer, fragment.colors.buffer, fragment.cutMasks.buffer, fragment.indices.buffer, fragment.volume.values.buffer,fragment.display.positions.buffer,fragment.display.normals.buffer,fragment.display.support.buffer);
       for(const owner of [...chunks,...fragments.map(f=>f.display)])if(owner.contactTree)transfer.push(owner.contactTree.boundsStore.buffer,owner.contactTree.triangles.buffer);
       if(woundSelection)transfer.push(woundSelection.edges.buffer);

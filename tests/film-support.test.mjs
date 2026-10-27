@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import {filmSupport} from '../src/film-support.js';
+import {prepareFilmIndex} from '../src/film-support-index.js';
 
 test('spatial kernel bins produce exactly the exhaustive wet-triangle support for dense moving fields',()=>{
   const g=new THREE.PlaneGeometry(.08,.06,70,60);g.setAttribute('filmReference',g.attributes.position);g.setAttribute('filmRestNormal',g.attributes.normal);g.userData.fullFilmIndex=g.index;
@@ -12,6 +13,9 @@ test('spatial kernel bins produce exactly the exhaustive wet-triangle support fo
     for(let i=0;i<p.count;i++)for(let j=0;j<64;j++){const k=j*12,dx=p.getX(i)-data[k],dy=p.getY(i)-data[k+1],dz=p.getZ(i)-data[k+2];if(dx*dx+dy*dy+dz*dz<=data[k+3]*1.00001+1e-12&&n.getX(i)*data[k+4]+n.getY(i)*data[k+5]+n.getZ(i)*data[k+6]>=.14999){wet[i]=1;break;}}
     const expected=[];for(let i=0;i<g.index.count;i+=3){const [a,b,c]=g.index.array.subarray(i,i+3);if(wet[a]||wet[b]||wet[c])expected.push(a,b,c);}
     assert.deepEqual(Array.from(filmSupport(g,fields).index.array),expected);
+    g.userData.filmSpatialIndex=structuredClone(prepareFilmIndex(p.array));g.userData.filmSpatialIndex.positions=p.array;
+    const workerGeometry=g.clone();workerGeometry.userData={...g.userData,filmSpatialIndex:{...g.userData.filmSpatialIndex,positions:workerGeometry.attributes.filmReference.array},fullFilmIndex:workerGeometry.index};
+    assert.deepEqual(Array.from(filmSupport(workerGeometry,fields).index.array),expected,'worker-prepared flat bins retain exactly the same exhaustive wet support');workerGeometry.dispose();
   }g.dispose();
 });
 
@@ -32,4 +36,14 @@ test('conservative film support retains every possibly wet triangle in source or
     fields.texture.image.data[7]+=1;assert.equal(filmSupport(g,fields,s),s,'flow and clot cannot invalidate material support');prior=s;
   }
   assert.equal(g.attributes.position,g.attributes.filmReference);
+});
+
+test('material vertex and normal edits invalidate the spatial index even with an unchanged liquid kernel',()=>{
+  const g=new THREE.PlaneGeometry(.02,.02,12,12);g.setAttribute('filmReference',g.attributes.position);g.setAttribute('filmRestNormal',g.attributes.normal);g.userData.fullFilmIndex=g.index;
+  const fields={count:{value:1},texture:{image:{data:new Float32Array([0,0,0,.00001,0,0,1,1,0,0,0,0])}}};
+  let support=filmSupport(g,fields);assert(support.index.count>0);
+  g.translate(.1,0,0);support=filmSupport(g,fields,support);assert.equal(support.index.count,0,'translated material vertices must not retain old wet triangles');
+  g.translate(-.1,0,0);support=filmSupport(g,fields,support);assert(support.index.count>0);
+  g.attributes.filmRestNormal.array.fill(0);g.attributes.filmRestNormal.needsUpdate=true;
+  support=filmSupport(g,fields,support);assert.equal(support.index.count,0,'a changed facing direction must not retain a ghost overlay');g.dispose();
 });

@@ -573,6 +573,7 @@ export class TissueVolume {
     geometry.userData.restPositions = chunk.positions;
     geometry.userData.restNormals = chunk.normals;
     geometry.userData.woundSurface=chunk.woundSurface;
+    geometry.userData.filmSpatialIndex=chunk.filmSpatialIndex;
     const prepared=chunk.display?.signature===JSON.stringify(this._deformation)?chunk.display:null;
     // A late pose invalidates bounds, not the full-triangle partition. Refit
     // it against the current display, or adopt exact worker recoil bounds.

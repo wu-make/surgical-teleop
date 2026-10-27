@@ -10,12 +10,14 @@ export function attachCutVerification(view,sim,interaction,pause){
   button('原始组织绘制对照',()=>{pause(true);original=!original;for(const [m,r]of view.exactBatches.records)if(m.userData.tissue||m.geometry.attributes.tissueRestPosition){m.layers.mask=original?r.mask:0;r.group.mesh.setVisibleAt(r.instance,!original&&r.visible);}view.render();});
   button('隐藏血液对照',()=>{pause(true);view.tissue.blood.group.visible=!view.tissue.blood.group.visible;view.render();});
   const report=button('检查真实切口网格',()=>{
-    pause(true);let maxEdge=0,flipped=0,faces=0,mismatch=0;const p=[new THREE.Vector3(),new THREE.Vector3(),new THREE.Vector3()],n=new THREE.Vector3(),a=new THREE.Vector3(),b=new THREE.Vector3(),cross=new THREE.Vector3();
+    pause(true);let maxEdge=0,flipped=0,faces=0,mismatch=0;const edges=new Map(),p=[new THREE.Vector3(),new THREE.Vector3(),new THREE.Vector3()],n=new THREE.Vector3(),a=new THREE.Vector3(),b=new THREE.Vector3(),cross=new THREE.Vector3();
     for(const mesh of view.tissue._meshes.values()){
       const g=mesh.geometry,index=g.index.array,pos=g.attributes.position,normal=g.attributes.normal;
+      const points=Array.from({length:pos.count},(_,id)=>[pos.getX(id),pos.getY(id),pos.getZ(id)].map(v=>Math.round(v*1e8)).join(','));
+      for(let i=0;i<index.length;i+=3)for(let j=0;j<3;j++){const a=points[index[i+j]],b=points[index[i+(j+1)%3]];if(a===b)continue;const key=[a,b].sort().join('|');edges.set(key,(edges.get(key)??0)+1);}
       for(let i=0;i<index.length;i+=3){for(let j=0;j<3;j++)p[j].fromBufferAttribute(pos,index[i+j]);a.subVectors(p[1],p[0]);b.subVectors(p[2],p[0]);cross.crossVectors(a,b);n.set(0,0,0);for(let j=0;j<3;j++)n.add(new THREE.Vector3().fromBufferAttribute(normal,index[i+j]));if(cross.dot(n)<0)flipped++;faces++;maxEdge=Math.max(maxEdge,p[0].distanceTo(p[1]),p[1].distanceTo(p[2]),p[2].distanceTo(p[0]));}
       const record=view.exactBatches.records.get(mesh);if(record){const batched=record.group.mesh.geometry,range=record.group.mesh.getGeometryRangeAt(record.geometry.id);for(let i=0;i<index.length;i++)if(batched.index.array[range.indexStart+i]-range.vertexStart!==index[i])mismatch++;}
     }
-    report.dataset.result=JSON.stringify({maxEdgeMm:maxEdge*1000,flipped,faces,batchIndexMismatch:mismatch,render:view.renderTimings});
+    report.dataset.result=JSON.stringify({maxEdgeMm:maxEdge*1000,flipped,faces,batchIndexMismatch:mismatch,unpairedEdges:[...edges.values()].filter(n=>n===1).length,nonmanifoldEdges:[...edges.values()].filter(n=>n>2).length,render:view.renderTimings});
   });
 }

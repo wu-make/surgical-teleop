@@ -201,6 +201,7 @@ export class BloodSurfaceFilm {
         for(const name of ['position','normal']){const a=g.attributes[name];surface.setAttribute(name,new THREE.BufferAttribute(a.array,a.itemSize,a.normalized));}
         const rest=g.attributes.tissueRestPosition??g.attributes.position;
         surface.setAttribute('filmReference',new THREE.BufferAttribute(rest.array,3));surface.setAttribute('filmRestNormal',new THREE.BufferAttribute(g.userData.materialNormals??g.userData.restNormals??g.attributes.normal.array,3));
+        surface.userData.filmSpatialIndex=g.userData.filmSpatialIndex;
         if(g.index)surface.setIndex(new THREE.BufferAttribute(g.index.array,1));else surface.setIndex(Array.from({length:g.attributes.position.count},(_,i)=>i));
         surface.userData.fullFilmIndex=surface.index;
         surface.setIndex(new THREE.BufferAttribute(new surface.index.array.constructor(surface.index.count),1).setUsage(THREE.DynamicDrawUsage));

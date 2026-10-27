@@ -1,6 +1,6 @@
 // Refine only exposed cut edges. Both neighbours decide from the same edge
 // endpoints, so chunk seams and intact capsule triangles stay watertight.
-export function refineIncisionSurface(mesh,{spacing,mapPoint=null,passes=4}={}){
+export function refineIncisionSurface(mesh,{spacing,mapPoint=null,passes=4,splitTrace=null}={}){
   if(!mesh.indices.length||(!mapPoint&&!mesh.cutMasks.some(value=>value>.02)))return mesh;
   const positions=Array.from(mesh.positions),normals=Array.from(mesh.normals),colors=Array.from(mesh.colors),masks=Array.from(mesh.cutMasks);
   let indices=Array.from(mesh.indices);const target=Math.min(...spacing)*.52,points=[],mapped=[],travel=[];
@@ -30,6 +30,10 @@ export function refineIncisionSurface(mesh,{spacing,mapPoint=null,passes=4}={}){
     }
     for(let i=0;i<indices.length;i+=3){
       const a=indices[i],b=indices[i+1],c=indices[i+2],ab=midpoint(a,b),bc=midpoint(b,c),ca=midpoint(c,a),bits=(ab>=0?1:0)|(bc>=0?2:0)|(ca>=0?4:0);
+      // Exact topology identity for worker reuse, independent of the hand
+      // pose that produced it. Rest-space attributes depend only on these
+      // edge decisions and the unchanged scalar/normal input.
+      if(bits&&splitTrace)splitTrace.push(pass,i,bits);
       if(bits===0)output.push(a,b,c);
       else if(bits===1)output.push(a,ab,c,ab,b,c);
       else if(bits===2)output.push(a,b,bc,a,bc,c);
