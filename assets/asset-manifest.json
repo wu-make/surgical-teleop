@@ -99,6 +99,34 @@
     "z1.glb": {
       "bytes": 6924252,
       "sha256": "7e934a894a68f98bf81fbbfb1451a2c3b2008219f5770bd6b9802ab254ced9a5"
+    },
+    "g1.glb.gz": {
+      "bytes": 3538863,
+      "sha256": "20a19c693ad3ac4f188b84575293fecf5aa017195cc518e4daf21735dd5360f6"
+    },
+    "z1.glb.gz": {
+      "bytes": 2679980,
+      "sha256": "d274a8266f1fddf8a1e680d15b44ab9d88f69696a0d42474f63f08462d59d511"
+    },
+    "needle-driver.glb.gz": {
+      "bytes": 819363,
+      "sha256": "7c904091df19d4ba7d9c5c13316c052037851381706acc71cff06564827b829a"
+    },
+    "scissors.glb.gz": {
+      "bytes": 490390,
+      "sha256": "5d47a4130c59875d4012a292d5162e7fec626dd5eb745ed47479f546cfc753b9"
+    },
+    "endoscope.glb.gz": {
+      "bytes": 5420,
+      "sha256": "5f3d35383572ab2c146b255c35a2993c5bfbc6cb1a90cb63b7b4527af99853d2"
+    },
+    "patient-skin.glb.gz": {
+      "bytes": 490967,
+      "sha256": "3f39a3efd444f418e9391fd3064d5ba12aa7bb216db4b4f9374636bdc08851dd"
+    },
+    "hepatobiliary-context.glb.gz": {
+      "bytes": 326824,
+      "sha256": "ed12ab077afff47be00af3acd0ee54293166cfec23925ada18bba471d42db780"
     }
   }
 }
