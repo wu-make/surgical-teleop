@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import * as THREE from 'three';
 import {prepareSceneMaterials} from '../src/render-preparation.js';
 function fixture(fail=false){
   const calls=[],target={name:'HDR'},previous={name:'previous'},scene={background:{name:'original'},environmentIntensity:2},inner={visible:true};
@@ -7,6 +8,19 @@ function fixture(fail=false){
   const view={renderer,scene,cavity:{children:[inner]},endoCamera:{name:'endo'},overviewCamera:{name:'overview'},prepareRenderGeometry(){calls.push({kind:'exact-geometry'});},scopeFeed:{target,reserve(r,w,h){calls.push({kind:'reserve',w,h});}}};
   return {view,calls,previous,inner,yieldFrame:async()=>calls.push({kind:'yield'})};
 }
+
+test('isolated wet fragments warm in front of both real cameras, then disappear and restore world transforms even on failure',async()=>{
+  const {warmSceneDisplay}=await import('../src/render-preparation.js');
+  for(const fail of [false,true]){
+    const f=fixture(),object=new THREE.Mesh();object.layers.mask=3;object.userData.cameraSpaceWarmup=true;object.matrixWorld.makeTranslation(1,2,3);const original=object.matrixWorld.clone();let draws=0;
+    object.onBeforeRender=(_r,_s,c)=>object.matrixWorld.copy(c.matrixWorld).multiply(new THREE.Matrix4().makeTranslation(0,0,-.02));object.onAfterRender=()=>{object.visible=false;};
+    f.view.endoCamera={layers:{mask:2},matrixWorld:new THREE.Matrix4().makeTranslation(0,1,2)};f.view.overviewCamera={layers:{mask:1},matrixWorld:new THREE.Matrix4().makeTranslation(2,3,4)};
+    f.view.scene.traverse=fn=>fn(object);f.view.stage={clientWidth:1445,clientHeight:548};
+    f.view.renderer.render=(s,c)=>{draws++;assert(object.visible);object.onBeforeRender(f.view.renderer,s,c);assert.equal(object.matrixWorld.elements[14],c.matrixWorld.elements[14]-.02);object.onAfterRender();if(fail)throw new Error('wet driver interruption');};f.view.scopeFeed.capture=(r,s,c)=>r.render(s,c);f.view.scopeFeed.blit=()=>{};
+    if(fail)await assert.rejects(warmSceneDisplay(f.view,{yieldFrame:f.yieldFrame}),/wet driver interruption/);else{await warmSceneDisplay(f.view,{yieldFrame:f.yieldFrame});assert.equal(draws,2);}
+    assert.equal(object.visible,false);assert.deepEqual(object.matrixWorld,original);assert.equal(object.layers.mask,3);
+  }
+});
 
 test('empty particle and fibre draws execute both real render variants during loading and restore all instance data even on failure',async()=>{
   const {warmSceneDisplay}=await import('../src/render-preparation.js');

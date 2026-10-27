@@ -30,3 +30,13 @@ test('transferred contact trees retain every triangle and match fresh exact quer
     compare(closestParentSurface([actual],new THREE.Vector3(.03,0,0),.05),closestParentSurface([new THREE.Mesh(c,material)],new THREE.Vector3(.03,0,0),.05));c.dispose();
   }finally{a.dispose();b.dispose();material.dispose();}
 });
+
+test('segment pruning retains the exact earliest inward hit for diagonal, axis-parallel and grazing blood paths',()=>{
+  const geometry=new THREE.TorusKnotGeometry(.018,.005,160,16),mesh=new THREE.Mesh(geometry),triangle=new THREE.Triangle(),normal=new THREE.Vector3(),hit=new THREE.Vector3(),ray=new THREE.Ray();geometry.computeBoundingBox();
+  const brute=(a,b)=>{const direction=b.clone().sub(a),length=direction.length();direction.divideScalar(length);ray.set(a,direction);let best=length+1e-10,result=null;for(let i=0;i<geometry.index.count;i+=3){for(const [j,p]of [[0,triangle.a],[1,triangle.b],[2,triangle.c]])p.fromBufferAttribute(geometry.attributes.position,geometry.index.getX(i+j));triangle.getNormal(normal);if(normal.dot(direction)>=-1e-12)continue;if(ray.intersectTriangle(triangle.a,triangle.b,triangle.c,false,hit)&&hit.distanceTo(a)<=best){best=hit.distanceTo(a);result=hit.clone();}}return result;};
+  try{for(let i=0;i<240;i++){
+    const a=new THREE.Vector3(Math.sin(i*2.7)*.04,Math.cos(i*1.9)*.04,.035),b=i%3===0?a.clone().setZ(-.035):a.clone().multiplyScalar(-.7);
+    if(i%7===0){a.x=geometry.boundingBox.min.x;b.x=a.x;}
+    const expected=brute(a,b),actual=firstParentHit([mesh],a,b);assert.equal(!!actual,!!expected,`path ${i}`);if(expected)assert(actual.distanceTo(expected)<1e-10,`path ${i}`);
+  }}finally{geometry.dispose();mesh.material.dispose();}
+});

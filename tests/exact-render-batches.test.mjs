@@ -22,6 +22,19 @@ function verify(batcher,source){
   for(let i=0;i<range.indexCount;i++)assert.equal(batch.geometry.index.array[range.indexStart+i]-range.vertexStart,g.index.array[i]);
 }
 
+test('traction uploads only changed source ranges and keeps exact material/index buffers and culling bounds',()=>{
+  const scene=new THREE.Scene(),mat=new THREE.MeshStandardMaterial(),sources=[0,1].map(()=>{const g=new THREE.BoxGeometry();g.setAttribute('tissueRestPosition',g.attributes.position.clone());return new THREE.Mesh(g,mat);});sources.forEach(m=>scene.add(m));const batches=new ExactRenderBatches(scene);
+  try{
+    batches.sync(sources);const s=sources[0],r=batches.records.get(s),g=s.geometry,b=r.group.mesh,range=b.getGeometryRangeAt(r.geometry.id),restVersion=b.geometry.attributes.tissueRestPosition.version,indexVersion=b.geometry.index.version;
+    for(const a of Object.values(b.geometry.attributes))a.clearUpdateRanges();b.geometry.index.clearUpdateRanges();
+    g.attributes.position.setXYZ(1,2,3,4);g.attributes.position.addUpdateRange(3,3);g.attributes.position.needsUpdate=true;g.computeBoundingBox();g.computeBoundingSphere();batches.sync(sources);verify(batches,s);
+    assert.equal(b.geometry.attributes.tissueRestPosition.version,restVersion);assert.equal(b.geometry.index.version,indexVersion);
+    assert.deepEqual(b.geometry.attributes.position.updateRanges,[{start:range.vertexStart*3+3,count:3}]);
+    assert.deepEqual(b.getBoundingBoxAt(r.geometry.id,new THREE.Box3()),g.boundingBox);assert.deepEqual(b.getBoundingSphereAt(r.geometry.id,new THREE.Sphere()),g.boundingSphere);
+    const first=g.index.array[0];g.index.array[0]=g.index.array[1];g.index.array[1]=first;g.index.needsUpdate=true;batches.sync(sources);verify(batches,s);
+  }finally{batches.dispose();sources.forEach(m=>m.geometry.dispose());mat.dispose();}
+});
+
 test('new cut geometry is copied into its batch once; later attribute edits still upload once',()=>{
   const original=THREE.BatchedMesh.prototype.setGeometryAt;let copies=0;
   THREE.BatchedMesh.prototype.setGeometryAt=function(...args){copies++;return original.apply(this,args);};
@@ -30,7 +43,7 @@ test('new cut geometry is copied into its batch once; later attribute edits stil
     batcher.sync(sources);assert.equal(copies,2,'addGeometry already copied both source geometries');
     batcher.sync(sources);assert.equal(copies,2);
     sources[0].geometry.attributes.position.setX(0,.8);sources[0].geometry.attributes.position.needsUpdate=true;
-    batcher.sync(sources);assert.equal(copies,3);verify(batcher,sources[0]);
+    batcher.sync(sources);assert.equal(copies,2,'a position-only edit does not recopy immutable material/index buffers');verify(batcher,sources[0]);
   }finally{THREE.BatchedMesh.prototype.setGeometryAt=original;batcher.dispose();sources.forEach(m=>m.geometry.dispose());material.dispose();}
 });
 test('exact batches retain every triangle and material attribute through movement, deformation and visibility changes',()=>{

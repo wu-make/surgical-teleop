@@ -15,6 +15,7 @@ test('loading warmup executes a real wet-field triangle while keeping the physic
   const t=new TissueVolume({gpuBlood:true});try{
     const f=t.blood.surfaceFilm;assert.equal(f.warmGeometry.drawRange.count,3);assert(f.warmFields.count.value>0);assert.notEqual(f.warmFields,f.fields);assert.equal(f.fields.count.value,0);assert.equal(t.blood.emitted,0);assert.equal(t.blood.nodes.length,0);
     assert(f.warmFields.texture.image.data.every(Number.isFinite));assert(f.warmGeometry.attributes.normal.array.some(v=>v===1));
+    assert(1-Math.exp(-f.warmFields.texture.image.data[7]*f.warmFields.count.value*19000)>.1,'the warm fragment must pass the actual blood optical discard threshold');
     f.warmMesh.onAfterRender();assert.equal(f.warmMesh.visible,false);
   }finally{t.dispose();}
 });

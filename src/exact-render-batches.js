@@ -18,7 +18,7 @@ export class ExactRenderBatches {
     return `${mesh.material.uuid}/${mask}/${+mesh.castShadow}/${+mesh.receiveShadow}/${mesh.renderOrder}/${schema}`;
   }
   _group(key,list){
-    const source=list[0],geometries=[...new Set(list.map(m=>m.geometry))],v=Math.max(2048,Math.ceil(geometries.reduce((n,g)=>n+g.attributes.position.count,0)*1.5)),i=source.geometry.index?Math.max(4096,Math.ceil(geometries.reduce((n,g)=>n+g.index.count,0)*1.5)):0,instances=Math.max(32,list.length*2);
+    const source=list[0],geometries=[...new Set(list.map(m=>m.geometry))],reserve=source.geometry.attributes.tissueRestPosition?3:1.5,v=Math.max(2048,Math.ceil(geometries.reduce((n,g)=>n+g.attributes.position.count,0)*reserve)),i=source.geometry.index?Math.max(4096,Math.ceil(geometries.reduce((n,g)=>n+g.index.count,0)*reserve)):0,instances=Math.max(32,list.length*2);
     const mesh=new THREE.BatchedMesh(instances,v,i,source.material);mesh.name='Exact_MultiDraw_Geometry';mesh.layers.mask=source.layers.mask;mesh.castShadow=source.castShadow;mesh.receiveShadow=source.receiveShadow;mesh.renderOrder=source.renderOrder;mesh.frustumCulled=false;
     const group={mesh,geometries:new Map(),vCapacity:v,iCapacity:i,vCursor:0,iCursor:0,instances,active:0};this.root.add(mesh);this.groups.set(key,group);return group;
   }
@@ -51,6 +51,29 @@ export class ExactRenderBatches {
     old.attributes=Object.values(geometry.attributes);old.versions=old.attributes.map(a=>a.version);old.indexVersion=geometry.index?.version??0;old.vertices=geometry.attributes.position.count;old.indices=geometry.index?.count??0;
     record.sourceGeometry=geometry;group.geometries.set(geometry,old);this._operation('reuse',start,group);return true;
   }
+  _uploadChanged(source,record){
+    const g=source.geometry,value=record.geometry,batch=record.group.mesh,changed=value.attributes.some((a,i)=>a.version!==value.versions[i]),indexChanged=value.indexVersion!==(g.index?.version??0);
+    if(!changed&&!indexChanged)return;
+    // The pinned Three version exposes no per-attribute BatchedMesh setter.
+    // Guard its bookkeeping access and retain the public full-copy fallback.
+    // Same topology: preserve every exact attribute, index and culling bound,
+    // without recopying immutable material coordinates on each traction frame.
+    const info=batch._geometryInfo?.[value.id];
+    if(!info||value.attributes.some(a=>a.isInterleavedBufferAttribute)){batch.setGeometryAt(value.id,g);}
+    else{
+      const start=performance.now(),range=batch.getGeometryRangeAt(value.id);
+      let i=0;for(const [name,attribute]of Object.entries(g.attributes)){
+        if(attribute.version===value.versions[i++])continue;
+        const target=batch.geometry.attributes[name],base=range.vertexStart*attribute.itemSize;
+        const ranges=attribute.updateRanges.length?attribute.updateRanges:[{start:0,count:attribute.count*attribute.itemSize}];
+        for(const r of ranges){target.array.set(attribute.array.subarray(r.start,r.start+r.count),base+r.start);target.addUpdateRange(base+r.start,r.count);}target.needsUpdate=true;
+      }
+      if(indexChanged){const target=batch.geometry.index,sourceIndex=g.index;for(let j=0;j<sourceIndex.count;j++)target.array[range.indexStart+j]=range.vertexStart+sourceIndex.getX(j);target.addUpdateRange(range.indexStart,sourceIndex.count);target.needsUpdate=true;}
+      info.boundingBox=g.boundingBox?(info.boundingBox??new THREE.Box3()).copy(g.boundingBox):null;info.boundingSphere=g.boundingSphere?(info.boundingSphere??new THREE.Sphere()).copy(g.boundingSphere):null;batch._visibilityChanged=true;
+      this._operation('upload-changed',start,record.group);
+    }
+    value.versions=value.attributes.map(a=>a.version);value.indexVersion=g.index?.version??0;
+  }
   *syncSteps(sources){
     const eligible=new Set(sources.filter(m=>m.isMesh&&!m.isInstancedMesh&&!m.isBatchedMesh&&!m.isSkinnedMesh&&!Array.isArray(m.material)&&!m.material.transparent&&!Object.keys(m.geometry.morphAttributes).length&&m.geometry.drawRange.start===0&&m.geometry.drawRange.count===Infinity));
     for(const [source,record]of this.records){const g=source.geometry;if(!eligible.has(source)){this._remove(source,record);continue;}if(g!==record.sourceGeometry&&this._reuse(source,record))continue;if(g!==record.sourceGeometry||g.attributes.position.count!==record.geometry.vertices||(g.index?.count??0)!==record.geometry.indices||this._key(source,source.layers.mask||record.mask)!==record.key)this._remove(source,record);}
@@ -67,7 +90,7 @@ export class ExactRenderBatches {
     this.root.updateMatrixWorld(true);this.inverse.copy(this.root.matrixWorld).invert();
     for(const [source,record]of this.records){
       const g=source.geometry,value=record.geometry;
-      if(value.attributes.some((a,i)=>a.version!==value.versions[i])||value.indexVersion!==(g.index?.version??0)){record.group.mesh.setGeometryAt(value.id,g);value.versions=value.attributes.map(a=>a.version);value.indexVersion=g.index?.version??0;}
+      this._uploadChanged(source,record);
       this.matrix.multiplyMatrices(this.inverse,source.matrixWorld);if(!record.matrix.equals(this.matrix)){record.group.mesh.setMatrixAt(record.instance,this.matrix);record.matrix.copy(this.matrix);}
       let visible=true;for(let node=source;node;node=node.parent)if(!node.visible){visible=false;break;}
       if(record.visible!==visible){record.group.mesh.setVisibleAt(record.instance,visible);record.visible=visible;}

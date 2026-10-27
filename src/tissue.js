@@ -571,16 +571,18 @@ export class TissueVolume {
     geometry.userData.restPositions = chunk.positions;
     geometry.userData.restNormals = chunk.normals;
     geometry.userData.woundSurface=chunk.woundSurface;
-    geometry.userData.surfaceTree=chunk.contactTree;
-    geometry.setAttribute('position', new THREE.BufferAttribute(chunk.positions.slice(), 3).setUsage(THREE.StreamDrawUsage));
-    geometry.setAttribute('normal', new THREE.BufferAttribute(chunk.normals.slice(), 3).setUsage(THREE.StreamDrawUsage));
+    const prepared=chunk.display?.signature===JSON.stringify(this._deformation)?chunk.display:null;
+    geometry.userData.surfaceTree=chunk.display&&!prepared?null:chunk.contactTree;
+    geometry.setAttribute('position', new THREE.BufferAttribute(prepared?.positions??chunk.positions.slice(), 3).setUsage(THREE.StreamDrawUsage));
+    geometry.setAttribute('normal', new THREE.BufferAttribute(prepared?.normals??chunk.normals.slice(), 3).setUsage(THREE.StreamDrawUsage));
     geometry.setAttribute('color', new THREE.BufferAttribute(chunk.colors, 3));
     geometry.setAttribute('tissueRestPosition', new THREE.BufferAttribute(chunk.positions, 3));
     geometry.setAttribute('tissueCutMask', new THREE.BufferAttribute(chunk.cutMasks ?? new Float32Array(chunk.positions.length / 3), 1));
     geometry.setIndex(new THREE.BufferAttribute(chunk.indices, 1));
-    geometry.computeBoundingSphere();
+    if(prepared){geometry.boundingSphere=new THREE.Sphere(new THREE.Vector3(...prepared.center),prepared.radius);geometry.boundingBox=new THREE.Box3(new THREE.Vector3(...prepared.min),new THREE.Vector3(...prepared.max));}
+    else{geometry.computeBoundingSphere();geometry.computeBoundingBox();}
     geometry.userData.restSphere = geometry.boundingSphere.clone();
-    geometry.computeBoundingBox(); geometry.userData.restBox = geometry.boundingBox.clone();
+    geometry.userData.restBox = geometry.boundingBox.clone();
     // Keep chunk identity so the exact multi-draw slot and blood layer can be
     // updated in place instead of churning instances on each scissor sample.
     const mesh = previous??new THREE.Mesh(geometry, this.material);mesh.geometry=geometry;
@@ -588,7 +590,8 @@ export class TissueVolume {
     mesh.castShadow = true; mesh.receiveShadow = true;
     if(!previous)mesh.layers.enable(1);
     mesh.userData.tissue = true;
-    this._affectedVertices += this._applyDeformation(mesh);
+    if(prepared){geometry.boundingSphere.radius+=prepared.extent;geometry.boundingBox.expandByScalar(prepared.extent);geometry.userData.deformed=prepared.activeCount>0;geometry.userData.deformationCache={activeCount:prepared.activeCount};this._affectedVertices+=prepared.activeCount;}
+    else this._affectedVertices += this._applyDeformation(mesh);
     if(!previous)this.group.add(mesh);this._meshes.set(chunk.key, mesh);this.blood._surfaceCache.delete(mesh.uuid);
   }
 

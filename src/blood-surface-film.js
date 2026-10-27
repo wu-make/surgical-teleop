@@ -75,11 +75,15 @@ export class BloodSurfaceFilm {
       // initialise its VAO or exercise the field texture. Use an isolated real
       // triangle/kernel during loading, without adding any simulated blood.
       this.warmFields=makeFields(capacity);this.warmFields.count.value=capacity;
-      for(let i=0;i<capacity;i++)encode(this.warmFields.texture.image.data,{reference:[0,0,0],restNormal:[0,0,1],area:6.25,volume:.000001},i);
+      for(let i=0;i<capacity;i++)encode(this.warmFields.texture.image.data,{reference:[0,0,0],restNormal:[0,0,1],area:6.25,volume:.02},i);
       this.warmFields.texture.needsUpdate=true;
       this.warmGeometry=new THREE.BufferGeometry();for(const name of ['position','normal','filmReference','filmRestNormal'])this.warmGeometry.setAttribute(name,new THREE.BufferAttribute(new Float32Array(9),3));
       this.warmGeometry.attributes.position.array.set([0,0,0,.0001,0,0,0,.0001,0]);for(const name of ['normal','filmRestNormal'])this.warmGeometry.attributes[name].array.set([0,0,1,0,0,1,0,0,1]);this.warmGeometry.setDrawRange(0,3);
-      this.warmMesh=new THREE.Mesh(this.warmGeometry,material(true,this.warmFields));this.warmMesh.layers.enable(1);this.warmMesh.frustumCulled=false;this.warmMesh.onAfterRender=()=>{this.warmMesh.visible=false;};this.mesh.add(this.warmMesh);
+      this.warmMesh=new THREE.Mesh(this.warmGeometry,material(true,this.warmFields));this.warmMesh.layers.enable(1);this.warmMesh.frustumCulled=false;
+      this.warmMesh.userData.cameraSpaceWarmup=true;
+      const nearCamera=new THREE.Matrix4().makeTranslation(0,0,-.02);
+      this.warmMesh.onBeforeRender=(_renderer,_scene,camera)=>{this.warmMesh.matrixWorld.copy(camera.matrixWorld).multiply(nearCamera);};
+      this.warmMesh.onAfterRender=()=>{this.warmMesh.visible=false;};this.mesh.add(this.warmMesh);
     }
     this.mesh.name='Connected_Blood_Film_On_Actual_Tissue_Triangles';this.mesh.layers.enable(1);this.mesh.frustumCulled=false;this.mesh.renderOrder=2;
     this.kernelOwners=new Map();this.kernelEntries=[];this.records=new WeakMap();this.owners=new Map();this.displayRecords=[];this.gpuMaterials=new Map();this.overlays=new Map();this.capacity=0;if(!gpu)this._reserve(65536);this.geometry.setDrawRange(0,0);

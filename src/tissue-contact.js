@@ -3,6 +3,18 @@ import {buildSurfaceTree} from './surface-tree.js';
 
 const boxDistanceSquared=(p,b)=>Math.max(b[0]-p.x,0,p.x-b[3])**2+Math.max(b[1]-p.y,0,p.y-b[4])**2+Math.max(b[2]-p.z,0,p.z-b[5])**2;
 const boxesDistanceSquared=(a,b)=>Math.max(b[0]-a[3],a[0]-b[3],0)**2+Math.max(b[1]-a[4],a[1]-b[4],0)**2+Math.max(b[2]-a[5],a[2]-b[5],0)**2;
+// A swept AABB is only a broad phase. Clip the actual segment to each tree
+// node before inspecting triangles, including parallel and grazing segments.
+const segmentEntersBox=(start,direction,bounds,maximum)=>{
+  let low=0,high=maximum+1e-10;
+  for(let axis=0;axis<3;axis++){
+    const p=axis===0?start.x:axis===1?start.y:start.z,d=axis===0?direction.x:axis===1?direction.y:direction.z;
+    const min=bounds[axis]-1e-12,max=bounds[axis+3]+1e-12;
+    if(d===0){if(p<min||p>max)return false;continue;}
+    let a=(min-p)/d,b=(max-p)/d;if(a>b)[a,b]=[b,a];low=Math.max(low,a);high=Math.min(high,b);if(low>high)return false;
+  }
+  return true;
+};
 
 function closestSegments(a,b,c,d,p,q,u,v,r){
   u.subVectors(b,a);v.subVectors(d,c);r.subVectors(a,c);
@@ -60,7 +72,7 @@ class SurfaceIndex {
     bounds[0]=Math.min(start.x,end.x);bounds[1]=Math.min(start.y,end.y);bounds[2]=Math.min(start.z,end.z);bounds[3]=Math.max(start.x,end.x);bounds[4]=Math.max(start.y,end.y);bounds[5]=Math.max(start.z,end.z);
     let best=length+1e-10,result=null;stack.length=0;stack.push(this.root);
     while(stack.length){
-      const node=stack.pop();if(boxesDistanceSquared(bounds,node.bounds)>0)continue;
+      const node=stack.pop();if(boxesDistanceSquared(bounds,node.bounds)>0||!segmentEntersBox(start,direction,node.bounds,best))continue;
       if(!node.triangles){stack.push(node.left,node.right);continue;}
       for(const id of node.triangles){
         triangle.a.fromBufferAttribute(this.positions,this.indices[id*3]);triangle.b.fromBufferAttribute(this.positions,this.indices[id*3+1]);triangle.c.fromBufferAttribute(this.positions,this.indices[id*3+2]);

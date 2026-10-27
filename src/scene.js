@@ -44,10 +44,10 @@ function exactSources(view){
   // transport compatible opaque draw buffers through the existing exact batch.
   // Camera-dependent cavity visibility is deliberately outside these roots.
   const a=view.assemblies,sources=[];
-  // Keep the two operative instruments on their original draw path: their
-  // specular edges must remain pixel-identical in the endoscopic image.
+  // Keep complete original CAD on the CPU for contact/RCM. Compatible opaque
+  // parts share draw transport, including both operative instruments.
   for(const root of [view.room,view.robotModel,a?.scope?.group,a?.scopeArm?.mount])root?.traverse(m=>{if(m.isMesh)sources.push(m);});
-  for(const tool of Object.values(a?.tools??{}))tool.group.traverse(m=>{if(m.isMesh&&!((view.exactBatches?.records.get(m)?.mask??m.layers.mask)&2))sources.push(m);});
+  for(const tool of Object.values(a?.tools??{}))tool.group.traverse(m=>{if(m.isMesh)sources.push(m);});
   for(const mesh of view.tissue?._meshes.values()??[])sources.push(mesh);
   for(const piece of view.tissue?.fragments.items.values()??[])sources.push(piece.mesh);
   return sources;

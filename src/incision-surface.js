@@ -1,29 +1,32 @@
 // Refine only exposed cut edges. Both neighbours decide from the same edge
 // endpoints, so chunk seams and intact capsule triangles stay watertight.
-export function refineIncisionSurface(mesh,{spacing,sampleField,sampleOriginal,colour,mask,passes=2}={}){
-  if(!mesh.indices.length||!mesh.cutMasks.some(value=>value>.02))return mesh;
+export function refineIncisionSurface(mesh,{spacing,mapPoint=null,passes=4}={}){
+  if(!mesh.indices.length||(!mapPoint&&!mesh.cutMasks.some(value=>value>.02)))return mesh;
   const positions=Array.from(mesh.positions),normals=Array.from(mesh.normals),colors=Array.from(mesh.colors),masks=Array.from(mesh.cutMasks);
-  let indices=Array.from(mesh.indices);const target=Math.min(...spacing)*.52,epsilon=Math.min(...spacing)*.03;
-  const point=id=>positions.slice(id*3,id*3+3);
-  const gradient=p=>{const g=[0,0,0];for(let axis=0;axis<3;axis++){const value=p[axis];p[axis]=value-epsilon;const low=sampleField(p);p[axis]=value+epsilon;const high=sampleField(p);p[axis]=value;g[axis]=(high-low)/(2*epsilon);}return g;};
+  let indices=Array.from(mesh.indices);const target=Math.min(...spacing)*.52,points=[],mapped=[],travel=[];
+  const point=id=>points[id]??=positions.slice(id*3,id*3+3);
+  const distance=(x,y)=>Math.hypot(x[0]-y[0],x[1]-y[1],x[2]-y[2]);
+  const display=id=>{let p=mapped[id];if(!p){const rest=point(id);p=mapPoint(rest);mapped[id]=p;travel[id]=distance(p,rest);}return p;};
+  // Edge endpoints never move in material space. Reuse even unsplit edge
+  // decisions across passes instead of evaluating their nonlinear map again.
+  const midpoints=new Map();
   for(let pass=0;pass<passes;pass++){
-    const midpoints=new Map(),output=[];
+    const output=[];
     function midpoint(a,b){
-      const key=a<b?a+':'+b:b+':'+a;if(midpoints.has(key))return midpoints.get(key);
-      if(Math.max(masks[a],masks[b])<=.02){midpoints.set(key,-1);return -1;}
+      const high=Math.max(a,b),low=Math.min(a,b),key=high*(high+1)/2+low;if(midpoints.has(key))return midpoints.get(key);
+      if(!mapPoint&&Math.max(masks[a],masks[b])<=.02){midpoints.set(key,-1);return -1;}
       const pa=point(a),pb=point(b);
-      if(Math.hypot(pa[0]-pb[0],pa[1]-pb[1],pa[2]-pb[2])<=target){midpoints.set(key,-1);return -1;}
       const p=[(pa[0]+pb[0])*.5,(pa[1]+pb[1])*.5,(pa[2]+pb[2])*.5];
-      // Project onto the actual remaining volume, rather than smoothing across
-      // empty space or rounding over a newly opened cavity.
-      for(let i=0;i<4;i++){
-        const d=sampleField(p),g=gradient(p),length=g.reduce((sum,v)=>sum+v*v,0);if(!Number.isFinite(d)||length<1e-12||Math.abs(d)<1e-8)break;
-        const scale=Math.max(-target*.35,Math.min(target*.35,d/Math.sqrt(length)))/Math.sqrt(length);
-        for(let axis=0;axis<3;axis++)p[axis]-=g[axis]*scale;
-      }
-      const n=gradient(p),length=Math.hypot(...n);let normal=length>1e-10?n.map(v=>v/length):[0,1,2].map(i=>(normals[a*3+i]+normals[b*3+i])*.5);
+      let split=Math.max(masks[a],masks[b])>.02&&distance(pa,pb)>target,mp;
+      if(mapPoint){const da=display(a),db=display(b);if(travel[a]+travel[b]>1e-9){mp=mapPoint(p);split||=distance(da,db)>target||Math.hypot(mp[0]-(da[0]+db[0])*.5,mp[1]-(da[1]+db[1])*.5,mp[2]-(da[2]+db[2])*.5)>target*.1;}}
+      if(!split){midpoints.set(key,-1);return -1;}
+      // Marching tetrahedra describe a piecewise-affine zero surface. Keep
+      // each midpoint on its original edge. Projecting it onto a different
+      // trilinear field can cross a cut/capsule crease and fold tiny faces
+      // into long reflective slivers once the flap is pulled.
+      let normal=[0,1,2].map(i=>(normals[a*3+i]+normals[b*3+i])*.5);
       const normalLength=Math.hypot(...normal);normal=normalLength>1e-10?normal.map(v=>v/normalLength):normals.slice(a*3,a*3+3);
-      const original=sampleOriginal(p),id=positions.length/3;positions.push(...p);normals.push(...normal);colors.push(...colour(p,original));masks.push(mask(original));midpoints.set(key,id);return id;
+      const id=positions.length/3;positions.push(...p);points[id]=p;normals.push(...normal);for(let i=0;i<3;i++)colors.push((colors[a*3+i]+colors[b*3+i])*.5);masks.push((masks[a]+masks[b])*.5);midpoints.set(key,id);if(mp){mapped[id]=mp;travel[id]=distance(mp,p);}return id;
     }
     for(let i=0;i<indices.length;i+=3){
       const a=indices[i],b=indices[i+1],c=indices[i+2],ab=midpoint(a,b),bc=midpoint(b,c),ca=midpoint(c,a),bits=(ab>=0?1:0)|(bc>=0?2:0)|(ca>=0?4:0);

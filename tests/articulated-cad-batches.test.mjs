@@ -20,7 +20,7 @@ test('real articulated CAD retains every source attribute/index, layer and world
       g1.scene.getObjectByName('left_shoulder_pitch_joint').rotation.x=phase*.8;g1.scene.getObjectByName('right_elbow_joint').rotation.y=-phase*.6;
       SurgicalScene.prototype.prepareRenderGeometry.call(view);
       let robotParts=0;g1.scene.traverse(source=>{if(source.isMesh){robotParts++;assert(view.exactBatches.records.has(source),'every original G1 CAD part uses the exact batch transport');}});assert(robotParts>20);
-      for(const [source,mask]of toolLayers)if(mask&2){assert.equal(source.layers.mask,mask,'operative CAD keeps its original draw path');assert(!view.exactBatches.records.has(source));}
+      let operativeBatched=0;for(const [source,mask]of toolLayers)if(mask&2){const record=view.exactBatches.records.get(source);if(record){operativeBatched++;assert.equal(source.layers.mask,0);assert.equal(record.mask,mask);}else assert.equal(source.layers.mask,mask,'unique materials retain their original full CAD draw');}assert(operativeBatched>0,'compatible operative CAD must share complete draw transport');
       assert(view.exactBatches.records.size>20);assert(view.exactBatches.metrics.batches<view.exactBatches.records.size);
       for(const [source,record]of view.exactBatches.records){
         const batch=record.group.mesh,range=batch.getGeometryRangeAt(record.geometry.id),matrix=new THREE.Matrix4();batch.getMatrixAt(record.instance,matrix);matrix.premultiply(scene.matrixWorld);

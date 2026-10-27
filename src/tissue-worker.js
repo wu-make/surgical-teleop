@@ -94,6 +94,44 @@ export function deformPoint(point, deformation) {
   return point.map((v, axis) => v + deformation.displacement[axis] * weight);
 }
 
+export function createDeformationSampler(deformation,{limit=60000}={}){
+  const d=normalizeDeformation(deformation);let cache=new Map(),size=0,hits=0,misses=0;
+  const low=d?.local.map((v,i)=>Math.min(v,v+d.displacement[i])-d.radius),high=d?.local.map((v,i)=>Math.max(v,v+d.displacement[i])+d.radius),zero=[0,0,0];
+  const sample=point=>{
+    if(d&&point.some((v,i)=>v<low[i]||v>high[i]))return {weight:0,gradient:zero,position:point};
+    const [x,y,z]=point;let ys=cache.get(x),zs=ys?.get(y),entry=zs?.get(z);
+    if(entry){hits++;return entry;}
+    misses++;const mapping=deformationWeight(point,d);entry={...mapping,position:d?point.map((v,i)=>v+d.displacement[i]*mapping.weight):[...point]};
+    // Only affected coordinates are expensive; remote capsule points are a
+    // cheap exact rejection and should not evict the small live wound cache.
+    if(mapping.weight>0){if(size>=limit){cache=new Map();size=0;ys=zs=null;}if(!ys){ys=new Map();cache.set(x,ys);}if(!zs){zs=new Map();ys.set(y,zs);}zs.set(z,entry);size++;}
+    return entry;
+  };
+  Object.defineProperty(sample,'metrics',{get:()=>({size,hits,misses})});return sample;
+}
+
+function materialSampler(state,deformation){
+  const signature=JSON.stringify(deformation);
+  if(state._mappingSignature!==signature){state._mappingSignature=signature;state._mappingSampler=createDeformationSampler(deformation);}
+  return state._mappingSampler;
+}
+
+/** Prepare the exact live chunk mapping off the animation thread. A signature
+ * rejects stale results if the hand moved while this worker was meshing. */
+export function prepareChunkDisplay(mesh,deformation,sampler=null){
+  const d=normalizeDeformation(deformation);if(!d)return null;
+  const positions=new Float32Array(mesh.positions.length),normals=new Float32Array(mesh.normals.length),min=[Infinity,Infinity,Infinity],max=[-Infinity,-Infinity,-Infinity];
+  let activeCount=0,maximumWeight=0;
+  for(let i=0;i<positions.length;i+=3){
+    const rest=Array.from(mesh.positions.subarray(i,i+3)),mapping=sampler?sampler(rest):deformationWeight(rest,d),original=Array.from(mesh.normals.subarray(i,i+3)),n=mapping.weight>0?deformNormal(original,mapping.gradient,d.displacement):original;
+    activeCount+=mapping.weight>0?1:0;maximumWeight=Math.max(maximumWeight,mapping.weight);
+    for(let a=0;a<3;a++){positions[i+a]=rest[a]+d.displacement[a]*mapping.weight;normals[i+a]=n[a];min[a]=Math.min(min[a],rest[a]);max[a]=Math.max(max[a],rest[a]);}
+  }
+  const center=min.map((v,i)=>(v+max[i])*.5);let radiusSq=0;
+  for(let i=0;i<mesh.positions.length;i+=3)radiusSq=Math.max(radiusSq,(mesh.positions[i]-center[0])**2+(mesh.positions[i+1]-center[1])**2+(mesh.positions[i+2]-center[2])**2);
+  return {signature:JSON.stringify(d),positions,normals,min,max,center,radius:Math.sqrt(radiusSq),activeCount,extent:Math.hypot(...d.displacement)*maximumWeight};
+}
+
 /** Freeze the complete specimen in the worker before its atomic handoff.
  * Uses the same Float32 vertices, normal mapping and 26 support directions as
  * the foreground path; material coordinates and all triangles stay intact. */
@@ -380,13 +418,6 @@ function surfaceColor(point, originalDistance, width) {
   return [(0.19 + 0.14 * cut) * noise, (0.027 + 0.027 * cut) * noise, (0.018 + 0.024 * cut) * noise];
 }
 
-function sampleVolumeField(state,point,original=false){
-  const {meta}=state,field=original?state.base:state.field;
-  const gx=clamp((point[0]-meta.origin[0])/meta.spacing[0],0,meta.dims[0]-1),gy=clamp((point[1]-meta.origin[1])/meta.spacing[1],0,meta.dims[1]-1),gz=clamp((point[2]-meta.origin[2])/meta.spacing[2],0,meta.dims[2]-1);
-  const lx=Math.min(Math.floor(gx),meta.dims[0]-2),ly=Math.min(Math.floor(gy),meta.dims[1]-2),lz=Math.min(Math.floor(gz),meta.dims[2]-2),fx=gx-lx,fy=gy-ly,fz=gz-lz;let result=0;
-  for(let z=0;z<=1;z++)for(let y=0;y<=1;y++)for(let x=0;x<=1;x++)result+=field[nodeIndex(meta,lx+x,ly+y,lz+z)]*(x?fx:1-fx)*(y?fy:1-fy)*(z?fz:1-fz);
-  return result;
-}
 export function polygonizeChunk(state, key) {
   const [cx, cy, cz] = key.split(',').map(Number);
   const { meta, field, base, chunkSize } = state;
@@ -394,12 +425,12 @@ export function polygonizeChunk(state, key) {
   const positions = [], normals = [], colors = [], cutMasks = [], indices = [], vertexIndices = new Map();
   const corners = new Array(8), samples = new Array(8), originals = new Array(8), gradientCache = new Map();
   const gradient = (x, y, z) => { const index = nodeIndex(meta, x, y, z); let result = gradientCache.get(index); if (!result) { result = nodeGradient(state, x, y, z); gradientCache.set(index, result); } return result; };
-  function emitTriangle(a, b, c) {
+  function emitTriangle(a, b, c, outwardHint) {
     const ux = b.p[0] - a.p[0], uy = b.p[1] - a.p[1], uz = b.p[2] - a.p[2];
     const vx = c.p[0] - a.p[0], vy = c.p[1] - a.p[1], vz = c.p[2] - a.p[2];
     const face = [uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx];
     if (Math.hypot(...face) < 1e-15) return;
-    const outward = a.n.map((v, axis) => v + b.n[axis] + c.n[axis]);
+    const outward = outwardHint??a.n.map((v, axis) => v + b.n[axis] + c.n[axis]);
     if (face.reduce((sum, v, axis) => sum + v * outward[axis], 0) < 0) [b, c] = [c, b];
     for (const vertex of [a, b, c]) {
       let index = vertexIndices.get(vertex.key);
@@ -430,23 +461,29 @@ export function polygonizeChunk(state, key) {
         const normal = ga.map((v, axis) => v + (gb[axis] - v) * t), length = Math.hypot(...normal) || 1;
         const original = originals[ia] + (originals[ib] - originals[ia]) * t;
         const nodeA = nodeIndex(meta, ...corners[ia]), nodeB = nodeIndex(meta, ...corners[ib]);
-        intersections.push({ key: nodeA < nodeB ? `${nodeA}:${nodeB}` : `${nodeB}:${nodeA}`, p, n: normal.map(v => v / length), c: surfaceColor(p, original, state.bandWidth), cutMask: cutSurfaceMask(original,state.bandWidth) });
+        intersections.push({ key: nodeA < nodeB ? `${nodeA}:${nodeB}` : `${nodeB}:${nodeA}`, edge:[ia,ib], p, n: normal.map(v => v / length), c: surfaceColor(p, original, state.bandWidth), cutMask: cutSurfaceMask(original,state.bandWidth) });
       }
-      if (intersections.length === 3) emitTriangle(...intersections);
+      const crossing=intersections[0]?.edge;
+      const inside=crossing?.find(i=>samples[i]<0),outside=crossing?.find(i=>samples[i]>=0);
+      const outward=crossing?corners[outside].map((v,i)=>(v-corners[inside][i])*meta.spacing[i]):null;
+      if (intersections.length === 3) emitTriangle(...intersections,outward);
       else if (intersections.length === 4) {
-        const center = [0, 1, 2].map(axis => intersections.reduce((sum, vertex) => sum + vertex.p[axis], 0) / 4);
-        let normal = [0, 1, 2].map(axis => intersections.reduce((sum, vertex) => sum + vertex.n[axis], 0));
-        const length = Math.hypot(...normal) || 1; normal = normal.map(v => v / length);
-        const reference = intersections[0].p.map((v, axis) => v - center[axis]);
-        const tangent = [normal[1] * reference[2] - normal[2] * reference[1], normal[2] * reference[0] - normal[0] * reference[2], normal[0] * reference[1] - normal[1] * reference[0]];
-        for (const vertex of intersections) { const v = vertex.p.map((value, axis) => value - center[axis]); vertex.angle = Math.atan2(v.reduce((sum, value, axis) => sum + value * tangent[axis], 0), v.reduce((sum, value, axis) => sum + value * reference[axis], 0)); }
-        intersections.sort((a, b) => a.angle - b.angle);
-        emitTriangle(intersections[0], intersections[1], intersections[2]); emitTriangle(intersections[0], intersections[2], intersections[3]);
+        // With two negative and two positive corners the section is a quad.
+        // Adjacent crossings share a tetrahedron edge endpoint. Interpolated
+        // shading normals can cancel or turn at a cut/capsule crease; using
+        // them to sort vertices can instead make a crossed bow-tie.
+        const first=intersections[0],opposite=intersections.find(v=>v!==first&&!v.edge.some(i=>first.edge.includes(i)));
+        const adjacent=intersections.filter(v=>v!==first&&v!==opposite);
+        intersections.splice(0,4,first,adjacent[0],opposite,adjacent[1]);
+        emitTriangle(intersections[0], intersections[1], intersections[2],outward); emitTriangle(intersections[0], intersections[2], intersections[3],outward);
       }
     }
   }
   const mesh={ key, positions: new Float32Array(positions), normals: new Float32Array(normals), colors: new Float32Array(colors), cutMasks: new Float32Array(cutMasks), indices: new Uint32Array(indices) };
-  return refineIncisionSurface(mesh,{spacing:meta.spacing,sampleField:p=>sampleVolumeField(state,p),sampleOriginal:p=>sampleVolumeField(state,p,true),colour:(p,d)=>surfaceColor(p,d,state.bandWidth),mask:d=>cutSurfaceMask(d,state.bandWidth)});
+  const deformation=state.meshingDeformation??state.cuts?.at(-1)?.deformation;
+  const overlaps=deformation&&[0,1,2].every(i=>meta.origin[i]+last[i]*meta.spacing[i]>=Math.min(deformation.local[i],deformation.local[i]+deformation.displacement[i])-deformation.radius&&meta.origin[i]+first[i]*meta.spacing[i]<=Math.max(deformation.local[i],deformation.local[i]+deformation.displacement[i])+deformation.radius);
+  const sampler=overlaps?materialSampler(state,deformation):null;
+  return refineIncisionSurface(mesh,{spacing:meta.spacing,mapPoint:sampler?p=>sampler(p).position:null});
 }
 
 function scanComponents(state, values, labels = null) {
@@ -631,7 +668,21 @@ export function restoreVolumeWithSeparations(state, cuts = [], separations = [])
   return { fragments, dirty: new Set(allChunkKeys(state)), exclusions: { nodeIndices, positiveValues } };
 }
 
-function buildChunks(state, keys) { return [...keys].map(key => {const chunk=polygonizeChunk(state,key);chunk.woundSurface=prepareWoundSurface(chunk);return chunk;}); }
+export function buildChunks(state, keys,{force=false}={}) {
+  const cache=state._chunkInputCache??=new Map(),chunks=[],signature=JSON.stringify(state.cuts.at(-1)?.deformation??null),{dims}=state.meta;
+  for(const key of keys){
+    const first=key.split(',').map(v=>Number(v)*state.chunkSize),low=first.map(v=>Math.max(0,v-1)),high=first.map((v,i)=>Math.min(dims[i]-1,v+state.chunkSize+1));
+    const previous=cache.get(key);let unchanged=!force&&previous?.signature===signature,index=0;
+    // Polygon positions use the cell samples; smooth normals additionally use
+    // one neighbour. Compare that complete input exactly, including its halo.
+    if(unchanged)outer:for(let z=low[2];z<=high[2];z++)for(let y=low[1];y<=high[1];y++)for(let x=low[0];x<=high[0];x++)if(previous.values[index++]!==state.field[nodeIndex(state.meta,x,y,z)]){unchanged=false;break outer;}
+    if(unchanged)continue;
+    const values=new Float32Array((high[0]-low[0]+1)*(high[1]-low[1]+1)*(high[2]-low[2]+1));index=0;
+    for(let z=low[2];z<=high[2];z++)for(let y=low[1];y<=high[1];y++)for(let x=low[0];x<=high[0];x++)values[index++]=state.field[nodeIndex(state.meta,x,y,z)];
+    const chunk=polygonizeChunk(state,key);chunk.woundSurface=prepareWoundSurface(chunk);chunks.push(chunk);cache.set(key,{signature,values});
+  }
+  return chunks;
+}
 function statistics(state) { return { removedVolumeMm3: state.removedVolumeMm3, totalVolumeMm3: state.totalVolumeMm3, voxelMm: Math.max(...state.meta.spacing) * 1000, cutCount: state.cuts.length,
   fragmentCount: state.fragmentRecords.length, fragmentVolumeMm3: state.fragmentVolumeMm3, topology: { ...state.topologyMetrics } }; }
 
@@ -644,7 +695,7 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
       if (data.type === 'init') {
         state = createVolumeState(data.metadata, new Float32Array(data.buffer), data.chunkSize ?? 16);
         initializeConnectivity(state);
-        chunks = buildChunks(state, allChunkKeys(state));
+        chunks = buildChunks(state, allChunkKeys(state),{force:true});
       } else if (!state) throw new Error('The tissue volume is not initialized');
       else if (data.type === 'cut') {
         const dirty = new Set();
@@ -664,7 +715,7 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
       } else if (data.type === 'restore') {
         const restored = restoreVolumeWithSeparations(state, data.cuts ?? [], data.separations ?? []);
         fragments = restored.fragments; exclusions = restored.exclusions;
-        chunks = buildChunks(state, allChunkKeys(state));
+        chunks = buildChunks(state, allChunkKeys(state),{force:true});
       } else throw new Error(`Unknown tissue operation: ${data.type}`);
       phase('volumeAndChunksMs');
       if(data.type!=='cut'){woundChunks.clear();woundFragments.clear();}
@@ -678,9 +729,11 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
       phase('woundSelectionMs');
       for(const fragment of fragments)fragment.display=prepareFragmentDisplay(fragment);
       phase('fragmentDisplayMs');
-      for(const chunk of chunks)if(chunk.positions.length)chunk.contactTree=buildSurfaceTree(chunk.positions,chunk.indices);
+      const displayDeformation=state.cuts.at(-1)?.deformation,sampler=displayDeformation?materialSampler(state,displayDeformation):null;
+      for(const chunk of chunks)if(chunk.positions.length){chunk.display=prepareChunkDisplay(chunk,displayDeformation,sampler);chunk.contactTree=buildSurfaceTree(chunk.display?.positions??chunk.positions,chunk.indices);}
       phase('contactTreesMs');
       const transfer = chunks.flatMap(chunk => [chunk.positions.buffer, chunk.normals.buffer, chunk.colors.buffer, chunk.cutMasks.buffer, chunk.indices.buffer]);
+      for(const chunk of chunks)if(chunk.display)transfer.push(chunk.display.positions.buffer,chunk.display.normals.buffer);
       for (const fragment of fragments)transfer.push(fragment.positions.buffer, fragment.normals.buffer, fragment.colors.buffer, fragment.cutMasks.buffer, fragment.indices.buffer, fragment.volume.values.buffer,fragment.display.positions.buffer,fragment.display.normals.buffer,fragment.display.support.buffer);
       for(const owner of [...chunks,...fragments.map(f=>f.display)])if(owner.contactTree)transfer.push(owner.contactTree.boundsStore.buffer,owner.contactTree.triangles.buffer);
       if(woundSelection)transfer.push(woundSelection.edges.buffer);
