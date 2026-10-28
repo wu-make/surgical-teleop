@@ -9,6 +9,10 @@ export async function prepareSceneMaterials(view,{width,height,yieldFrame=yieldP
   const saved={target:r.getRenderTarget(),background:scene.background,environmentIntensity:scene.environmentIntensity,exposure:r.toneMappingExposure,visible:inner.visible};
   if(view.prepareRenderGeometryAsync)await view.prepareRenderGeometryAsync();else view.prepareRenderGeometry();
   view.scopeFeed.reserve(r,width,height);
+  // Live cut surfaces use original source draws. Compile that real material
+  // variant before the first C, even when initial tissue is statically batched.
+  const original=view.tissue?._meshes?.values().next().value,originalMask=original?.layers.mask;
+  if(original)original.layers.mask|=3;
   try{
     await yieldFrame();
     inner.visible=true;scene.environmentIntensity=.34;r.toneMappingExposure=1.10;
@@ -19,6 +23,7 @@ export async function prepareSceneMaterials(view,{width,height,yieldFrame=yieldP
     r.setRenderTarget(null);
     await r.compileAsync(scene,view.overviewCamera);
   }finally{
+    if(original)original.layers.mask=originalMask;
     r.setRenderTarget(saved.target);scene.background=saved.background;
     scene.environmentIntensity=saved.environmentIntensity;r.toneMappingExposure=saved.exposure;inner.visible=saved.visible;
   }
@@ -33,6 +38,8 @@ export async function warmSceneDisplay(view,options={}){
   const r=view.renderer,scene=view.scene,inner=view.cavity.children[0],objects=[];
   const width=view.frameLayout?.width??view.stage.clientWidth,height=view.frameLayout?.height??view.stage.clientHeight;
   scene.traverse(object=>{if(object.isMesh||object.isLine||object.isPoints||object.isSprite)objects.push({object,mask:object.layers.mask,culled:object.frustumCulled,warmWorld:object.userData?.cameraSpaceWarmup?object.matrixWorld.clone():null,count:object.isInstancedMesh?object.count:null,matrix:object.isInstancedMesh&&object.count===0&&object.instanceMatrix.array.length>=16?object.instanceMatrix.array.slice(0,16):null});});
+  const original=view.tissue?._meshes?.values().next().value,originalRecord=objects.find(record=>record.object===original);
+  if(originalRecord)originalRecord.warmMask=3;
   const saved={target:r.getRenderTarget(),intensity:scene.environmentIntensity,exposure:r.toneMappingExposure,visible:inner.visible};
   function* draws(){
     // Zero-instance particles/fibres compile but never exercise their actual
@@ -43,8 +50,8 @@ export async function warmSceneDisplay(view,options={}){
       const camera=endoscopy?view.endoCamera:view.overviewCamera;
       inner.visible=endoscopy;scene.environmentIntensity=endoscopy?.34:.80;r.toneMappingExposure=endoscopy?1.10:1.0;
       for(const record of objects){
-        const {object,mask}=record;if(record.warmWorld)object.visible=true;if(!(mask&camera.layers.mask)||!object.visible)continue;
-        object.layers.mask=mask;object.frustumCulled=false;
+        const {object,mask}=record,drawMask=record.warmMask??mask;if(record.warmWorld)object.visible=true;if(!(drawMask&camera.layers.mask)||!object.visible)continue;
+        object.layers.mask=drawMask;object.frustumCulled=false;
         if(endoscopy)view.scopeFeed.capture(r,scene,camera,width,height);
         else{r.setRenderTarget(null);r.render(scene,camera);}
         object.layers.mask=0;object.frustumCulled=record.culled;yield;

@@ -9,6 +9,21 @@ function fixture(fail=false){
   return {view,calls,previous,inner,yieldFrame:async()=>calls.push({kind:'yield'})};
 }
 
+test('original live tissue variants compile during loading and restore the initial batch mask after success or failure',async()=>{
+  for(const fail of [false,true]){
+    const f=fixture(),original=new THREE.Mesh(new THREE.BoxGeometry(),new THREE.MeshPhysicalMaterial());original.layers.mask=0;f.view.tissue={_meshes:new Map([['original',original]])};let calls=0;
+    f.view.renderer.compileAsync=async()=>{calls++;assert.equal(original.layers.mask,3);if(fail)throw new Error('compile interrupted');};
+    try{if(fail)await assert.rejects(prepareSceneMaterials(f.view,{width:949,height:612,yieldFrame:f.yieldFrame}),/compile interrupted/);else{await prepareSceneMaterials(f.view,{width:949,height:612,yieldFrame:f.yieldFrame});assert.equal(calls,2);}assert.equal(original.layers.mask,0);}finally{original.geometry.dispose();original.material.dispose();}
+  }
+});
+
+test('loading exercises the complete original tissue buffers in both cameras without exposing a duplicate in the ready frame',async()=>{
+  const {warmSceneDisplay}=await import('../src/render-preparation.js'),f=fixture(),original=new THREE.Mesh(new THREE.BoxGeometry(),new THREE.MeshPhysicalMaterial());original.layers.mask=0;
+  f.view.tissue={_meshes:new Map([['original',original]])};f.view.scene.traverse=fn=>fn(original);f.view.stage={clientWidth:949,clientHeight:612};f.view.endoCamera.layers={mask:2};f.view.overviewCamera.layers={mask:1};let draws=0;const buffer=original.geometry.attributes.position.array;
+  f.view.renderer.render=()=>{draws++;assert.equal(original.layers.mask,3);assert.equal(original.geometry.attributes.position.array,buffer);};f.view.scopeFeed.capture=(r,s,c)=>r.render(s,c);f.view.scopeFeed.blit=()=>{};
+  try{await warmSceneDisplay(f.view,{yieldFrame:f.yieldFrame});assert.equal(draws,2);assert.equal(original.layers.mask,0);}finally{original.geometry.dispose();original.material.dispose();}
+});
+
 test('isolated wet fragments warm in front of both real cameras, then disappear and restore world transforms even on failure',async()=>{
   const {warmSceneDisplay}=await import('../src/render-preparation.js');
   for(const fail of [false,true]){

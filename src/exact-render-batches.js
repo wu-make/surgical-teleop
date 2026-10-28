@@ -75,7 +75,7 @@ export class ExactRenderBatches {
     value.versions=value.attributes.map(a=>a.version);value.indexVersion=g.index?.version??0;
   }
   *syncSteps(sources){
-    const eligible=new Set(sources.filter(m=>m.isMesh&&!m.isInstancedMesh&&!m.isBatchedMesh&&!m.isSkinnedMesh&&!Array.isArray(m.material)&&!m.material.transparent&&!Object.keys(m.geometry.morphAttributes).length&&m.geometry.drawRange.start===0&&m.geometry.drawRange.count===Infinity));
+    const eligible=new Set(sources.filter(m=>m.isMesh&&!m.userData.dynamicSurface&&!m.isInstancedMesh&&!m.isBatchedMesh&&!m.isSkinnedMesh&&!Array.isArray(m.material)&&!m.material.transparent&&!Object.keys(m.geometry.morphAttributes).length&&m.geometry.drawRange.start===0&&m.geometry.drawRange.count===Infinity));
     for(const [source,record]of this.records){const g=source.geometry;if(!eligible.has(source)){this._remove(source,record);continue;}if(g!==record.sourceGeometry&&this._reuse(source,record))continue;if(g!==record.sourceGeometry||g.attributes.position.count!==record.geometry.vertices||(g.index?.count??0)!==record.geometry.indices||this._key(source,source.layers.mask||record.mask)!==record.key)this._remove(source,record);}
     const newGroups=new Map();for(const source of eligible)if(!this.records.has(source)){const key=this._key(source,source.layers.mask);if(!newGroups.has(key))newGroups.set(key,[]);newGroups.get(key).push(source);}
     for(const [key,list]of newGroups){

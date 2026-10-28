@@ -541,7 +541,7 @@ export class TissueVolume {
       const fragmentsEnd=performance.now();
       if (data.separations) this._separations = structuredClone(data.separations);
       if (data.type === 'restore') this._restoringFragmentPoses = null;
-      for (const chunk of data.chunks) this._replaceChunk(chunk);
+      for (const chunk of data.chunks) this._replaceChunk(chunk,{dynamic:data.type==='cut'||data.type==='restore'&&chunk.cutMasks.some(value=>value>0)});
       Object.assign(this, data.statistics);
       const woundStart=performance.now();
       if(data.woundSelection)this._lastWoundSelection=data.woundSelection;
@@ -562,7 +562,7 @@ export class TissueVolume {
     this._flush();this.onDiagnostic?.('tissue-receive',receiveStart,performance.now());
   }
 
-  _replaceChunk(chunk) {
+  _replaceChunk(chunk,{dynamic=chunk.cutMasks.some(value=>value>0)}={}) {
     this._contactRevision++;
     this._contactQueryCache.clear();
     const previous = this._meshes.get(chunk.key);
@@ -591,13 +591,17 @@ export class TissueVolume {
     else{geometry.computeBoundingSphere();geometry.computeBoundingBox();}
     geometry.userData.restSphere = geometry.boundingSphere.clone();
     geometry.userData.restBox = geometry.boundingBox.clone();
-    // Keep chunk identity so the exact multi-draw slot and blood layer can be
-    // updated in place instead of churning instances on each scissor sample.
+    // Keep source identity for contact and blood ownership. Remeshed cut
+    // surfaces draw their exact source buffers directly; unchanged geometry
+    // can continue using multi-draw transport without live slot replacement.
     const mesh = previous??new THREE.Mesh(geometry, this.material);mesh.geometry=geometry;
     mesh.name = `liver-chunk-${chunk.key}`;
     mesh.castShadow = true; mesh.receiveShadow = true;
     if(!previous)mesh.layers.enable(1);
     mesh.userData.tissue = true;
+    // History replay also brings back cut surfaces. Keep those exact source
+    // draws on undo/redo; a pristine reset can safely rejoin the static batch.
+    mesh.userData.dynamicSurface=dynamic;
     if(prepared){geometry.boundingSphere.radius+=prepared.extent;geometry.boundingBox.expandByScalar(prepared.extent);geometry.userData.deformed=prepared.activeCount>0;geometry.userData.deformationCache={activeCount:prepared.activeCount};this._affectedVertices+=prepared.activeCount;}
     else this._affectedVertices += this._applyDeformation(mesh);
     if(!previous)this.group.add(mesh);this._meshes.set(chunk.key, mesh);this.blood._surfaceCache.delete(mesh.uuid);

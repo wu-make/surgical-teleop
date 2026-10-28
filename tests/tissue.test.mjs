@@ -130,6 +130,19 @@ test('Three mesh assembly uses indexed triangles, endoscope layers, and disposes
   tissue.dispose();
 });
 
+test('replayed cut faces retain direct source draws while a pristine reset restores static eligibility',()=>{
+  const volume=sphereVolume(),tissue=new TissueVolume(),pristine=new Map(allChunkKeys(volume).map(key=>[key,polygonizeChunk(volume,key)]));
+  const result=applyCapsuleCut(volume,{a:[0,0,.007],b:[0,0,.018],radius:.003});
+  const key=[...result.dirty].find(key=>pristine.get(key).positions.length&&polygonizeChunk(volume,key).cutMasks.some(value=>value>.5));
+  assert(key);const cut=polygonizeChunk(volume,key);
+  try{
+    tissue._replaceChunk(cut);const mesh=tissue._meshes.get(key);assert.equal(mesh.userData.dynamicSurface,true);
+    assert.deepEqual(mesh.geometry.index.array,cut.indices);assert.deepEqual(mesh.geometry.attributes.tissueCutMask.array,cut.cutMasks);
+    resetVolume(volume);tissue._replaceChunk(polygonizeChunk(volume,key));
+    assert.equal(tissue._meshes.get(key).userData.dynamicSurface,false);
+  }finally{tissue.dispose();}
+});
+
 test('a reset invalidates in-flight cuts so late worker results cannot overwrite the restored organ', async () => {
   const tissue = new TissueVolume(), messages = [];
   tissue.worker = { postMessage: message => messages.push(message), terminate() {} };

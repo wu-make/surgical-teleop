@@ -70,7 +70,7 @@ export class TissueFragments {
     const mesh = new THREE.Mesh(geometry, this.tissue.material);
     mesh.name = `specimen-${descriptor.id}`; mesh.layers.enable(1);
     mesh.castShadow = true; mesh.receiveShadow = true;
-    mesh.userData.tissue = true; mesh.userData.fragmentId = descriptor.id;
+    mesh.userData.tissue = true; mesh.userData.fragmentId = descriptor.id;mesh.userData.dynamicSurface=true;
     const piece = { id: descriptor.id, volumeMm3: descriptor.volumeMm3, referenceCenter: [...descriptor.center],
       frozenCenter: center, deformation, volume: descriptor.volume, mesh,
       position: saved ? vec(saved.position) : center.clone(), quaternion: rotation(saved?.quaternion),

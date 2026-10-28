@@ -56,10 +56,13 @@ export function attachCutFlickerVerification(view,sim,interaction,pause,options)
     };
     const difference=(a,b)=>{let sum=0,maximum=0,over8=0;for(let i=0;i<a.length;i++){const d=Math.abs(a[i]-b[i]);sum+=d;maximum=Math.max(maximum,d);if(d>8)over8++;}return{mean:sum/a.length,maximum,over8,components:a.length};};
     const intensity=p=>{let sum=0,dark=0;for(let i=0;i<p.length;i+=4){const v=p[i]+p[i+1]+p[i+2];sum+=v;if(v<12)dark++;}return{meanRGB:sum/(p.length/4*3),darkPixels:dark};};
+    const readComplete=()=>{let pixels;const present=view.presentation.present;view.presentation.present=function(){pixels=new Uint8Array(width*height*4);gl.readPixels(0,0,width,height,gl.RGBA,gl.UNSIGNED_BYTE,pixels);return present.call(this);};try{view.render();return pixels;}finally{view.presentation.present=present;}};
+    const saveComplete=async(pixels,name)=>{const canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;const x=canvas.getContext('2d'),out=x.createImageData(width,height);for(let y=0;y<height;y++)out.data.set(pixels.subarray(y*width*4,(y+1)*width*4),(height-y-1)*width*4);x.putImageData(out,0,0);await send(name,await new Promise(resolve=>canvas.toBlob(resolve,'image/png')),'image/png');};
     const check=async label=>{
-      view.update(sim.state,0);view.render();
+      view.update(sim.state,0);const committedFirst=readComplete(),committedRepeat=readComplete(),firstFrameRepeat=difference(committedFirst,committedRepeat);
+      if(firstFrameRepeat.mean>.001){await saveComplete(committedFirst,`v38-commit-${label.toLowerCase()}-first.png`);await saveComplete(committedRepeat,`v38-commit-${label.toLowerCase()}-repeat.png`);}
       const original=await draw(true),batch=await draw(false),repeat=await draw(false);
-      const row={label,cutCount:view.tissue._cuts.length,receivedAt:view.tissue.updateTimings.receivedAt,originalIntensity:intensity(original),batchIntensity:intensity(batch),camera:view.endoCamera.position.toArray(),target:[...sim.state.scope.lookAt],originalVsBatch:difference(original,batch),repeatBatch:difference(batch,repeat),glError:gl.getError(),tissue:structuredClone(view.tissue.updateTimings)};
+      const row={label,cutCount:view.tissue._cuts.length,receivedAt:view.tissue.updateTimings.receivedAt,firstFrameRepeat,originalIntensity:intensity(original),batchIntensity:intensity(batch),camera:view.endoCamera.position.toArray(),target:[...sim.state.scope.lookAt],originalVsBatch:difference(original,batch),repeatBatch:difference(batch,repeat),glError:gl.getError(),tissue:structuredClone(view.tissue.updateTimings)};
       rows.push(row);await status({phase:label,rows,frames});
       if(label==='restored'||label==='closed-final'){await draw(true,{save:`v38-${label}-original.png`});await draw(false,{save:`v38-${label}-batch.png`});}
       switchPath(false);return row;

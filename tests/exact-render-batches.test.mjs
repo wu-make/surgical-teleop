@@ -4,6 +4,19 @@ import * as THREE from 'three';
 import {ExactRenderBatches} from '../src/exact-render-batches.js';
 import {runCooperatively} from '../src/cooperative-work.js';
 
+test('remeshed surfaces leave live multi-draw slots and retain the complete original geometry and camera layers',()=>{
+  const root=new THREE.Scene(),material=new THREE.MeshPhysicalMaterial(),sources=[0,1].map(()=>{const mesh=new THREE.Mesh(new THREE.BoxGeometry(),material);mesh.layers.enable(1);root.add(mesh);return mesh;}),batch=new ExactRenderBatches(root);
+  try{
+    batch.sync(sources);assert.equal(batch.records.size,2);const mesh=sources[0],old=mesh.geometry;
+    mesh.geometry=new THREE.SphereGeometry(.02,40,24);old.dispose();mesh.userData.dynamicSurface=true;
+    const position=mesh.geometry.attributes.position.array.slice(),index=mesh.geometry.index.array.slice();batch.sync(sources);
+    assert(!batch.records.has(mesh));assert.equal(mesh.layers.mask,3);assert(batch.records.has(sources[1]));assert.equal(sources[1].layers.mask,0);
+    assert.deepEqual(mesh.geometry.attributes.position.array,position);assert.deepEqual(mesh.geometry.index.array,index);assert.equal(mesh.geometry.drawRange.count,Infinity);
+    for(let i=0;i<8;i++){mesh.geometry.attributes.position.needsUpdate=true;batch.sync(sources);assert(!batch.records.has(mesh));assert.equal(mesh.layers.mask,3);}
+    mesh.userData.dynamicSurface=false;batch.sync(sources);assert(batch.records.has(mesh));verify(batch,mesh);
+  }finally{batch.dispose();sources.forEach(m=>m.geometry.dispose());material.dispose();}
+});
+
 test('a live tissue chunk retains its exact instance and reserved GPU slot when its cut geometry changes',()=>{
   const scene=new THREE.Scene(),material=new THREE.MeshPhysicalMaterial(),make=()=>{const g=new THREE.BoxGeometry(.01,.01,.01);g.setAttribute('tissueRestPosition',g.attributes.position.clone());g.setAttribute('tissueCutMask',new THREE.BufferAttribute(new Float32Array(g.attributes.position.count),1));return g;};
   const sources=[new THREE.Mesh(make(),material),new THREE.Mesh(make(),material)];for(const m of sources){m.layers.enable(1);scene.add(m);}

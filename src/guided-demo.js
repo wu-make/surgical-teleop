@@ -112,7 +112,7 @@ export class GuidedDemo {
     this.sim.setCutting(false);
     this.sim.setJaw(side, .7);
     this.mode = 'approach'; this.active = true; this.time = 0; this.side = side;
-    this.approachFragment=null;this._bleedingKey=null;
+    this.approachFragment=null;this._bleedingKey=null;this._pressureWaypoints=null;
     this.start = new THREE.Vector3(...tool.position);
     this.end = surface.point.addScaledVector(surface.normal, .001);
     this.onMessage(`${side === 'left' ? '左钳' : '右剪'}正在贴近实际肝表面`);
@@ -134,7 +134,7 @@ export class GuidedDemo {
     this.sim.checkpoint('左钳接近独立标本',()=>this.interaction.snapshot({forHistory:true}),{takeOwnership:true});
     this.sim.select('left');this.sim.setCutting(false);this.sim.setJaw('left',.75);
     this.mode='approach';this.active=true;this.time=0;this.side='left';
-    this._bleedingKey=null;
+    this._bleedingKey=null;this._pressureWaypoints=null;
     this.start=new THREE.Vector3(...tool.position);
     this.approachFragment={id:piece.id,anchor:surface.clone().sub(piece.position).applyQuaternion(inverse),normal:normal.applyQuaternion(inverse)};
     this.end=this.tissue.group.localToWorld(surface.clone());
@@ -143,14 +143,59 @@ export class GuidedDemo {
   }
 
   approachBleeding(){
+    if(!this._prepareBleedingApproach())return false;
+    return this._acceptBleedingRoute(runImmediately(this._bleedingRouteSteps()));
+  }
+
+  _prepareBleedingApproach(){
     if(this.sim.state.paused||this.tissue.busy||this.interaction.cuttingBusy){this.onMessage('请先继续仿真并等待组织更新完成');return false;}
+    if(!this._bleedingSources().length){this.onMessage('当前没有可接近的开放渗血切面');return false;}
+    this.sim.checkpoint('右端接近渗血切面',()=>this.interaction.snapshot({forHistory:true}),{takeOwnership:true});this.sim.select('right');this.sim.setCutting(false);this.sim.setJaw('right',0);
+    return true;
+  }
+
+  _bleedingSources(){
     const tool=this.sim.state.tools.right,point=this.tissue.group.worldToLocal(new THREE.Vector3(...tool.position));
     const sources=(this.tissue.blood?.nodes??[]).filter(n=>n.cut&&n.injured&&n.fragmentId==null&&n.clot<.95&&n.display);
     sources.sort((a,b)=>a.display.distanceToSquared(point)-b.display.distanceToSquared(point));
-    const source=sources[0];if(!source){this.onMessage('当前没有可接近的开放渗血切面');return false;}
-    this.sim.checkpoint('右端接近渗血切面',()=>this.interaction.snapshot({forHistory:true}),{takeOwnership:true});this.sim.select('right');this.sim.setCutting(false);this.sim.setJaw('right',0);
-    this.mode='approach';this.active=true;this.time=0;this.side='right';this.approachFragment=null;this._bleedingKey=source.key;
-    this.start=new THREE.Vector3(...tool.position);this.end=this.interaction.pressureApproachTarget(source);
+    return sources;
+  }
+
+  *_bleedingRouteSteps(){
+    const snapshot=this.sim.snapshot(),sources=this._bleedingSources(),start=new THREE.Vector3(...this.sim.state.tools.right.position);
+    const withdrawal=new THREE.Vector3(...this.sim.state.tools.right.port).sub(start).normalize();
+    // Try all real exposed sources before a longer withdrawal route. Each sweep
+    // uses the same source-CAD collision controller as manual movement.
+    for(const distance of [0,.035,.07,.12]){
+      const via=distance?start.clone().addScaledVector(withdrawal,distance):null;
+      for(const source of sources){
+        const probe=new this.sim.constructor();probe.restore(snapshot);probe.setPaused(false);yield;
+        if(via){const blocked=probe.moveToolTo(via.toArray(),'right').limited;yield;if(blocked)break;}
+        const target=this.interaction.pressureApproachTarget(source),blocked=probe.moveToolTo(target.toArray(),'right').limited;yield;
+        if(!blocked)return {key:source.key,waypoints:via?[via,target]:[target]};
+      }
+    }
+    return null;
+  }
+
+  async approachBleedingAsync(options={}){
+    if(!this._prepareBleedingApproach())return false;
+    const token=this._planningToken=(this._planningToken??0)+1,epoch=this.tissue._epoch,tools=JSON.stringify(this.sim.state.tools);
+    this.active=true;this.mode='planning';this.phase='planning-pressure';
+    const valid=()=>this.active&&this._planningToken===token&&this.tissue._epoch===epoch&&!this.sim.state.paused&&!this.tissue.busy&&!this.interaction.cuttingBusy&&JSON.stringify(this.sim.state.tools)===tools;
+    this.onMessage('正在检查通往实际渗血切面的无碰撞路径');this.onChange();
+    try{
+      const result=await runCooperatively(this._bleedingRouteSteps(),{...options,valid});
+      if(result.cancelled||!valid()){if(this._planningToken===token)this.stop('切面就位已取消：操作状态发生改变');return false;}
+      this.pressureRouteTimings=result.stats;return this._acceptBleedingRoute(result.value);
+    }catch(error){if(this._planningToken===token)this.stop('切面路径准备未完成，可重新选择');throw error;}
+  }
+
+  _acceptBleedingRoute(route){
+    if(!route){this.active=false;this.onMessage('当前渗血切面被另一器械挡住；请先移开另一器械再就位');this.onChange();return false;}
+    this.mode='approach';this.active=true;this.time=0;this.side='right';this.approachFragment=null;this._bleedingKey=route.key;
+    this._pressureWaypoints=route.waypoints;this._pressureWaypoint=0;
+    this.start=new THREE.Vector3(...this.sim.state.tools.right.position);this.end=route.waypoints[0];
     this.onMessage('右端已闭合，正在以实际剪刃接近渗血切面；就位后按住 H 局部压迫');this.onChange();return true;
   }
 
@@ -299,7 +344,7 @@ export class GuidedDemo {
       if(this._bleedingKey){
         const source=this.tissue.blood?.nodes.find(n=>n.key===this._bleedingKey&&n.fragmentId==null&&n.injured);
         if(!source){this.stop('目标切面已改变，请重新选择渗血切面');return;}
-        this.end=this.interaction.pressureApproachTarget(source);
+        this.end=this._pressureWaypoint<this._pressureWaypoints.length-1?this._pressureWaypoints[this._pressureWaypoint]:this.interaction.pressureApproachTarget(source);
       }
       if(this.approachFragment){
         const piece=this.tissue.getFragment?.(this.approachFragment.id);
@@ -308,6 +353,7 @@ export class GuidedDemo {
         this.end=this.tissue.group.localToWorld(this.approachFragment.anchor.clone().applyQuaternion(piece.quaternion).add(piece.position).addScaledVector(normal,.0007));
       }
       if (!this.move(this.start.clone().lerp(this.end, smooth(Math.min(1, this.time / 1.1))).toArray(), this.side)) return;
+      if(this.time>=1.1&&this._bleedingKey&&this._pressureWaypoint<this._pressureWaypoints.length-1){this._pressureWaypoint++;this.start=new THREE.Vector3(...this.sim.state.tools.right.position);this.time=0;return;}
       if (this.time >= 1.1) { this.active = false;if(this.side==='right'&&!this._bleedingKey)this.sim.setCutting(true); this.onMessage(this._bleedingKey?'已闭合接近渗血切面：按住 H 局部压迫，松开后检查是否再渗血':this.approachFragment?'已接近独立标本表面：按 C 闭合重抓，随后可移动或旋转':'已贴近组织表面：C 闭合，E 抬起；右剪 C 闭合即可剪切'); this.onChange(); }
       return;
     }
