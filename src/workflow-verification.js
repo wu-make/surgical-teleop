@@ -9,7 +9,7 @@ export async function verifyCompleteWorkflow(view,sim,interaction,pause,options)
   const assert=(value,message)=>{if(!value)throw new Error(message);};
   const send=async(name,data,type='application/json')=>fetch('/__qa__/'+name,{method:'POST',headers:{'Content-Type':type},body:type==='application/json'?JSON.stringify(data):data});
   const state=()=>({cutCount:tissue._cuts.length,removed:tissue.removedVolumeMm3,fragments:tissue.fragmentMetrics,grasp:interaction.metrics.grasp,blood:tissue.blood.metrics,tools:structuredClone(sim.state.tools),scope:structuredClone(sim.state.scope)});
-  const phase=async name=>{report.phases.push({name,at:performance.now(),state:state()});await send('v38-workflow-progress.json',{...report,frames:report.frames.slice(-8)});};
+  const phase=async name=>{const current=state();if(!tissue.blood.spread)assert(!current.blood.spreading&&!current.blood.droplets&&!current.blood.surfacePools&&Math.abs(current.blood.balanceErrorMm3)<1e-4,'wound-confined blood policy failed');report.phases.push({name,at:performance.now(),state:current});await send('v38-workflow-progress.json',{...report,frames:report.frames.slice(-8)});};
   const audit=()=>{
     if(auditTask)return;
     const phase=demo.phase;

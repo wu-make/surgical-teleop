@@ -344,7 +344,7 @@ export class InteractionController {
     } else if(!this.grasp||this.grasp.kind==='fragment')this.tissue.setGrasp(null);
   }
 
-  async update(dt, { clutched = false,compressing=false } = {}) {
+  async update(dt, { clutched = false,compressing=false,cutRequested=true } = {}) {
     if(!this.tissue.ready){this._setCutStatus('loading','正在加载真实组织');return;}
     if(this.sim.state.paused){this._breakCutTrajectory();this._pendingCutFeedback();this._setCutStatus('paused','仿真已暂停；已记录的剪刃轨迹将在继续后完成');return;}
     const updateStart=performance.now();
@@ -392,6 +392,7 @@ export class InteractionController {
     if(closing)this._jawOpening=false;
     if(compressing){this.lastCut=null;this._breakCutTrajectory();this._setCutStatus('pressure',this.tissue.blood?.pressureContacts?'局部压迫中：观察渗血变化；松开 H 后继续检查':'压迫需稳定接触渗血切面：闭合器械，精细贴近；左钳需先释放组织');}
     else if(!this.sim.state.cutting){this.lastCut=null;this._noMaterialAttempt=null;this._breakCutTrajectory();this._setCutStatus('disabled','右剪待命：按 C 闭合剪切');}
+    else if(!cutRequested){this._breakCutTrajectory();this._setCutStatus('positioning','按住 C 剪切；松开 C 后移动仅定位，V 张开剪口');}
     else if(this._jawOpening||(jaw>.22&&!closing)){
       // Retain the open CAD pose as the start of a closure, without cutting
       // while opening or parked open. Closing samples the actual opposing edges.

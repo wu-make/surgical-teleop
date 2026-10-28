@@ -24,7 +24,7 @@ const encode=(data,n,i,owner=0)=>{
   data[k+8]=n.clot??0;data[k+9]=owner;data[k+10]=0;data[k+11]=0;
 };
 
-function material(gpu,fields){
+function material(gpu,fields,woundOnly=false){
   const m=new THREE.MeshPhysicalMaterial({color:'#610e18',roughness:.26,metalness:0,ior:1.36,clearcoat:.85,clearcoatRoughness:.16,
     transparent:true,depthWrite:false,side:THREE.DoubleSide,forceSinglePass:true,polygonOffset:true,polygonOffsetFactor:-1,polygonOffsetUnits:-1});
   m.name='Continuous_Conformal_Blood_Surface';
@@ -57,18 +57,24 @@ function material(gpu,fields){
       if(diffuseColor.a<.015)discard;
       diffuseColor.rgb*=mix(1.0,.62,clamp(vFilmClot,0.0,1.0));`);
     s.fragmentShader=s.fragmentShader.replace('#include <roughnessmap_fragment>','#include <roughnessmap_fragment>\nroughnessFactor=mix(.23,.52,clamp(vFilmClot,0.0,1.0));');
+    if(woundOnly){
+      s.vertexShader='attribute float filmCutMask; varying float vFilmCutMask;\n'+s.vertexShader;
+      s.vertexShader=s.vertexShader.replace('#include <begin_vertex>','#include <begin_vertex>\nvFilmCutMask=filmCutMask;');
+      s.fragmentShader='varying float vFilmCutMask;\n'+s.fragmentShader;
+      s.fragmentShader=s.fragmentShader.replace('#include <color_fragment>','#include <color_fragment>\nif(vFilmCutMask<.55)discard;');
+    }
   };
-  m.customProgramCacheKey=()=> `continuous-conformal-blood-v3-${gpu?`gpu-${fields.capacity}`:'cpu'}`;return m;
+  m.customProgramCacheKey=()=> `continuous-conformal-blood-v4-${gpu?`gpu-${fields.capacity}`:'cpu'}-${woundOnly?'wound':'spread'}`;return m;
 }
 
 export class BloodSurfaceFilm {
-  constructor(tissue,{gpu=false,capacity=96}={}){
-    this.gpu=gpu;
+  constructor(tissue,{gpu=false,capacity=96,woundOnly=false}={}){
+    this.gpu=gpu;this.woundOnly=woundOnly;
     this.fields=makeFields(capacity);
     this.fields.texture.needsUpdate=true;
-    this.tissue=tissue;this.geometry=new THREE.BufferGeometry();this.mesh=gpu?new THREE.Group():new THREE.Mesh(this.geometry,material(false,this.fields));
+    this.tissue=tissue;this.geometry=new THREE.BufferGeometry();this.mesh=gpu?new THREE.Group():new THREE.Mesh(this.geometry,material(false,this.fields,woundOnly));
     if(gpu){
-      this.mesh.geometry=this.geometry;this.mesh.material=material(true,this.fields);
+      this.mesh.geometry=this.geometry;this.mesh.material=material(true,this.fields,woundOnly);
       // Compile and upload during the existing loading render, before the
       // first wet contact. Retain the program through reset/history replay.
       // A zero-count draw compiles GLSL but does not execute a wet vertex,
@@ -78,8 +84,9 @@ export class BloodSurfaceFilm {
       for(let i=0;i<capacity;i++)encode(this.warmFields.texture.image.data,{reference:[0,0,0],restNormal:[0,0,1],area:6.25,volume:.02},i);
       this.warmFields.texture.needsUpdate=true;
       this.warmGeometry=new THREE.BufferGeometry();for(const name of ['position','normal','filmReference','filmRestNormal'])this.warmGeometry.setAttribute(name,new THREE.BufferAttribute(new Float32Array(9),3));
+      if(woundOnly)this.warmGeometry.setAttribute('filmCutMask',new THREE.BufferAttribute(new Float32Array([1,1,1]),1));
       this.warmGeometry.attributes.position.array.set([0,0,0,.0001,0,0,0,.0001,0]);for(const name of ['normal','filmRestNormal'])this.warmGeometry.attributes[name].array.set([0,0,1,0,0,1,0,0,1]);this.warmGeometry.setDrawRange(0,3);
-      this.warmMesh=new THREE.Mesh(this.warmGeometry,material(true,this.warmFields));this.warmMesh.layers.enable(1);this.warmMesh.frustumCulled=false;
+      this.warmMesh=new THREE.Mesh(this.warmGeometry,material(true,this.warmFields,woundOnly));this.warmMesh.layers.enable(1);this.warmMesh.frustumCulled=false;
       this.warmMesh.userData.cameraSpaceWarmup=true;
       const nearCamera=new THREE.Matrix4().makeTranslation(0,0,-.02);
       this.warmMesh.onBeforeRender=(_renderer,_scene,camera)=>{this.warmMesh.matrixWorld.copy(camera.matrixWorld).multiply(nearCamera);};
@@ -93,6 +100,7 @@ export class BloodSurfaceFilm {
   _reserve(required){
     if(required<=this.capacity)return;this.capacity=Math.max(required,this.capacity*2,1024);
     const specs=[['position',3],['normal',3],['filmThickness',1],['filmClot',1]];if(this.gpu)specs.push(['filmReference',3],['filmRestNormal',3],['filmOwner',1]);
+    if(this.woundOnly)specs.push(['filmCutMask',1]);
     for(const [name,size]of specs){const array=new Float32Array(this.capacity*size);if(this.geometry.attributes[name])array.set(this.geometry.attributes[name].array);this.geometry.setAttribute(name,new THREE.BufferAttribute(array,size).setUsage(THREE.DynamicDrawUsage));}
   }
   reset(){this.kernelOwners.clear();this.kernelEntries.length=0;this.records=new WeakMap();this.owners.clear();this.displayRecords=[];for(const r of this.overlays.values()){r.overlay.geometry.dispose();r.overlay.material.dispose();r.fields.texture.dispose();}this.overlays.clear();if(this.gpu){this.mesh.clear();this.mesh.add(this.warmMesh);}this.fields.count.value=0;this.geometry.setDrawRange(0,0);this.stats.triangles=this.stats.vertices=0;}
@@ -162,6 +170,7 @@ export class BloodSurfaceFilm {
           if(piece){this.p.applyQuaternion(piece.quaternion).add(piece.position);this.n.applyQuaternion(piece.quaternion);}
           out.position.setXYZ(cursor,this.p.x,this.p.y,this.p.z);out.normal.setXYZ(cursor,this.n.x,this.n.y,this.n.z);
           out.filmThickness.setX(cursor,r.height[index]);out.filmClot.setX(cursor,r.clot[index]);cursor++;
+          if(this.woundOnly)out.filmCutMask.setX(cursor-1,mesh.geometry.attributes.tissueCutMask?.getX(index)??0);
           displayIndices.push(index);
         }
       }
@@ -201,11 +210,12 @@ export class BloodSurfaceFilm {
         for(const name of ['position','normal']){const a=g.attributes[name];surface.setAttribute(name,new THREE.BufferAttribute(a.array,a.itemSize,a.normalized));}
         const rest=g.attributes.tissueRestPosition??g.attributes.position;
         surface.setAttribute('filmReference',new THREE.BufferAttribute(rest.array,3));surface.setAttribute('filmRestNormal',new THREE.BufferAttribute(g.userData.materialNormals??g.userData.restNormals??g.attributes.normal.array,3));
+        if(this.woundOnly)surface.setAttribute('filmCutMask',new THREE.BufferAttribute(g.attributes.tissueCutMask?.array??new Float32Array(rest.count),1));
         surface.userData.filmSpatialIndex=g.userData.filmSpatialIndex;
         if(g.index)surface.setIndex(new THREE.BufferAttribute(g.index.array,1));else surface.setIndex(Array.from({length:g.attributes.position.count},(_,i)=>i));
         surface.userData.fullFilmIndex=surface.index;
         surface.setIndex(new THREE.BufferAttribute(new surface.index.array.constructor(surface.index.count),1).setUsage(THREE.DynamicDrawUsage));
-        const fields=layer?.fields??makeFields(this.fields.capacity),overlay=layer?.overlay??new THREE.Mesh(surface,material(true,fields));
+        const fields=layer?.fields??makeFields(this.fields.capacity),overlay=layer?.overlay??new THREE.Mesh(surface,material(true,fields,this.woundOnly));
         if(layer){overlay.geometry.dispose();overlay.geometry=surface;}
         else{overlay.name='Wet_Film_On_Exact_Source_Buffer';overlay.layers.enable(1);overlay.renderOrder=3;overlay.frustumCulled=false;this.mesh.add(overlay);}
         layer={mesh,piece,overlay,fields,sourceGeometry:g,positionVersion:g.attributes.position.version,normalVersion:g.attributes.normal.version};this.overlays.set(mesh,layer);

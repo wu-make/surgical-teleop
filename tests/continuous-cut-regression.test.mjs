@@ -49,6 +49,18 @@ test('partial opening and movement cannot cut; the next actual closure resumes c
   }finally{f.tissue.dispose();}
 });
 
+test('releasing C stops new material edits while closed navigation continues; the next C does not bridge that navigation',async()=>{
+  const f=bench();try{
+    await f.interaction.update(1/60,{cutRequested:true});const before=f.operations.length;
+    for(const y of [-.006,0,.006,.012]){f.at(y);await f.interaction.update(1/60,{cutRequested:false});}
+    assert.equal(f.operations.length,before,'closed positioning must not rebuild the cut or blood surface');
+    assert(f.field([0,0,0])<0,'no unintended tunnel across the repositioning path');
+    await f.interaction.update(1/60,{cutRequested:true});
+    assert(f.operations.length>before);assert(f.field([0,.012,0])>0,'holding C still permits the actual blade to cut at its new location');
+    assert(f.field([0,0,0])<0,'resuming C must not sweep the released-key gap');
+  }finally{f.tissue.dispose();}
+});
+
 test('a busy worker preserves the entire 24 mm path as bounded complete-CAD passes',async()=>{
   const f=bench({holdFirst:true});
   try{

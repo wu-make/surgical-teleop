@@ -55,10 +55,11 @@ export function attachCutFlickerVerification(view,sim,interaction,pause,options)
       return pixels;
     };
     const difference=(a,b)=>{let sum=0,maximum=0,over8=0;for(let i=0;i<a.length;i++){const d=Math.abs(a[i]-b[i]);sum+=d;maximum=Math.max(maximum,d);if(d>8)over8++;}return{mean:sum/a.length,maximum,over8,components:a.length};};
+    const intensity=p=>{let sum=0,dark=0;for(let i=0;i<p.length;i+=4){const v=p[i]+p[i+1]+p[i+2];sum+=v;if(v<12)dark++;}return{meanRGB:sum/(p.length/4*3),darkPixels:dark};};
     const check=async label=>{
       view.update(sim.state,0);view.render();
       const original=await draw(true),batch=await draw(false),repeat=await draw(false);
-      const row={label,cutCount:view.tissue._cuts.length,receivedAt:view.tissue.updateTimings.receivedAt,originalVsBatch:difference(original,batch),repeatBatch:difference(batch,repeat),glError:gl.getError(),tissue:structuredClone(view.tissue.updateTimings)};
+      const row={label,cutCount:view.tissue._cuts.length,receivedAt:view.tissue.updateTimings.receivedAt,originalIntensity:intensity(original),batchIntensity:intensity(batch),camera:view.endoCamera.position.toArray(),target:[...sim.state.scope.lookAt],originalVsBatch:difference(original,batch),repeatBatch:difference(batch,repeat),glError:gl.getError(),tissue:structuredClone(view.tissue.updateTimings)};
       rows.push(row);await status({phase:label,rows,frames});
       if(label==='restored'||label==='closed-final'){await draw(true,{save:`v38-${label}-original.png`});await draw(false,{save:`v38-${label}-batch.png`});}
       switchPath(false);return row;
@@ -83,11 +84,19 @@ export function attachCutFlickerVerification(view,sim,interaction,pause,options)
       await step(['KeyV'],45);await settle();await check('opened');
       for(let i=0;i<6;i++){await step(['KeyC'],8);await settle();await check('closure-'+i);}
       await step([],1);await settle();await check('closed-final');
+      // A closed blade moving below the capsule is a separate regression from
+      // merely closing a stationary jaw. Preserve exact source/batch pixels at
+      // each material edit, including the raised/deformed fixture.
+      if(new URLSearchParams(location.search).has('closed-cut-motion')){
+        for(const [key,count]of [['KeyQ',16],['KeyA',32],['KeyW',24],['KeyD',64],['KeyS',24],['KeyE',16],['KeyA',32]]){
+          for(let i=0;i<count;i+=8){await step([key],8);await settle();await check(`closed-move-${key}-${i}`);}
+        }
+      }
       const result={complete:true,rows,frames,errors:rows.filter(row=>row.glError),scope:{width,height,hdr:feed.target.texture.type===THREE.HalfFloatType,samples:feed.target.samples},interpretation:'Same real cut/pose/camera/light at each comparison. Actual application key, camera, clearance and rendering loop drives closure. Diagnostic readback and pacing are excluded from FPS acceptance.'};
       await send('v38-flicker-result.json',result);button.dataset.result=JSON.stringify(result);button.textContent='右剪 C 像素检查完成';
     }catch(error){await status({error:String(error),stack:error.stack,rows});button.textContent='右剪 C 像素检查未完成';}
     finally{sim.state.paused=true;switchPath(false);Object.assign(scene,{background:saved.background,environmentIntensity:saved.intensity});r.toneMappingExposure=saved.exposure;view.cavity.children[0].visible=saved.cavity;feed.dispose();output.dispose();view.render();button.disabled=false;running=false;}
-    if(new URLSearchParams(location.search).has('auto-cut-flicker')){const {verifyCompleteWorkflow}=await import('./workflow-verification.js');await verifyCompleteWorkflow(view,sim,interaction,pause,options);}
+    if(new URLSearchParams(location.search).has('auto-cut-flicker')&&!new URLSearchParams(location.search).has('closed-cut-motion')){const {verifyCompleteWorkflow}=await import('./workflow-verification.js');await verifyCompleteWorkflow(view,sim,interaction,pause,options);}
     else options.setExclusive(false);
   };
   if(new URLSearchParams(location.search).has('auto-cut-flicker'))void button.onclick();

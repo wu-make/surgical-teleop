@@ -18,7 +18,7 @@ const canSkipBox = (squaredDistance, currentDistance, scale = 1) => squaredDista
 
 /** A real sampled organ volume; the worker alone owns and modifies its SDF. */
 export class TissueVolume {
-  constructor({gpuBlood=false}={}) {
+  constructor({gpuBlood=false,bloodSpread=true}={}) {
     this.group = new THREE.Group();
     this.group.name = 'anatomical-liver-volume';
     this.ready = false;
@@ -48,7 +48,7 @@ export class TissueVolume {
     this._deformationStats = { cacheBuilds: 0, radiusUpdates: 0, movedVertices: 0 };
     this.material = createTissueMaterial();
     this.fragments = new TissueFragments(this);
-    this.blood=new BloodFlow(this,{gpuSurface:gpuBlood});
+    this.blood=new BloodFlow(this,{gpuSurface:gpuBlood,spread:bloodSpread});
     this._separations = [];
     this._excludedValues = new Map();
     this._restoringFragmentPoses = null;
