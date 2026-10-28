@@ -12,6 +12,7 @@ import {ExactRenderBatches} from './exact-render-batches.js';
 import {fixedRenderFrame,frameLayout,styleFixedPreview} from './render-frame.js';
 import {yieldPreparationTask} from './preparation-task.js';
 import {loadModel} from './binary-asset.js';
+import {FramePresentation} from './frame-presentation.js';
 
 const V=new THREE.Vector3(), Y=new THREE.Vector3(0,1,0), Q=new THREE.Quaternion();
 const BASE=import.meta.env?.BASE_URL??'/';
@@ -69,7 +70,8 @@ export class SurgicalScene{
   constructor(canvas,stage,mini,{deferPreparation=false}={}){
     this.startupTimings=[];let began=performance.now();const checkpoint=name=>{const end=performance.now();this.startupTimings.push({name,start:began,end,ms:end-began});began=end;};
     this.stage=stage;this.mini=mini;this.mode='endo';this.disposed=false;this.ready=false;
-    this.renderer=new THREE.WebGLRenderer({canvas,antialias:true,powerPreference:'high-performance',preserveDrawingBuffer:false});
+    this.canvas=canvas;this.presentation=new FramePresentation(canvas);
+    this.renderer=new THREE.WebGLRenderer(this.presentation.rendererOptions);this.presentation.forwardContextEvents();
     this.renderer.setPixelRatio(Math.min(devicePixelRatio,1.5));this.fixedFrame=fixedRenderFrame(globalThis.location?.search);styleFixedPreview(stage,mini,this.renderer.getPixelRatio(),this.fixedFrame);const initial=this.frameLayout;this.renderer.setSize(initial.width,initial.height,false);this.renderer.outputColorSpace=THREE.SRGBColorSpace;this.renderer.toneMapping=THREE.ACESFilmicToneMapping;this.renderer.toneMappingExposure=1.15;
     this.renderer.shadowMap.enabled=true;this.renderer.shadowMap.type=THREE.PCFSoftShadowMap;this.renderer.info.autoReset=false;
     checkpoint('webgl-context');this.scopeFeed=new ScopeFeed(this.renderer,1.10);
@@ -109,7 +111,7 @@ export class SurgicalScene{
     this.joints=[];this.robotLoaded=false;this.armTargets={left:new THREE.Vector3(),right:new THREE.Vector3()};this.armErrors={left:0,right:0};this.handPositions={left:new THREE.Vector3(),right:new THREE.Vector3()};this.conceptDecoupled=false;this.kinematicLimited=false;
     this.targetMarker=mesh(new THREE.SphereGeometry(.0011,12,8),new THREE.MeshBasicMaterial({color:'#9de3c6'}),this.scene);this.targetMarker.layers.set(1);this.targetMarker.visible=false;
     this._makeCollisionMarkers();
-    this.resizeObserver=new ResizeObserver(()=>this.resize());this.resizeObserver.observe(this.stage);this.lastMini=0;
+    this.resizeObserver=new ResizeObserver(()=>this.requestResize());this.resizeObserver.observe(this.stage);this.lastMini=0;
     checkpoint('tools-and-markers');
   }
   async loadRobot(){
@@ -180,8 +182,10 @@ export class SurgicalScene{
   }
   _makeScopeArm(){this.scopeArm=new THREE.Group();}
   addTissue(tissue){this.tissue=tissue;tissue.group.position.set(0,1.035,0);this.scene.add(tissue.group);tissue.group.traverse(m=>{m.layers.enable(1);if(m.isMesh){m.castShadow=true;m.receiveShadow=true;}});}
-  resize(){
-    const {width:w,height:h}=this.frameLayout;if(w<1||h<1)return;
+  requestResize(){this._resizePending=true;}
+  resize(layout=this.frameLayout){
+    const {width:w,height:h}=layout;if(w<1||h<1)return;
+    this._resizePending=false;
     if(this._width===w&&this._height===h)return;
     const start=performance.now();this._width=w;this._height=h;
     this.renderer.setSize(w,h,false);this.overviewCamera.aspect=w/h;this.overviewCamera.updateProjectionMatrix();this.endoCamera.aspect=w/h;this.endoCamera.updateProjectionMatrix();
@@ -328,8 +332,12 @@ export class SurgicalScene{
   }
   render(now=0){
     const renderStart=performance.now();
+    // setSize clears the WebGL drawing buffer. Apply it only here, immediately
+    // followed by the complete two-view draw in the same synchronous task.
+    // A ResizeObserver must never expose a cleared canvas before the next RAF.
+    const layout=this.frameLayout;this.resize(layout);
     const {filmEnd,batchEnd}=prepareExactGeometry(this);
-    const r=this.renderer,{width:w,height:h,mini}=this.frameLayout;
+    const r=this.renderer,{width:w,height:h,mini}=layout;
     if(w<1||h<1)return;
     const {x:mx,y:my,width:mw,height:mh}=mini;
     r.info.reset();r.setScissorTest(false);r.setViewport(0,0,w,h);
@@ -350,7 +358,8 @@ export class SurgicalScene{
       this.scopeFeed.blit(r,mx,my,mw,mh);
     }
     r.setScissorTest(false);
-    this.renderTimings={filmMs:filmEnd-renderStart,batchMs:batchEnd-filmEnd,layoutMs:captureStart-batchEnd,scopeOnlyMs:scopeEnd-captureStart,scopeMs:scopeEnd-renderStart,overviewMs:performance.now()-scopeEnd,scopeCalls,overviewCalls:(r.info.render?.calls??0)-scopeCalls,multiDraw:r.extensions?.has?.('WEBGL_multi_draw')??false,batching:this.exactBatches?.metrics,resources:{geometries:r.info.memory?.geometries??null,textures:r.info.memory?.textures??null,programs:r.info.programs?.length}};
+    const overviewEnd=performance.now(),presented=this.presentation?.present();
+    this.renderTimings={filmMs:filmEnd-renderStart,batchMs:batchEnd-filmEnd,layoutMs:captureStart-batchEnd,scopeOnlyMs:scopeEnd-captureStart,scopeMs:scopeEnd-renderStart,overviewMs:overviewEnd-scopeEnd,presentationMs:performance.now()-overviewEnd,presented:presented!==false,scopeCalls,overviewCalls:(r.info.render?.calls??0)-scopeCalls,multiDraw:r.extensions?.has?.('WEBGL_multi_draw')??false,batching:this.exactBatches?.metrics,resources:{geometries:r.info.memory?.geometries??null,textures:r.info.memory?.textures??null,programs:r.info.programs?.length}};
   }
-  dispose(){this.disposed=true;this.exactBatches?.dispose();this.resizeObserver.disconnect();this.controls.dispose();this.env?.dispose();this.scene.traverse(o=>{o.geometry?.dispose();if(o.material){for(const m of Array.isArray(o.material)?o.material:[o.material])if(m!==this.scopeFeed.monitorMaterial)m.dispose();}});this.scopeFeed.dispose();this.renderer.dispose();}
+  dispose(){this.disposed=true;this.exactBatches?.dispose();this.resizeObserver.disconnect();this.controls.dispose();this.env?.dispose();this.scene.traverse(o=>{o.geometry?.dispose();if(o.material){for(const m of Array.isArray(o.material)?o.material:[o.material])if(m!==this.scopeFeed.monitorMaterial)m.dispose();}});this.scopeFeed.dispose();this.presentation?.dispose();this.renderer.dispose();}
 }

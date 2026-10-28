@@ -15,6 +15,7 @@ class RendererProbe {
     this.infoResetCount = 0; this.info = { reset: () => { this.infoResetCount++; } };
   }
   getPixelRatio() { return 1.5; }
+  setSize(width,height){(this.sizes??=[]).push([width,height]);}
   getRenderTarget() { return this.target; }
   setRenderTarget(target) { this.target = target; }
   getScissorTest() { return this.scissorTest; }
@@ -206,4 +207,16 @@ test('unchanged viewport notifications do not reallocate the drawing buffer',()=
   let sizes=[];const view={stage:{clientWidth:863,clientHeight:556},renderer:{setSize:(w,h)=>sizes.push([w,h])},overviewCamera:new THREE.PerspectiveCamera(),endoCamera:new THREE.PerspectiveCamera()};
   Object.setPrototypeOf(view,SurgicalScene.prototype);view.renderer.getPixelRatio=()=>1;view.stage.getBoundingClientRect=()=>({left:0,top:0});view.mini={getBoundingClientRect:()=>({left:0,top:0,width:100,height:100})};SurgicalScene.prototype.resize.call(view);SurgicalScene.prototype.resize.call(view);assert.deepEqual(sizes,[[863,556]]);
   view.stage.clientWidth=1746;view.stage.clientHeight=984;SurgicalScene.prototype.resize.call(view);assert.deepEqual(sizes.at(-1),[1746,984]);assert.equal(view.endoCamera.aspect,1746/984);
+});
+
+test('resize notifications preserve the completed canvas until a complete replacement frame is drawn',()=>{
+  const renderer=new RendererProbe(),feed=new ScopeFeed(renderer),scene=new THREE.Scene(),inner=new THREE.Mesh(new THREE.SphereGeometry(),new THREE.MeshBasicMaterial()),cavity=new THREE.Group();cavity.add(inner);scene.add(cavity);
+  const view=Object.assign(Object.create(SurgicalScene.prototype),{mode:'endo',renderer,scopeFeed:feed,scene,cavity,endoCamera:new THREE.PerspectiveCamera(),overviewCamera:new THREE.PerspectiveCamera(),stage:{clientWidth:949,clientHeight:612,getBoundingClientRect:()=>({left:0,top:0})},mini:{getBoundingClientRect:()=>({left:650,top:100,width:240,height:160})}});
+  try{
+    view.render();const count=renderer.clearCount,draws=renderer.draws.length,sizes=renderer.sizes.length;
+    view.stage.clientHeight=598;view.requestResize();view.requestResize();
+    assert.equal(renderer.clearCount,count,'layout notifications must not expose a cleared default framebuffer');assert.equal(renderer.draws.length,draws);assert.equal(renderer.sizes.length,sizes,'no canvas width/height write before the replacement frame');
+    view.render();assert.deepEqual(renderer.sizes.at(-1),[949,598]);assert.equal(renderer.draws.length,draws+3,'resize commits with complete endoscopy, composition and overview');assert.equal(view._resizePending,false);
+    view.requestResize();view.render();assert.equal(renderer.sizes.length,sizes+1,'unchanged notifications allocate nothing');
+  }finally{feed.dispose();inner.geometry.dispose();inner.material.dispose();}
 });
