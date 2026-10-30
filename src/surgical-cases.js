@@ -10,7 +10,7 @@ const cases=[
   {id:'uterus-adnexa',label:'子宫附件 · 左侧病灶',title:'子宫附件精细操作',asset:'pelvic-volume',kind:2,context:'pelvic',
     lesion:{center:[.0565,.017,.010],radii:[.010,.013,.008]},boundary:{center:[.0565,.017,.010],radii:[.019,.024,.018]},
     hint:'子宫、双侧输卵管与卵巢；左侧附件为目标，沿切缘切断连接后移开。',
-    start:[[.032,.017,.027],[.060,.017,.028]]},
+    start:[[-.006,-.010,.019],[.026,.010,.021]]},
 ];
 export const SURGICAL_CASES=Object.freeze(cases.map(c=>Object.freeze(c)));
 export function surgicalCase(id){return SURGICAL_CASES.find(c=>c.id===id)??SURGICAL_CASES[0];}
