@@ -1,0 +1,489 @@
+{
+  "name": "HRA Visible Human Female uterus and adnexa",
+  "dtype": "float32",
+  "endianness": "little",
+  "order": "x-fastest",
+  "units": "meters",
+  "sign": "negative-inside",
+  "dims": [
+    204,
+    145,
+    118
+  ],
+  "origin": [
+    -0.0765,
+    -0.05325,
+    -0.04875
+  ],
+  "spacing": [
+    0.00075,
+    0.00075,
+    0.00075
+  ],
+  "bounds": [
+    [
+      -0.06486287999153137,
+      -0.04075683832168579,
+      -0.03692412328720093
+    ],
+    [
+      0.069375,
+      0.04237344360351563,
+      0.026624999999999996
+    ]
+  ],
+  "sourceCenterMetres": [
+    -0.0125,
+    0.043,
+    -0.054
+  ],
+  "license": "CC BY 4.0",
+  "source": "https://humanatlas.io/3d-reference-library",
+  "creators": [
+    "Kristen Browne",
+    "Heidi Schlehlein"
+  ],
+  "structures": [
+    {
+      "node": "VH_F_cervix",
+      "source": "https://lod.humanatlas.io/ref-organ/uterus-female/v1.2",
+      "triangles": 3508,
+      "bounds": [
+        [
+          -0.01210305206477642,
+          -0.036781154509633776,
+          -0.032192168295383454
+        ],
+        [
+          0.015192623063921929,
+          -0.007846972376108166,
+          -0.00790929189324379
+        ]
+      ]
+    },
+    {
+      "node": "VH_F_external_cervical_os",
+      "source": "https://lod.humanatlas.io/ref-organ/uterus-female/v1.2",
+      "triangles": 270,
+      "bounds": [
+        [
+          -0.0017222875729203217,
+          -0.029950932070612904,
+          -0.030134288132190705
+        ],
+        [
+          0.005642932653427125,
+          -0.022892626404762265,
+          -0.024328855335712433
+        ]
+      ]
+    },
+    {
+      "node": "VH_F_internal_cervical_os",
+      "source": "https://lod.humanatlas.io/ref-organ/uterus-female/v1.2",
+      "triangles": 216,
+      "bounds": [
+        [
+          -2.503879368305137e-05,
+          -0.019847354322671887,
+          -0.015617882370948792
+        ],
+        [
+          0.003427426144480706,
+          -0.016068581894040104,
+          -0.011372124314308167
+        ]
+      ]
+    },
+    {
+      "node": "VH_F_anterior_wall_of_uterus",
+      "source": "https://lod.humanatlas.io/ref-organ/uterus-female/v1.2",
+      "triangles": 10148,
+      "bounds": [
+        [
+          -0.02151535004377365,
+          -0.014585731953382489,
+          -0.011701253712177277
+        ],
+        [
+          0.021344166062772275,
+          0.00996699330210686,
+          0.02427326561510563
+        ]
+      ]
+    },
+    {
+      "node": "VH_F_posterior_wall_of_uterus",
+      "source": "https://lod.humanatlas.io/ref-organ/uterus-female/v1.2",
+      "triangles": 12022,
+      "bounds": [
+        [
+          -0.02151535004377365,
+          -0.02160178910195827,
+          -0.007366651207208634
+        ],
+        [
+          0.021344166062772275,
+          0.00432662066817284,
+          0.026314758226275443
+        ]
+      ]
+    },
+    {
+      "node": "VH_F_lower_uterine_segment",
+      "source": "https://lod.humanatlas.io/ref-organ/uterus-female/v1.2",
+      "triangles": 1408,
+      "bounds": [
+        [
+          -0.008389349281787872,
+          -0.02531508210301399,
+          -0.017433715522289277
+        ],
+        [
+          0.009642176609486342,
+          -0.004966097354888913,
+          -0.002860808283090592
+        ]
+      ]
+    },
+    {
+      "node": "VH_F_cornua",
+      "source": "https://lod.humanatlas.io/ref-organ/uterus-female/v1.2",
+      "triangles": 660,
+      "bounds": [
+        [
+          -0.027243192493915557,
+          -0.005949965149164196,
+          0.008080507159233093
+        ],
+        [
+          0.025225362554192544,
+          0.0033655069470405613,
+          0.017737260550260543
+        ]
+      ]
+    },
+    {
+      "node": "VH_F_fundus_of_uterus",
+      "source": "https://lod.humanatlas.io/ref-organ/uterus-female/v1.2",
+      "triangles": 3062,
+      "bounds": [
+        [
+          -0.020870226621627807,
+          -0.010901326715946194,
+          0.004444795191287994
+        ],
+        [
+          0.020537347346544266,
+          0.010211972117424015,
+          0.026503377124667167
+        ]
+      ]
+    },
+    {
+      "node": "VH_F_body_of_uterus",
+      "source": "https://lod.humanatlas.io/ref-organ/uterus-female/v1.2",
+      "triangles": 5344,
+      "bounds": [
+        [
+          -0.021683081239461898,
+          -0.021537932038307186,
+          -0.011696865320205689
+        ],
+        [
+          0.021435680612921715,
+          0.008527518779039386,
+          0.01595356547832489
+        ]
+      ]
+    },
+    {
+      "node": "VH_F_abdominal_ostium_of_uterine_tube",
+      "source": "https://lod.humanatlas.io/ref-organ/uterus-female/v1.2",
+      "triangles": 546,
+      "bounds": [
+        [
+          -0.027245043963193893,
+          -0.0035332389473915066,
+          0.011893982529640197
+        ],
+        [
+          0.025242566876113415,
+          0.00011982914805412637,
+          0.014123099386692047
+        ]
+      ]
+    },
+    {
+      "node": "VH_F_cervicovaginal_junction",
+      "source": "https://lod.humanatlas.io/ref-organ/uterus-female/v1.2",
+      "triangles": 3766,
+      "bounds": [
+        [
+          -0.018939855694770812,
+          -0.04059763246402144,
+          -0.03638802981376648
+        ],
+        [
+          0.01932092644274235,
+          -0.017316921085119244,
+          -0.01105817174911499
+        ]
+      ]
+    },
+    {
+      "node": "VH_F_ampulla_of_uterine_tube_L",
+      "source": "https://lod.humanatlas.io/ref-organ/fallopian-tube-female-left/v1.2",
+      "triangles": 11424,
+      "bounds": [
+        [
+          0.03426433429121971,
+          -0.0001569450199604,
+          0.005373595744371414
+        ],
+        [
+          0.06318828538060188,
+          0.04235903692245484,
+          0.020515809297561645
+        ]
+      ]
+    },
+    {
+      "node": "VH_F_isthmus_of_fallopian_tube_L",
+      "source": "https://lod.humanatlas.io/ref-organ/fallopian-tube-female-left/v1.2",
+      "triangles": 1870,
+      "bounds": [
+        [
+          0.024565276503562928,
+          -0.002112644195556637,
+          0.012218537271022796
+        ],
+        [
+          0.03467910625040531,
+          0.0021625809073448216,
+          0.01614546263217926
+        ]
+      ]
+    },
+    {
+      "node": "VH_F_fibria_of_uterine_tube_L",
+      "source": "https://lod.humanatlas.io/ref-organ/fallopian-tube-female-left/v1.2",
+      "triangles": 2871,
+      "bounds": [
+        [
+          0.047965449094772336,
+          0.028008183062076572,
+          0.0019660801589488977
+        ],
+        [
+          0.055351217091083524,
+          0.03320860636234284,
+          0.01021311292052269
+        ]
+      ]
+    },
+    {
+      "node": "VH_F_uterine_tube_infundibulum_L",
+      "source": "https://lod.humanatlas.io/ref-organ/fallopian-tube-female-left/v1.2",
+      "triangles": 2116,
+      "bounds": [
+        [
+          0.04897768124938011,
+          0.031142605066299442,
+          0.0023266845345497125
+        ],
+        [
+          0.05743968933820724,
+          0.04218481999635697,
+          0.009925829708576202
+        ]
+      ]
+    },
+    {
+      "node": "VH_F_uterine_tube_infundibulum_R",
+      "source": "https://lod.humanatlas.io/ref-organ/fallopian-tube-female-right/v1.2",
+      "triangles": 2200,
+      "bounds": [
+        [
+          -0.05997859984636307,
+          0.030426552116870884,
+          -0.00397962099313736
+        ],
+        [
+          -0.052399139106273654,
+          0.041412686526775364,
+          0.0031336829960346216
+        ]
+      ]
+    },
+    {
+      "node": "VH_F_fibria_of_uterine_tube_R",
+      "source": "https://lod.humanatlas.io/ref-organ/fallopian-tube-female-right/v1.2",
+      "triangles": 3530,
+      "bounds": [
+        [
+          -0.05925300270318985,
+          0.02794886898994446,
+          -0.0035012192130088812
+        ],
+        [
+          -0.05223498791456223,
+          0.03234214109182358,
+          0.0022844546437263483
+        ]
+      ]
+    },
+    {
+      "node": "VH_F_isthmus_of_fallopian_tube_R",
+      "source": "https://lod.humanatlas.io/ref-organ/fallopian-tube-female-right/v1.2",
+      "triangles": 1600,
+      "bounds": [
+        [
+          -0.035346812754869464,
+          -0.003107214748859402,
+          0.011683105021715164
+        ],
+        [
+          -0.026821687072515487,
+          0.0014278530776500736,
+          0.015428415030241012
+        ]
+      ]
+    },
+    {
+      "node": "VH_F_ampulla_of_uterine_tube_R",
+      "source": "https://lod.humanatlas.io/ref-organ/fallopian-tube-female-right/v1.2",
+      "triangles": 10440,
+      "bounds": [
+        [
+          -0.061233709752559665,
+          -0.00024943280220031394,
+          0.002030360043048858
+        ],
+        [
+          -0.03472654074430466,
+          0.041496267139911655,
+          0.016892133742570876
+        ]
+      ]
+    },
+    {
+      "node": "VH_F_left_ovary",
+      "source": "https://lod.humanatlas.io/ref-organ/ovary-female-left/v1.3",
+      "triangles": 424,
+      "bounds": [
+        [
+          0.05071630403399467,
+          0.005976782709360126,
+          0.0032630772292613977
+        ],
+        [
+          0.06299369856715202,
+          0.02992377203702927,
+          0.013797248244285583
+        ]
+      ]
+    },
+    {
+      "node": "VH_F_right_ovary",
+      "source": "https://lod.humanatlas.io/ref-organ/ovary-female-right/v1.3",
+      "triangles": 410,
+      "bounds": [
+        [
+          -0.0642170712351799,
+          0.0059089190959930454,
+          0.0031834267973899835
+        ],
+        [
+          -0.05190738588571549,
+          0.029895810008049015,
+          0.013810946136713027
+        ]
+      ]
+    }
+  ],
+  "sourceFiles": [
+    {
+      "file": "fallopian-tube-female-left.glb",
+      "sha256": "34817c498e038b599b338f8a35e6c1b3cbda576255c4f2ecca6d9efdebac6c15"
+    },
+    {
+      "file": "fallopian-tube-female-right.glb",
+      "sha256": "eec911de07307d1a27cfe27c939e3f3562590e5c419e27decaf3b1d7b13ab038"
+    },
+    {
+      "file": "ovary-female-left.glb",
+      "sha256": "defd5cdc4b053b4e92193c5864bab2abae1807864ffde8bde7a7cb57f4736609"
+    },
+    {
+      "file": "ovary-female-right.glb",
+      "sha256": "381df741bf3d2511716e68db3ff70d94c0eda770d28a503af2d9fcb7b65113f8"
+    },
+    {
+      "file": "uterus-female.glb",
+      "sha256": "41014d2b222c2dbbe8d1cc38206b0099ce76d79659a9fdea9f28b8c7d669b864"
+    }
+  ],
+  "adaptations": {
+    "voxelPitchMm": 0.75,
+    "smoothingSigmaVoxels": 0.45,
+    "supportLigamentsSourceFrameMetres": [
+      [
+        [
+          0.006,
+          0.042,
+          -0.041
+        ],
+        [
+          0.044,
+          0.058,
+          -0.045
+        ],
+        0.0021
+      ],
+      [
+        [
+          -0.032,
+          0.041,
+          -0.041
+        ],
+        [
+          -0.07,
+          0.058,
+          -0.045
+        ],
+        0.0021
+      ]
+    ],
+    "leftOvarianLesion": {
+      "center": [
+        0.056499999999999995,
+        0.017,
+        0.010000000000000002
+      ],
+      "radii": [
+        0.01,
+        0.013,
+        0.008
+      ]
+    },
+    "reconstructedEndometrialCavity": {
+      "center": [
+        0.0,
+        -0.007999999999999993,
+        0.003999999999999997
+      ],
+      "radii": [
+        0.012,
+        0.008,
+        0.0011
+      ]
+    }
+  },
+  "validation": {
+    "watertight": true,
+    "surfaceTriangles": 77394,
+    "connectedComponents": 1,
+    "volumeMl": 44.77277374267578
+  }
+}
