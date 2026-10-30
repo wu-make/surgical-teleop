@@ -54,6 +54,7 @@ function positionCaseTools(){
   initializeCase(sim,tissue,activeCase,view.scopeAspect);
 }
 function updateCaseUI(){
+  if($('stage').dataset.model!==activeCase.id){$('stage').dataset.model=activeCase.id;view.requestResize();}
   $('model-select').value=activeCase.id;$('model-select').disabled=historyBusy||!ready;
   setText($('case-title'),activeCase.title);$('case-info').hidden=!activeCase.lesion;
   setText($('case-label'),activeCase.label);setText($('case-hint'),activeCase.hint);

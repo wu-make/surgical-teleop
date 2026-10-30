@@ -8,6 +8,7 @@ const cases=[
     start:[[.020,.012,.075],[.050,.012,.076]],
     hint:'浅褐色区域为病灶；沿金色切缘牵拉、切离，连接完全断开后取出。'},
   {id:'uterus-adnexa',label:'子宫附件 · 左侧病灶',title:'子宫附件精细操作',asset:'pelvic-volume',kind:2,context:'pelvic',
+    startFov:72,
     lesion:{center:[.0565,.017,.010],radii:[.010,.013,.008]},boundary:{center:[.0565,.017,.010],radii:[.019,.024,.018]},
     hint:'子宫、双侧输卵管与卵巢；左侧附件为目标，沿切缘切断连接后移开。',
     start:[[-.006,-.010,.019],[.026,.010,.021]]},
@@ -27,6 +28,7 @@ export function initializeCase(sim,tissue,definition,aspect){
     sim.restore(snapshot);
   }
   sim.prepareInitialScopeView(aspect);
+  if(definition.startFov)sim.zoomScope(Math.log(definition.startFov/sim.state.scope.fov));
 }
 
 /** Radial projection onto a material-space ellipsoid. No field deletion: this
