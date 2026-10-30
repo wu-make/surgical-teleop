@@ -21,7 +21,12 @@ export function* planPeripheralResectionSteps(tissue, {depth=.012,cutRadius=CUT_
   const query=point=>tissue.queryReferenceDistance(new THREE.Vector3(...point));
   const plans=[];
   for(let axis=0;axis<3;axis++)for(const sign of [-1,1]){
-    const tangents=[0,1,2].filter(i=>i!==axis),extreme=bounds[sign>0?1:0][axis],plane=extreme-sign*depth;
+    const lesion=tissue.caseDefinition?.lesion;
+    // In the two left-sided scenarios, the example sections the complete
+    // labelled target from its medial side, rather than choosing a random cap
+    // or transecting the centre of a lesion. Manual cutting stays unrestricted.
+    if(lesion&&(axis!==0||sign!==1))continue;
+    const tangents=[0,1,2].filter(i=>i!==axis),extreme=bounds[sign>0?1:0][axis],plane=lesion?lesion.center[axis]-lesion.radii[axis]-.004:extreme-sign*depth;
     const inside=[];
     let lowU=Infinity,highU=-Infinity,lowV=Infinity,highV=-Infinity;
     for(let v=bounds[0][tangents[1]]-step;v<=bounds[1][tangents[1]]+step;v+=step){
@@ -52,8 +57,15 @@ export function* planPeripheralResectionSteps(tissue, {depth=.012,cutRadius=CUT_
       }
       yield;
     }
+    if(lesion){
+      // Grasp the visible anterior capsule over the labelled target. Grasping
+      // the far lateral extreme crossed the two real shafts in left-sided cases.
+      const point=[...lesion.center];let outside=bounds[1][2]+spacing*2;
+      for(let z=outside;z>=bounds[0][2];z-=spacing*.5){point[2]=z;if(query(point)<=0){let a=z,b=outside;for(let i=0;i<12;i++){point[2]=(a+b)*.5;if(query(point)<=0)a=point[2];else b=point[2];}anchor=[point[0],point[1],(a+b)*.5];break;}outside=z;}
+      yield;
+    }
     if(!anchor||sign*(anchor[axis]-plane)<cutRadius*2+spacing)continue;
-    const normal=new THREE.Vector3().setComponent(axis,sign);
+    const normal=lesion?new THREE.Vector3(0,0,1):new THREE.Vector3().setComponent(axis,sign);
     const worldNormal=normal.clone().applyQuaternion(tissue.group.getWorldQuaternion(new THREE.Quaternion())).normalize();
     // Include a complete ring outside the SDF cross-section. Adjacent kerfs
     // overlap, so diagonal voxel bridges cannot be silently left between rows.
@@ -61,12 +73,20 @@ export function* planPeripheralResectionSteps(tissue, {depth=.012,cutRadius=CUT_
     const rows=Math.max(2,Math.ceil((highV-lowV)/step)+1),path=[];
     for(let row=0;row<rows;row++){
       const v=lowV+(highV-lowV)*row/(rows-1);
-      for(const u of row%2?[highU,lowU]:[lowU,highU]){
+      let rowLow=lowU,rowHigh=highU;
+      if(lesion){
+        // Keep every occupied cross-section sample, while avoiding wide empty
+        // rectangle corners that unnecessarily cross the grasping shaft.
+        rowLow=Infinity;rowHigh=-Infinity;
+        for(let u=lowU;u<=highU;u+=step*.5){const p=[0,0,0];p[axis]=plane;p[tangents[0]]=u;p[tangents[1]]=v;if(query(p)<=cutRadius){rowLow=Math.min(rowLow,u);rowHigh=Math.max(rowHigh,u);}}
+        yield;if(!Number.isFinite(rowLow))continue;rowLow-=cutRadius;rowHigh+=cutRadius;
+      }
+      for(const u of row%2?[rowHigh,rowLow]:[rowLow,rowHigh]){
         const point=[0,0,0];point[axis]=plane;point[tangents[0]]=u;point[tangents[1]]=v;path.push(new THREE.Vector3(...point));
       }
     }
     const length=path.slice(1).reduce((sum,p,i)=>sum+p.distanceTo(path[i]),0);
-    if(length>2.8)continue;
+    if(length>(lesion?16:2.8))continue;
     plans.push({axis,sign,plane,normal,worldNormal,referenceAnchor:new THREE.Vector3(...anchor),path,cutRadius,
       rowSpacing:(highV-lowV)/(rows-1),length,score:length*(worldNormal.y<-.25?1.5:1)});
   }
@@ -115,7 +135,7 @@ export class GuidedDemo {
     this.approachFragment=null;this._bleedingKey=null;this._pressureWaypoints=null;
     this.start = new THREE.Vector3(...tool.position);
     this.end = surface.point.addScaledVector(surface.normal, .001);
-    this.onMessage(`${side === 'left' ? '左钳' : '右剪'}正在贴近实际肝表面`);
+    this.onMessage(`${side === 'left' ? '左钳' : '右剪'}正在贴近实际组织表面`);
     this.onChange();
   }
 
@@ -262,7 +282,8 @@ export class GuidedDemo {
     const preview=normalizeDeformation({model:'local-flow',local:plan.referenceAnchor.toArray(),displacement:delta.toArray()});
     const displayed=point=>world(new THREE.Vector3(...materialDisplay(point.toArray(),preview)));
     const rightEntry=displayed(plan.path[0]);
-    const standbyCandidates=[new THREE.Vector3(...this.sim.state.tools.right.position),
+    const rightStart=new THREE.Vector3(...this.sim.state.tools.right.position),withdrawal=new THREE.Vector3(...this.sim.state.tools.right.port).sub(rightStart).normalize();
+    const standbyCandidates=[...(this.tissue.caseDefinition?.lesion?[.05,.09].map(d=>rightStart.clone().addScaledVector(withdrawal,d)):[]),rightStart,
       rightEntry.clone().addScaledVector(plan.worldNormal,.035).addScaledVector(up,.018),
       rightEntry.clone().addScaledVector(plan.worldNormal,.07).addScaledVector(up,.05)];
     // Probe the exact public collision controller before selecting a plan. This

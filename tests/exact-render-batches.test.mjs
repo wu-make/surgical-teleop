@@ -4,6 +4,18 @@ import * as THREE from 'three';
 import {ExactRenderBatches} from '../src/exact-render-batches.js';
 import {runCooperatively} from '../src/cooperative-work.js';
 
+test('removed models release empty batch geometry and field textures without disposing source anatomy',()=>{
+  const root=new THREE.Scene(),material=new THREE.MeshStandardMaterial(),sources=[0,1].map(()=>{const mesh=new THREE.Mesh(new THREE.BoxGeometry(),material);mesh.layers.enable(1);root.add(mesh);return mesh;}),batch=new ExactRenderBatches(root);
+  let geometry=0,matrices=0,indirection=0,sourceDisposed=0;
+  try{
+    batch.sync(sources);const group=[...batch.groups.values()][0];
+    group.mesh.geometry.addEventListener('dispose',()=>geometry++);group.mesh._matricesTexture.addEventListener('dispose',()=>matrices++);group.mesh._indirectTexture.addEventListener('dispose',()=>indirection++);
+    sources.forEach(m=>m.geometry.addEventListener('dispose',()=>sourceDisposed++));batch.sync([]);
+    assert.equal(batch.groups.size,0);assert.equal(batch.records.size,0);assert.equal(group.mesh.parent,null);
+    assert.equal(geometry,1);assert.equal(matrices,1);assert.equal(indirection,1);assert.equal(sourceDisposed,0);assert(sources.every(m=>m.layers.mask===3));
+  }finally{batch.dispose();sources.forEach(m=>m.geometry.dispose());material.dispose();}
+});
+
 test('remeshed surfaces leave live multi-draw slots and retain the complete original geometry and camera layers',()=>{
   const root=new THREE.Scene(),material=new THREE.MeshPhysicalMaterial(),sources=[0,1].map(()=>{const mesh=new THREE.Mesh(new THREE.BoxGeometry(),material);mesh.layers.enable(1);root.add(mesh);return mesh;}),batch=new ExactRenderBatches(root);
   try{

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <meta name="theme-color" content="#101819"/>
-  <meta name="description" content="MIRA 微创遥操作实验室：宇树 G1 双臂、RCM 内窥镜与三维肝脏交互演示。"/>
+  <meta name="description" content="MIRA 微创遥操作实验室：宇树 G1 双臂、RCM 内窥镜与多器官三维交互演示。"/>
   <link rel="preload" as="fetch" href="./assets/g1.glb.gz" crossorigin/>
   <link rel="preload" as="fetch" href="./assets/z1.glb.gz" crossorigin/>
   <link rel="preload" as="fetch" href="./assets/liver-volume.bin" crossorigin/>
@@ -19,10 +19,10 @@
   </header>
   <main class="workspace">
     <section class="operating-area">
-      <div class="workspace-heading"><div><div class="eyebrow">TELEOPERATION WORKSPACE <span>01</span></div><h1>肝脏精细操作<span>交互演示</span></h1></div><div class="session-id">SESSION <b id="session-time">00:00</b><span id="run-status">● 准备中</span></div></div>
+      <div class="workspace-heading"><div><div class="eyebrow">TELEOPERATION WORKSPACE <span>01</span></div><h1><span id="case-title" class="case-title">肝脏精细操作</span><span>交互演示</span></h1></div><div class="session-id">SESSION <b id="session-time">00:00</b><span id="run-status">● 准备中</span></div></div>
       <section id="stage" class="stage" tabindex="0" aria-label="三维手术仿真，按1选择左器械，2选择右器械，3选择内窥镜">
         <canvas id="scene" aria-label="实时三维手术场景"></canvas>
-        <div class="viewbar"><div class="viewtabs"><button id="view-endo" class="active">内窥镜画面 <span>LIVE</span></button><button id="view-overview">系统总览</button></div><div class="viewtools"><button id="view-home" title="恢复观察视角">视角复位</button><button id="fullscreen" title="全屏">⛶</button></div></div>
+        <div class="viewbar"><div class="view-left"><div class="viewtabs"><button id="view-endo" class="active">内窥镜画面 <span>LIVE</span></button><button id="view-overview">系统总览</button></div><div class="case-picker"><select id="model-select" aria-label="手术模型" title="切换模型并恢复完整组织、双臂和镜头"><option value="liver">正常肝脏</option><option value="lesion-liver">病灶肝 · 左半肝</option><option value="uterus-adnexa">子宫附件 · 左侧病灶</option></select><button id="boundary-assist" aria-pressed="true" title="仅在切缘附近轻微修正真实剪口位置；松开 C 即停止辅助" hidden>沿缘辅助</button></div></div><div class="viewtools"><button id="view-home" title="恢复观察视角">视角复位</button><button id="fullscreen" title="全屏">⛶</button></div></div>
         <div id="endo-overlay" class="endo-overlay"><span class="lens-label">LAPAROSCOPE · 55° FOV</span><div class="crosshair" aria-hidden="true"><i></i><i></i></div><div class="reticle-bracket tl"></div><div class="reticle-bracket br"></div><span class="lens-scale" id="lens-scale">|<span>10 mm @ TCP</span>|</span></div>
         <div class="stage-status"><span class="status-dot"></span><span id="view-status">内窥镜 · 当前器械尖端居中</span><span class="stage-divider"></span><span id="selected-badge">R 右手 · 分离剪</span></div>
         <div id="mini-view" class="mini-view" aria-label="辅助观察窗口"><div><span id="mini-title">系统总览</span><button id="swap-view" title="交换主辅视图">↗</button></div><span class="mini-caption" id="mini-caption">UNITREE G1 + 胸部持镜概念集成</span></div>
@@ -36,12 +36,12 @@
         <button class="instrument-card selected" data-select="right"><span class="instrument-icon amber">R</span><span><small>RIGHT INSTRUMENT</small><strong>右手 · 精细分离剪</strong><em id="right-summary">已选择 · 剪口打开</em></span><kbd>2</kbd></button>
         <button class="instrument-card" data-select="scope"><span class="instrument-icon green">◎</span><span><small>ENDOSCOPE</small><strong>胸部 · 持镜机械臂</strong><em id="scope-summary">RCM 约束 · 自动跟随</em></span><kbd>3</kbd></button>
       </div>
-      <div class="collaboration-bar"><div><button id="demo" class="demo-button">▶ 切离与移开示范</button><button id="approach" title="通过同一防碰撞控制器贴近当前可见肝表面">◎ 当前器械表面就位</button></div><span id="connection-status">双臂器械联接</span><span id="collision-status">双器械防碰撞</span></div>
+      <div class="collaboration-bar"><div><button id="demo" class="demo-button">▶ 切离与移开示范</button><button id="approach" title="通过同一防碰撞控制器贴近当前组织表面">◎ 当前器械表面就位</button></div><span id="connection-status">双臂器械联接</span><span id="collision-status">双器械防碰撞</span></div>
       <div class="contact-strip"><span><i class="contact-light cyan"></i><b>左钳</b><span id="left-contact">未接触组织</span></span><span><i class="contact-light amber"></i><b>右剪</b><span id="right-contact">未接触组织</span></span></div>
       <div class="bottom-bar"><span><i class="tiny-dot"></i>官方 G1 几何 · 体积组织交互 · 本地计算</span><span>研发演示 · 专用器械与胸部持镜臂为概念模型 <button id="about">模型与边界 ↗</button></span></div>
     </section>
     <aside class="control-panel">
-      <div class="panel-heading"><span class="eyebrow">CONTROL DESK</span><span class="live-tag">LOCAL</span></div>
+      <div class="panel-heading"><span class="eyebrow">CONTROL DESK</span><span class="live-tag">LOCAL</span></div><div class="case-info" id="case-info" hidden><strong id="case-label"></strong><p id="case-hint"></p><span id="case-progress" role="status"></span></div>
       <section class="control-section"><div class="section-title"><h2>末端控制</h2><span id="active-tool">RIGHT / R</span></div>
         <div class="segmented" id="precision"><button data-speed="normal" class="active">标准</button><button data-speed="fine">精细 <small>低速</small></button></div>
         <div class="position-grid"><div><span>X 横向</span><strong id="pos-x">0.0<small>mm</small></strong></div><div><span>Y 高度</span><strong id="pos-y">0.0<small>mm</small></strong></div><div><span>Z 深度</span><strong id="pos-z">0.0<small>mm</small></strong></div></div>
@@ -58,7 +58,7 @@
     </aside>
   </main>
   <div id="toast" class="toast" role="status" hidden></div>
-  <dialog id="help-dialog"><div class="dialog-heading"><span class="eyebrow">OPERATOR GUIDE</span><button data-close aria-label="关闭">✕</button></div><h2>牵拉、切断、夹持移开。</h2><p>可先点击“切离与移开示范”观察同一套实时控制和组织交互。手动操作会立即接管自动路径。</p><div class="help-grid"><div><h3>选择与位移</h3><p><kbd>1 / 2 / 3</kbd> 左钳 / 右剪 / 内窥镜</p><p><kbd>W A S D</kbd> 前后左右</p><p><kbd>Q / E</kbd> 下降 / 上升</p><p><kbd>Shift</kbd> 恒定低速精细控制</p><p><kbd>Space</kbd> 离合：按住冻结输入</p><p>轻点小步，持续按住逐渐加速</p></div><div><h3>姿态与交互</h3><p><kbd>↑ ↓ ← →</kbd> 腕部俯仰与偏转</p><p><kbd>Z / X</kbd> 轴向连续多圈旋转</p><p><kbd>C / V</kbd> 闭合 / 张开钳口</p><p><kbd>B</kbd> 暂停 / 恢复右剪切除（默认就绪）</p><p><kbd>H</kbd> 闭合器械贴近切面，按住局部压迫</p><p><kbd>[ / ]</kbd> 内窥镜退出 / 插入</p><p>未设工作区围栏，双器械防互穿</p></div><div><h3>视野与恢复</h3><p><kbd>F</kbd> 自动持镜开关</p><p><kbd>Tab</kbd> 交换主辅画面</p><p><kbd>P</kbd> 暂停 / 继续；暂停后可单步 0.05 s</p><p><kbd>Ctrl Z / Ctrl Y</kbd> 撤销 / 重做</p><p><kbd>R</kbd> 重置器官、双臂与镜头</p><p>关闭自动持镜后，鼠标拖拽转向</p><p>滚轮光学变焦；[ / ] 镜头进退</p><p>初始与重置时双尖端入镜；操作后跟随当前尖端</p></div></div><div class="help-note">左钳：选 1 → 表面就位 → C 夹住 → E 抬起，V 释放，未切离组织连续滑落回弹。右剪：选 2 → 表面就位 → C 闭合并沿表面移动。左钳夹住局部组织，邻近组织随动，远处肝体保持锚定。过度牵拉可能滑脱，张开再闭合可重新夹取。必须切断全部连接，组织块才会独立；左钳夹持时可 WASD / Q E 移开、方向键与 Z X 旋转，V 松手后独立块受重力落下；点击“左钳接近标本”，再 C 可重新夹取。未完全切断时仍是附着组织。切面与两侧缺损来自同一三维体积运算。</div><p>导出记录包含当前组织和血流状态，以及本轮操作的平均帧率、最长帧、慢帧计数和最近帧时间。暂停、后台及恢复场景的等待不计入性能统计。</p><button id="help-export" class="accent">导出操作与性能记录 ↗</button> <button data-close class="accent">开始操作 ↗</button></dialog>
+  <dialog id="help-dialog"><div class="dialog-heading"><span class="eyebrow">OPERATOR GUIDE</span><button data-close aria-label="关闭">✕</button></div><h2>牵拉、切断、夹持移开。</h2><p>可先点击“切离与移开示范”观察同一套实时控制和组织交互。手动操作会立即接管自动路径。</p><div class="help-grid"><div><h3>选择与位移</h3><p><kbd>1 / 2 / 3</kbd> 左钳 / 右剪 / 内窥镜</p><p><kbd>W A S D</kbd> 前后左右</p><p><kbd>Q / E</kbd> 下降 / 上升</p><p><kbd>Shift</kbd> 恒定低速精细控制</p><p><kbd>Space</kbd> 离合：按住冻结输入</p><p>轻点小步，持续按住逐渐加速</p></div><div><h3>姿态与交互</h3><p><kbd>↑ ↓ ← →</kbd> 腕部俯仰与偏转</p><p><kbd>Z / X</kbd> 轴向连续多圈旋转</p><p><kbd>C / V</kbd> 闭合 / 张开钳口</p><p><kbd>B</kbd> 暂停 / 恢复右剪切除（默认就绪）</p><p><kbd>H</kbd> 闭合器械贴近切面，按住局部压迫</p><p><kbd>[ / ]</kbd> 内窥镜退出 / 插入</p><p>未设工作区围栏，双器械防互穿</p></div><div><h3>视野与恢复</h3><p><kbd>F</kbd> 自动持镜开关</p><p><kbd>Tab</kbd> 交换主辅画面</p><p><kbd>P</kbd> 暂停 / 继续；暂停后可单步 0.05 s</p><p><kbd>Ctrl Z / Ctrl Y</kbd> 撤销 / 重做</p><p><kbd>R</kbd> 重置器官、双臂与镜头</p><p>关闭自动持镜后，鼠标拖拽转向</p><p>滚轮光学变焦；[ / ] 镜头进退</p><p>初始与重置时双尖端入镜；操作后跟随当前尖端</p></div></div><div class="help-note">左钳：选 1 → 表面就位 → C 夹住 → E 抬起，V 释放，未切离组织连续滑落回弹。右剪：选 2 → 表面就位 → C 闭合并沿表面移动。左钳夹住局部组织，邻近组织随动，远处肝体保持锚定。过度牵拉可能滑脱，张开再闭合可重新夹取。必须切断全部连接，组织块才会独立；左钳夹持时可 WASD / Q E 移开、方向键与 Z X 旋转，V 松手后独立块受重力落下；点击“左钳接近标本”，再 C 可重新夹取。未完全切断时仍是附着组织。切面与两侧缺损来自同一三维体积运算。</div><p class="help-note">画面左上方可切换正常肝脏、病灶肝与子宫附件。切换后恢复完整组织、双臂与镜头。病灶为浅褐色，金色细线提示切缘；「沿缘辅助」默认开启，按住 C 并靠近切缘移动时会轻微贴合曲线，随时可以关闭。仍需切断所有连接，组织块才会分离；面板会显示病灶仍连接和随标本分离的比例。</p><p>导出记录包含当前组织和血流状态，以及本轮操作的平均帧率、最长帧、慢帧计数和最近帧时间。暂停、后台及恢复场景的等待不计入性能统计。</p><button id="help-export" class="accent">导出操作与性能记录 ↗</button> <button data-close class="accent">开始操作 ↗</button></dialog>
   <dialog id="about-dialog"><div class="dialog-heading"><span class="eyebrow">ASSET PROVENANCE</span><button data-close aria-label="关闭">✕</button></div><h2>模型来源与仿真边界</h2><div id="model-details"></div><p>演示采用运动学约束与局部体积组织切除。组织形变与切面材质为计算近似，目前不提供触觉力反馈；未进行患者级解剖或临床精度验证。</p><a href="./assets/ATTRIBUTION.md" target="_blank" rel="noopener">查看资产来源与许可 ↗</a></dialog>
 </div>
 <script type="module" src="/src/bootstrap.js"></script>

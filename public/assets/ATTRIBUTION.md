@@ -56,3 +56,17 @@ These tool models are research visualizations. Their integration onto a G1 or ch
 ## Reproduction
 
 The script `scripts/prepare-assets.py` documents the conversions. Download the pinned sources into `.asset-sources/unitree_ros`, `.asset-sources/BodyParts3D`, and `.asset-sources/dvrk_model`; install `numpy`, `trimesh`, `scipy`, `scikit-image`, `rtree`, `fast-simplification`, and `pycollada`; run the script with no arguments for G1, or `--anatomy`, `--z1`, and `--instruments` for the respective assets. `--liver-volume` regenerates only the smoothed anatomical distance field and metadata while preserving all delivered GLB files. Every conversion refreshes the asset size/hash manifest. Source checkouts are not part of the public deployment.
+
+## Uterus and adnexa reference scenario
+
+The cuttable `pelvic-volume` derives from Kristen Browne and Heidi Schlehlein, Human Reference Atlas / HuBMAP, based on the U.S. National Library of Medicine Visible Human Female. Source anatomy is licensed **CC BY 4.0**, https://creativecommons.org/licenses/by/4.0/ . Reference library: https://humanatlas.io/3d-reference-library .
+
+Pinned digital objects:
+
+- Uterus: https://lod.humanatlas.io/ref-organ/uterus-female/v1.2 , DOI https://doi.org/10.48539/HBM627.VTKD.892 .
+- Left/right uterine tubes: https://lod.humanatlas.io/ref-organ/fallopian-tube-female-left/v1.2 and https://lod.humanatlas.io/ref-organ/fallopian-tube-female-right/v1.2 .
+- Left/right ovaries: https://lod.humanatlas.io/ref-organ/ovary-female-left/v1.3 and https://lod.humanatlas.io/ref-organ/ovary-female-right/v1.3 .
+
+Adaptations: retain registered native metre coordinates, translate to a common operative origin, voxelise at 0.75 mm, close sampling gaps, regularise the field with sigma 0.45 voxels, and reconstruct a thin endometrial cavity plus the two missing ovarian support connections. These supplements and the left ovarian lesion are explicitly authored scenario geometry, not findings in the reference donor. Full source node names, revisions, checksums, transforms, reconstructions and closed-volume validation are recorded in `pelvic-volume.json`; conversion is reproducible with `scripts/prepare-pelvic-volume.py`. The original reference structures are not geometrically decimated.
+
+Both pathological scenes use explicit three-dimensional lesion labels clipped to the original organ solid. Liver lesion location and all pathological appearances are authored scenario data. Surface colour, exposed myometrial/parenchymal detail and cut-edge overlays are procedural display adaptations; they stay in material coordinates on the mother and separated specimens. Optional edge assistance moves the visible real blade through the normal collision controller within an 8 mm neighbourhood, at a bounded speed; it does not delete or replace the target region. True separation is still determined by volumetric connectivity.

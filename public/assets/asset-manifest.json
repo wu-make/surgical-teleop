@@ -5,8 +5,8 @@
       "sha256": "15a3f92a37899fe1bbb79efa32335f7b52c721facc97eb1a6ac6bc1b5993169b"
     },
     "ATTRIBUTION.md": {
-      "bytes": 8497,
-      "sha256": "109adab0b051e8c61677c7887737cbb8a34dd8c40aaa3392938951fa071a1ec6"
+      "bytes": 10643,
+      "sha256": "74cdc6fd8356220fa27b75ac74dc2b878a757661259f5382bb8a0e3cf325a635"
     },
     "BODYPARTS3D-LICENSE-original.txt": {
       "bytes": 729,
@@ -127,6 +127,18 @@
     "hepatobiliary-context.glb.gz": {
       "bytes": 326824,
       "sha256": "ed12ab077afff47be00af3acd0ee54293166cfec23925ada18bba471d42db780"
+    },
+    "pelvic-volume.json": {
+      "bytes": 11838,
+      "sha256": "ba8df8357f957f2b06c73ba16adc63c33f8e5ccbf5c22a1a26b61fed583fea80"
+    },
+    "pelvic-volume.bin": {
+      "bytes": 13961760,
+      "sha256": "c573765186573a4e1e1ae5938c74fa4bdec4114f9a68b28196034ca22ee415bc"
+    },
+    "pelvic-volume.bin.gz": {
+      "bytes": 10560445,
+      "sha256": "b84756634abdae510224f6c634820311af13d5e0224e2c6e92ffc92df5b806e6"
     }
   }
 }

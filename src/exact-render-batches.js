@@ -77,6 +77,9 @@ export class ExactRenderBatches {
   *syncSteps(sources){
     const eligible=new Set(sources.filter(m=>m.isMesh&&!m.userData.dynamicSurface&&!m.isInstancedMesh&&!m.isBatchedMesh&&!m.isSkinnedMesh&&!Array.isArray(m.material)&&!m.material.transparent&&!Object.keys(m.geometry.morphAttributes).length&&m.geometry.drawRange.start===0&&m.geometry.drawRange.count===Infinity));
     for(const [source,record]of this.records){const g=source.geometry;if(!eligible.has(source)){this._remove(source,record);continue;}if(g!==record.sourceGeometry&&this._reuse(source,record))continue;if(g!==record.sourceGeometry||g.attributes.position.count!==record.geometry.vertices||(g.index?.count??0)!==record.geometry.indices||this._key(source,source.layers.mask||record.mask)!==record.key)this._remove(source,record);}
+    // A model switch has a new tissue material/UUID. Empty old batches must
+    // release their copied geometry and matrix/indirection textures immediately.
+    for(const [key,group]of this.groups)if(!group.active){group.mesh.removeFromParent();group.mesh.dispose();this.groups.delete(key);}
     const newGroups=new Map();for(const source of eligible)if(!this.records.has(source)){const key=this._key(source,source.layers.mask);if(!newGroups.has(key))newGroups.set(key,[]);newGroups.get(key).push(source);}
     for(const [key,list]of newGroups){
       let group=this.groups.get(key);if(!group&&list.length<2)continue;group??=this._group(key,list);

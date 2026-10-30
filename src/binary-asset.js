@@ -18,3 +18,14 @@ export async function fetchModelBytes(url,{fetchImpl=globalThis.fetch,Decompress
   const buffer=await response.arrayBuffer();if(!validGLB(buffer))throw new Error('模型文件不完整：'+url);return buffer;
 }
 export async function loadModel(loader,url){return loader.parseAsync(await fetchModelBytes(url),url.slice(0,url.lastIndexOf('/')+1));}
+
+/** Lossless volume transport. A corrupt/unsupported gzip retries the unchanged
+ * raw field; the tissue loader subsequently checks every sample and dimension. */
+export async function fetchVolumeBytes(url,{fetchImpl=globalThis.fetch,Decompressor=globalThis.DecompressionStream}={}){
+  if(Decompressor)try{
+    const response=await fetchImpl(url+'.gz');
+    if(response.ok){const bytes=new Uint8Array(await response.arrayBuffer());
+      if(bytes[0]===31&&bytes[1]===139)return await new Response(new Blob([bytes]).stream().pipeThrough(new Decompressor('gzip'))).arrayBuffer();}
+  }catch{/* Retry the exact original field. */}
+  const response=await fetchImpl(url);if(!response.ok)throw new Error('无法载入组织体积：'+url);return response.arrayBuffer();
+}

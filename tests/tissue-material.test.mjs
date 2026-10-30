@@ -20,7 +20,9 @@ test('one opaque double-sided material supports the organ and rotated cut specim
   assert.equal(material.metalness,0);
   assert.match(shader.vertexShader,/vTissuePosition\s*=\s*tissueRestPosition/);
   assert.match(shader.vertexShader,/vTissueCut\s*=\s*tissueCutMask/);
-  assert.deepEqual(shader.uniforms,{},'material detail must not need per-frame uniforms');
+  assert.equal(shader.uniforms.uCaseKind.value,0);
+  assert.equal(shader.uniforms.uCutGuide.value,0);
+  assert(!Object.keys(shader.uniforms).some(key=>/time|frame/i.test(key)),'material detail must not need time/frame-dependent updates');
   material.dispose();
 });
 

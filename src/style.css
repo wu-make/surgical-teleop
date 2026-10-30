@@ -80,3 +80,14 @@
   .stage-status{bottom:41px;font-size:8px;padding:5px;max-width:calc(100% - 22px)}
 }
 @media (max-width:900px) and (max-height:520px){.stage{min-height:120px}.instrument-card{padding:5px}.collaboration-bar{padding:4px 0}.bottom-bar{margin-top:4px}}
+/* Model selection stays beside the view tabs, with its own compact wrap. */
+.view-left{display:flex;align-items:center;flex-wrap:wrap;gap:7px;min-width:0;max-width:calc(100% - 104px)}
+.case-picker{display:flex;align-items:center;gap:5px;background:#101a1ce8;border:1px solid #4d625355;border-radius:7px;padding:4px}
+.case-picker select{max-width:196px;width:auto;padding:7px 24px 7px 9px;border:0;border-radius:4px;background-color:#21372e;color:#e2eee5;font-size:11px;cursor:pointer}
+.case-picker button{font-size:10px;padding:7px 8px;color:#c4ae7c;background:#27332a;border:1px solid #74674788}
+.case-picker button[aria-pressed=false]{color:#8c9c91;border-color:transparent;background:transparent}
+.case-picker button[data-engaged=true]{border-color:#d1b574;color:#ffe4ab}
+.case-info{padding:15px 22px;background:#202c26;border-bottom:1px solid var(--line)}
+.case-info strong{font-size:12px;color:#d8e6d9}.case-info p{font-size:11px;color:#a4b8a9;line-height:1.6;margin:7px 0}.case-info>span{font-size:10px;color:#d0bd93}
+h1>.case-title{font:inherit;color:inherit;background:none;border:0;padding:0;margin:0;letter-spacing:inherit}
+@media(max-width:700px){.view-left{max-width:calc(100% - 73px);gap:4px}.case-picker{padding:3px;gap:3px}.case-picker select{max-width:158px;font-size:9px;padding:6px 19px 6px 6px}.case-picker button{font-size:8px;padding:6px 4px}.viewbar{align-items:flex-start}.mini-view{top:100px}.lens-label{top:100px}.case-info{padding:12px 18px}}

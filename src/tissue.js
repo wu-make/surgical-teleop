@@ -6,6 +6,7 @@ import { BloodFlow } from './blood-flow.js';
 import {closestParentSurface,closestParentSegment,firstParentHit} from './tissue-contact.js';
 import {MeshBroadPhase} from './mesh-broad-phase.js';
 import {CutSpatialIndex} from './cut-spatial-index.js';
+import {fetchVolumeBytes} from './binary-asset.js';
 
 const vectorArray = point => Array.isArray(point) ? [...point] : [point.x, point.y, point.z];
 // Accepted cutter records are append-only. History can share these immutable
@@ -18,7 +19,8 @@ const canSkipBox = (squaredDistance, currentDistance, scale = 1) => squaredDista
 
 /** A real sampled organ volume; the worker alone owns and modifies its SDF. */
 export class TissueVolume {
-  constructor({gpuBlood=false,bloodSpread=true}={}) {
+  constructor({gpuBlood=false,bloodSpread=true,caseDefinition=null}={}) {
+    this.caseDefinition=caseDefinition;
     this.group = new THREE.Group();
     this.group.name = 'anatomical-liver-volume';
     this.ready = false;
@@ -46,7 +48,7 @@ export class TissueVolume {
     this._deformation = null;
     this._affectedVertices = 0;
     this._deformationStats = { cacheBuilds: 0, radiusUpdates: 0, movedVertices: 0 };
-    this.material = createTissueMaterial();
+    this.material = createTissueMaterial({caseDefinition});
     this.fragments = new TissueFragments(this);
     this.blood=new BloodFlow(this,{gpuSurface:gpuBlood,spread:bloodSpread});
     this._separations = [];
@@ -62,9 +64,10 @@ export class TissueVolume {
     if (this.worker) throw new Error('This tissue volume has already been loaded');
     let base = String(urlbase).replace(/\.(?:json|bin)$/, '');
     if (base.endsWith('/')) base += 'liver-volume';
-    const [metadataResponse, volumeResponse] = await Promise.all([fetch(`${base}.json`), fetch(`${base}.bin`)]);
-    if (!metadataResponse.ok || !volumeResponse.ok) throw new Error('Could not load the anatomical liver volume');
-    const [metadata, buffer] = await Promise.all([metadataResponse.json(), volumeResponse.arrayBuffer()]);
+    const [metadataResponse,buffer]=await Promise.all([fetch(`${base}.json`),this.caseDefinition?.asset==='pelvic-volume'?fetchVolumeBytes(`${base}.bin`):fetch(`${base}.bin`).then(r=>{if(!r.ok)throw new Error('Could not load the tissue volume');return r.arrayBuffer();})]);
+    if(!metadataResponse.ok)throw new Error('Could not load the anatomical volume metadata');
+    const metadata=await metadataResponse.json();
+    if(this.caseDefinition?.lesion)metadata.pathology=this.caseDefinition.lesion;
     this.metadata = normalizeMetadata(metadata);
     this._baseField = new Float32Array(buffer.slice(0));
     this.worker = new Worker(new URL('./tissue-worker.js', import.meta.url), { type: 'module' });

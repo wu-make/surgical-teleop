@@ -8,6 +8,11 @@ import * as THREE from 'three';
 const DETAIL_FUNCTIONS = /* glsl */`
 varying vec3 vTissuePosition;
 varying float vTissueCut;
+uniform float uCaseKind;
+uniform float uCutGuide;
+uniform vec3 uLesionCenter;
+uniform vec3 uLesionRadii;
+uniform vec3 uBoundaryRadii;
 float tissueHash(vec3 p) {
   p=fract(p*.1031);p+=dot(p,p.yxz+33.33);
   return fract((p.x+p.y)*p.z);
@@ -67,6 +72,29 @@ tissueCutColour=mix(tissueCutColour,vec3(.34,.187,.130),tissueSepta*.10);
 tissueCutColour=mix(tissueCutColour,vec3(.045,.012,.009),tissueLumen*.84);
 tissueCutColour+=vec3(.048,.032,.020)*tissueRim;
 diffuseColor.rgb=mix(tissueCapsule,tissueCutColour,tissueCut);
+if(uCaseKind>1.5){
+  // Serosa, smooth muscle and pale adnexal cortex remain material-space 3-D
+  // fields on the actual reference surface and on newly exposed solid cuts.
+  float adnexal=smoothstep(.024,.043,abs(vTissuePosition.x));
+  vec3 serosa=mix(vec3(.30,.115,.105),vec3(.36,.235,.170),adnexal*.68);
+  float muscle=tissueNoise(vTissuePosition*vec3(1150.0,260.0,720.0));
+  vec3 myometrium=mix(vec3(.33,.125,.112),vec3(.46,.235,.195),muscle*.55);
+  myometrium=mix(myometrium,vec3(.49,.32,.235),tissueSepta*.16);
+  diffuseColor.rgb=mix(serosa*(.91+.12*tissueMottle),myometrium,tissueCut);
+}
+if(uCaseKind>.5){
+  vec3 lesionCoordinate=(vTissuePosition-uLesionCenter)/uLesionRadii;
+  float lesionDistance=length(lesionCoordinate);
+  float lesionEdge=.08*(tissueNoise(vTissuePosition*270.0)-.5);
+  float lesionMask=1.0-smoothstep(.90,1.06,lesionDistance+lesionEdge);
+  vec3 lesionCapsule=mix(vec3(.235,.137,.062),vec3(.27,.19,.09),tissueMesoscopic);
+  vec3 lesionSolid=mix(vec3(.36,.245,.13),vec3(.46,.34,.21),tissueGrain);
+  diffuseColor.rgb=mix(diffuseColor.rgb,mix(lesionCapsule,lesionSolid,tissueCut),lesionMask*.92);
+  float edgeDistance=(length((vTissuePosition-uLesionCenter)/uBoundaryRadii)-1.0)*min(uBoundaryRadii.x,min(uBoundaryRadii.y,uBoundaryRadii.z));
+  float edgeAA=max(fwidth(edgeDistance),.00018);
+  float guide=(1.0-smoothstep(.00045,.00045+edgeAA,abs(edgeDistance)))*uCutGuide*(1.0-tissueCut);
+  diffuseColor.rgb=mix(diffuseColor.rgb,vec3(.36,.265,.095),guide*.72);
+}
 `;
 
 const NORMAL_DETAIL = /* glsl */`
@@ -90,7 +118,7 @@ if(dot(tissuePerturbed,tissuePerturbed)>1e-20)normal=normalize(tissuePerturbed);
 /** Opaque, double-sided liver material for both the organ and real cut pieces.
  * Requires tissueRestPosition (vec3, metres), tissueCutMask (float: capsule=0,
  * fresh cut=1) and vertex colours. Detail is procedural, not patient histology. */
-export function createTissueMaterial() {
+export function createTissueMaterial({caseDefinition=null}={}) {
   const material = new THREE.MeshPhysicalMaterial({
     vertexColors: true, side: THREE.DoubleSide,
     roughness: .38, metalness: 0, ior: 1.37, specularIntensity: .72,
@@ -98,7 +126,10 @@ export function createTissueMaterial() {
   });
   material.name = 'Anatomical_Capsule_And_Procedural_Cut_Parenchyma';
   material.userData.detailDescription = 'Procedural display cues at millimetre and submillimetre scales; not patient-specific anatomy or histology.';
+  const definition=caseDefinition??{},uniforms={uCaseKind:{value:definition.kind??0},uCutGuide:{value:definition.boundary?1:0},uLesionCenter:{value:new THREE.Vector3(...(definition.lesion?.center??[0,0,0]))},uLesionRadii:{value:new THREE.Vector3(...(definition.lesion?.radii??[1,1,1]))},uBoundaryRadii:{value:new THREE.Vector3(...(definition.boundary?.radii??[1,1,1]))}};
+  material.userData.caseUniforms=uniforms;
   material.onBeforeCompile = shader => {
+    Object.assign(shader.uniforms,uniforms);
     shader.vertexShader = /* glsl */`attribute vec3 tissueRestPosition;
 attribute float tissueCutMask;
 varying vec3 vTissuePosition;
@@ -119,6 +150,6 @@ roughnessFactor=clamp(roughnessFactor+tissueCut*.12+(tissueGrain-.5)*.055*tissue
   material.clearcoatRoughness=max(material.clearcoatRoughness,mix(.23,.37,tissueCut));
 #endif`);
   };
-  material.customProgramCacheKey = () => 'anatomical-capsule-cut-parenchyma-v5';
+  material.customProgramCacheKey = () => 'anatomical-capsule-cut-parenchyma-v6-cases';
   return material;
 }

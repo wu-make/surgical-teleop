@@ -2,6 +2,7 @@ import {prepareWoundSurface,selectWoundSurface} from './wound-surface.js';
 import {refineIncisionSurface} from './incision-surface.js';
 import {buildSurfaceTree,surfaceTreeBounds} from './surface-tree.js';
 import {prepareFilmIndex} from './film-support-index.js';
+import {lesionNodes,lesionStatistics} from './lesion-volume.js';
 // Anatomy is sampled in metres. The field is negative inside the source organ.
 // These exports deliberately have no browser dependencies so the same geometry
 // and CSG code can be checked with Node's test runner.
@@ -702,7 +703,7 @@ export function buildChunks(state, keys,{force=false}={}) {
   }
   return chunks;
 }
-function statistics(state) { return { removedVolumeMm3: state.removedVolumeMm3, totalVolumeMm3: state.totalVolumeMm3, voxelMm: Math.max(...state.meta.spacing) * 1000, cutCount: state.cuts.length,
+function statistics(state) { return { pathology:lesionStatistics(state),removedVolumeMm3: state.removedVolumeMm3, totalVolumeMm3: state.totalVolumeMm3, voxelMm: Math.max(...state.meta.spacing) * 1000, cutCount: state.cuts.length,
   fragmentCount: state.fragmentRecords.length, fragmentVolumeMm3: state.fragmentVolumeMm3, topology: { ...state.topologyMetrics } }; }
 
 if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScope) {
@@ -713,6 +714,7 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
       let chunks, changedSamples = 0, removedMm3 = 0, fragments = [], exclusions = { nodeIndices: new Uint32Array(), positiveValues: new Float32Array() };
       if (data.type === 'init') {
         state = createVolumeState(data.metadata, new Float32Array(data.buffer), data.chunkSize ?? 16);
+        state.lesionNodes=lesionNodes(state.meta,state.base);
         initializeConnectivity(state);
         chunks = buildChunks(state, allChunkKeys(state),{force:true});
       } else if (!state) throw new Error('The tissue volume is not initialized');
