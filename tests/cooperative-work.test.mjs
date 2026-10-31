@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import {runCooperatively} from '../src/cooperative-work.js';
-import {GuidedDemo,planPeripheralResections,planPeripheralResectionSteps} from '../src/guided-demo.js';
+import {GuidedDemo,planPeripheralResections,planPeripheralResectionSteps,probeToolMoveSteps} from '../src/guided-demo.js';
 import {TissueVolume} from '../src/tissue.js';
 import {Simulation} from '../src/simulation.js';
 import {InteractionController} from '../src/interaction-controller.js';
@@ -71,4 +71,10 @@ test('yielded specimen withdrawal keeps every real collision check and the synch
 });
 test('manual cancellation prevents a late withdrawal planner from moving or reopening either instrument',async()=>{
   const f=withdrawalFixture();try{let release;const tools=structuredClone(f.s.state.tools),pending=f.d._beginFragmentMoveAsync({yieldFrame:()=>new Promise(resolve=>release=resolve)});f.d.stop('');release();assert.equal(await pending,false);assert.deepEqual(f.s.state.tools,tools);assert.equal(f.d.active,false);}finally{f.t.dispose();}
+});
+
+test('specimen preflight yields after every bounded CAD sweep and rejects the first blocked subsegment',()=>{
+  const target=new THREE.Vector3(.075,.021,-.017),visits=[],probe={state:{tools:{left:{position:[0,0,0]}}},moveToolTo(p,side){const before=new THREE.Vector3(...this.state.tools[side].position);assert(before.distanceTo(new THREE.Vector3(...p))<=.002000000001);visits.push(p);this.state.tools[side].position=p;return{limited:false};}};
+  let result;const scan=probeToolMoveSteps(probe,target,'left');do{result=scan.next();}while(!result.done);assert.equal(result.value,false);assert.deepEqual(probe.state.tools.left.position,target.toArray());assert.equal(visits.length,Math.ceil(target.length()/.002));
+  let calls=0;probe.state.tools.left.position=[0,0,0];probe.moveToolTo=()=>({limited:++calls===3});const blocked=probeToolMoveSteps(probe,target,'left');do{result=blocked.next();}while(!result.done);assert.equal(result.value,true);assert.equal(calls,3);
 });

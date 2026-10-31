@@ -46,8 +46,13 @@ export function filmSupport(geometry,fields,previous=null){
     if(!bins||cells>p.count){for(let i=0;i<p.count;i++)visit(i,k);continue;}
     visitFilmBins(bins,low,high,i=>visit(i,k));
   }
-  const indices=[];
-  for(let i=0;i<source.count;i+=3){const a=source.getX(i),b=source.getX(i+1),c=source.getX(i+2);if(wet[a]||wet[b]||wet[c])indices.push(a,b,c);}
-  const index=new THREE.BufferAttribute(new source.array.constructor(indices),1);
-  return{signature,index,referenceVersion:geometry.userData.filmReferenceVersion,reference:p,normal:n,pVersion:p.version,nVersion:n.version,source,sourceVersion:source.version,sourceTriangles:source.count/3,submittedTriangles:indices.length/3};
+  // Reuse a typed workspace instead of repeatedly growing a boxed JS array at
+  // detachment. Publish an independent exact-length copy so older support
+  // snapshots remain immutable while the next liquid footprint is evaluated.
+  const Type=source.array.constructor;
+  if(!(cached.indexScratch instanceof Type)||cached.indexScratch.length<source.count)cached.indexScratch=new Type(source.count);
+  const indices=cached.indexScratch,raw=!source.isInterleavedBufferAttribute&&!source.normalized?source.array:null;let cursor=0;
+  for(let i=0;i<source.count;i+=3){const a=raw?raw[i]:source.getX(i),b=raw?raw[i+1]:source.getX(i+1),c=raw?raw[i+2]:source.getX(i+2);if(wet[a]||wet[b]||wet[c]){indices[cursor++]=a;indices[cursor++]=b;indices[cursor++]=c;}}
+  const index=new THREE.BufferAttribute(indices.slice(0,cursor),1);
+  return{signature,index,referenceVersion:geometry.userData.filmReferenceVersion,reference:p,normal:n,pVersion:p.version,nVersion:n.version,source,sourceVersion:source.version,sourceTriangles:source.count/3,submittedTriangles:cursor/3};
 }

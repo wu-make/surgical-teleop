@@ -6,6 +6,17 @@ import {runCooperatively,runImmediately} from './cooperative-work.js';
 const smooth = value => value * value * (3 - 2 * value);
 const defaults = { left: [-.025, 1.106, -.015], right: [.025, 1.108, -.015] };
 
+// The real controller still sweeps each complete segment against source CAD.
+// Bound a preflight unit so a long withdrawal cannot monopolize one RAF slice.
+export function* probeToolMoveSteps(probe,target,side){
+  const start=new THREE.Vector3(...probe.state.tools[side].position),count=Math.max(1,Math.ceil(start.distanceTo(target)/.002));
+  for(let i=1;i<=count;i++){
+    const blocked=probe.moveToolTo(i===count?target.toArray():start.clone().lerp(target,i/count).toArray(),side).limited;
+    yield;if(blocked)return true;
+  }
+  return false;
+}
+
 /** Plan a complete peripheral-cap basal section from the actual remaining SDF.
  * The raster covers the whole occupied cross-section, rather than drawing one
  * groove and pretending it detached. Returned positions are material coordinates.
@@ -341,10 +352,10 @@ export class GuidedDemo {
     for(const rightTarget of rightCandidates){
       for(const leftTarget of leftCandidates){
         const probe=new this.sim.constructor();probe.restore(snapshot);probe.setPaused(false);yield;
-        const rightBlocked=probe.moveToolTo(rightTarget.toArray(),'right').limited;yield;if(rightBlocked)continue;
+        const rightBlocked=yield* probeToolMoveSteps(probe,rightTarget,'right');if(rightBlocked)continue;
         probe.setJaw('right',.75);yield;
         if(probe.state.tools.right.jaw<.7)continue;
-        const leftBlocked=probe.moveToolTo(leftTarget.toArray(),'left').limited;yield;if(leftBlocked)continue;
+        const leftBlocked=yield* probeToolMoveSteps(probe,leftTarget,'left');if(leftBlocked)continue;
         route={rightTarget,leftTarget};break;
       }
       if(route)break;

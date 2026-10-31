@@ -1,15 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import {buildSurfaceTree,surfaceTreeBounds} from '../src/surface-tree.js';
+import {buildSurfaceTree,surfaceTreeBounds,packSurfaceTree,unpackSurfaceTree} from '../src/surface-tree.js';
 import {closestParentSurface,closestParentSegment,firstParentHit} from '../src/tissue-contact.js';
 
 test('transferred contact trees retain every triangle and match fresh exact queries before and after deformation',()=>{
   const a=new THREE.SphereGeometry(.02,32,24),b=a.clone(),material=new THREE.MeshBasicMaterial();
   const expected=new THREE.Mesh(a,material),actual=new THREE.Mesh(b,material);
   const tree=buildSurfaceTree(b.attributes.position.array,b.index.array);
-  b.userData.surfaceTree=structuredClone(tree,{transfer:[tree.boundsStore.buffer,tree.triangles.buffer]});
-  const faces=[];const visit=node=>{if(node.triangles)faces.push(...node.triangles);else{visit(node.left);visit(node.right);}};visit(b.userData.surfaceTree.root);
+  const packed=packSurfaceTree(tree);b.userData.surfaceTree=structuredClone(packed,{transfer:[packed.boundsStore.buffer,packed.triangles.buffer,packed.nodes.buffer]});
+  const faces=[];const visit=node=>{if(node.triangles)faces.push(...node.triangles);else{visit(node.left);visit(node.right);}};visit(unpackSurfaceTree(b.userData.surfaceTree).root);
   assert.deepEqual(faces.sort((x,y)=>x-y),Array.from({length:b.index.count/3},(_,i)=>i));
   const compare=(x,y)=>{assert.equal(!!x,!!y);if(x&&y){const p=x.surface??x,q=y.surface??y;assert(p.distanceTo(q)<1e-10);}};
   try{
@@ -69,4 +69,14 @@ test('a stale worker pose retains its triangle partition but replaces its bounds
   Object.assign(g.userData,{surfaceTree:tree,restSurfaceBounds:restBounds,surfaceTreeNeedsRefit:true,useRestSurfaceBounds:true});
   const mesh=new THREE.Mesh(g),a=new THREE.Vector3(.03,0,0),b=new THREE.Vector3(-.03,0,0),profile={rayQueries:0,rayMs:0,builds:0,buildMs:0,preparedTrees:0,adoptMs:0,refits:0,refitMs:0,restBoundsCopies:0};
   try{const hit=firstParentHit([mesh],a,b,profile);assert(hit);assert(Math.abs(hit.x-.02)<1e-7);assert.equal(profile.restBoundsCopies,1);assert.equal(profile.builds,0);assert.equal(profile.refits,0);assert.equal(g.attributes.position.version,0);}finally{g.dispose();mesh.material.dispose();}
+});
+
+ test('packed transport preserves subarray offsets, all node bounds and exact partition order',()=>{
+  const g=new THREE.TorusKnotGeometry(.02,.006,180,24),tree=buildSurfaceTree(g.attributes.position.array,g.index.array);
+  try{
+    const packed=packSurfaceTree(tree);assert.equal(Object.hasOwn(packed,'root'),false);assert.equal(packed.nodes.length,tree.boundsStore.length/6*4);
+    const restored=unpackSurfaceTree(structuredClone(packed));
+    const check=(a,b)=>{assert.deepEqual(a.bounds,b.bounds);assert.equal(!!a.triangles,!!b.triangles);if(a.triangles)assert.deepEqual(a.triangles,b.triangles);else{check(a.left,b.left);check(a.right,b.right);}};check(tree.root,restored.root);
+    assert.deepEqual(surfaceTreeBounds(restored,g.attributes.position.array,g.index.array),tree.boundsStore);
+  }finally{g.dispose();}
 });

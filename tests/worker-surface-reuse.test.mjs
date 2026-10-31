@@ -18,6 +18,7 @@ test('real tissue worker reuses only unchanged exposed surfaces and transfers fr
     for(const c of mapped){assert(c.restContactBounds.length>0);assert.deepEqual(c.restContactBounds,surfaceTreeBounds(c.contactTree,c.positions,c.indices));}
     const segments=[];for(let z=-.018;z<=.018;z+=.003)segments.push({a:[-.018,.004,z],b:[.018,.004,z]});
     const separated=await send({type:'cut',cuts:[{...segments[0],segments,radius:.0025}]});assert(separated.fragments.length>0,'a real complete section must produce a specimen');
+    assert(separated.exclusions.field instanceof Float32Array);const expectedField=new Float32Array(field.length);for(let i=0;i<separated.exclusions.nodeIndices.length;i++)expectedField[separated.exclusions.nodeIndices[i]]=separated.exclusions.positiveValues[i];assert.deepEqual(separated.exclusions.field,expectedField,'transferred dense ownership exactly matches all sparse overrides');
     for(const f of separated.fragments){assert.equal(f.filmSpatialIndex.positions,f.positions);assert.equal(f.filmSpatialIndex.vertices.length,f.positions.length/3);assert.equal(new Set(f.filmSpatialIndex.vertices).size,f.positions.length/3,'every specimen vertex transfers in its material-space blood index');}
   }finally{await thread.terminate();}
 });

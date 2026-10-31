@@ -1,6 +1,6 @@
 import {prepareWoundSurface,selectWoundSurface} from './wound-surface.js';
 import {refineIncisionSurface} from './incision-surface.js';
-import {buildSurfaceTree,surfaceTreeBounds} from './surface-tree.js';
+import {buildSurfaceTree,surfaceTreeBounds,packSurfaceTree} from './surface-tree.js';
 import {prepareFilmIndex} from './film-support-index.js';
 import {lesionNodes,lesionStatistics} from './lesion-volume.js';
 // Anatomy is sampled in metres. The field is negative inside the source organ.
@@ -60,13 +60,19 @@ export function normalizeDeformation(input) {
 }
 
 export function deformationWeight(point, deformation) {
-  if (!deformation) return { weight: 0, gradient: [0, 0, 0] };
+  return deformationWeightInto(point,deformation,{weight:0,gradient:[0,0,0]});
+}
+
+/** Same material map, with caller-owned output for dense recoil/freeze loops. */
+export function deformationWeightInto(point,deformation,out){
+  const gradient=out.gradient;out.weight=0;gradient[0]=gradient[1]=gradient[2]=0;
+  if (!deformation) return out;
   if(deformation.model==='local-flow'){
     const count=deformation.steps,delta=deformation.displacement,local=deformation.local;
     const px=point[0]-local[0],py=point[1]-local[1],pz=point[2]-local[2],dx=delta[0],dy=delta[1],dz=delta[2];
     const lengthSquared=dx*dx+dy*dy+dz*dz,along=clamp((px*dx+py*dy+pz*dz)/lengthSquared,0,1);
     const ex=px-dx*along,ey=py-dy*along,ez=pz-dz*along;
-    if(ex*ex+ey*ey+ez*ez>=deformation.radius*deformation.radius)return {weight:0,gradient:[0,0,0]};
+    if(ex*ex+ey*ey+ez*ez>=deformation.radius*deformation.radius)return out;
     let weight=0,gx=0,gy=0,gz=0;
     for(let i=0;i<count;i++){
       const start=i*deformation.stepFraction,fraction=Math.min(deformation.stepFraction,1-start);
@@ -80,14 +86,14 @@ export function deformationWeight(point, deformation) {
       gx=gx*gain+ax*fraction;gy=gy*gain+ay*fraction;gz=gz*gain+az*fraction;
       weight+=stepWeight*fraction;
     }
-    return {weight,gradient:[gx,gy,gz]};
+    out.weight=weight;gradient[0]=gx;gradient[1]=gy;gradient[2]=gz;return out;
   }
   const offset = point.map((v, axis) => v - deformation.local[axis]);
   const distance = Math.hypot(...offset), r = distance / deformation.radius;
-  if (r >= 1) return { weight: 0, gradient: [0, 0, 0] };
+  if (r >= 1) return out;
   const t = 1 - r;
   const derivativeOverDistance = -20 * t * t * t / (deformation.radius * deformation.radius);
-  return { weight: t ** 4 * (4 * r + 1), gradient: offset.map(v => v * derivativeOverDistance) };
+  out.weight=t ** 4 * (4 * r + 1);for(let i=0;i<3;i++)gradient[i]=offset[i]*derivativeOverDistance;return out;
 }
 
 export function deformPoint(point, deformation) {
@@ -123,15 +129,18 @@ function materialSampler(state,deformation){
 export function prepareChunkDisplay(mesh,deformation,sampler=null){
   const d=normalizeDeformation(deformation);if(!d)return null;
   const positions=new Float32Array(mesh.positions.length),normals=new Float32Array(mesh.normals.length),min=[Infinity,Infinity,Infinity],max=[-Infinity,-Infinity,-Infinity];
+  const capacity=d.model==='local-flow'?d.radius+Math.max(Math.hypot(...d.displacement)*1.1,LOCAL_TRACTION.radius*LOCAL_TRACTION.slipStrain):0,localIndices=[],localActive=[];
   let activeCount=0,maximumWeight=0;
   for(let i=0;i<positions.length;i+=3){
     const rest=Array.from(mesh.positions.subarray(i,i+3)),mapping=sampler?sampler(rest):deformationWeight(rest,d),original=Array.from(mesh.normals.subarray(i,i+3)),n=mapping.weight>0?deformNormal(original,mapping.gradient,d.displacement):original;
     activeCount+=mapping.weight>0?1:0;maximumWeight=Math.max(maximumWeight,mapping.weight);
+    if(capacity&&(rest[0]-d.local[0])**2+(rest[1]-d.local[1])**2+(rest[2]-d.local[2])**2<capacity*capacity){localIndices.push(i);localActive.push(mapping.weight>0?1:0);}
     for(let a=0;a<3;a++){positions[i+a]=rest[a]+d.displacement[a]*mapping.weight;normals[i+a]=n[a];min[a]=Math.min(min[a],rest[a]);max[a]=Math.max(max[a],rest[a]);}
   }
   const center=min.map((v,i)=>(v+max[i])*.5);let radiusSq=0;
   for(let i=0;i<mesh.positions.length;i+=3)radiusSq=Math.max(radiusSq,(mesh.positions[i]-center[0])**2+(mesh.positions[i+1]-center[1])**2+(mesh.positions[i+2]-center[2])**2);
-  return {signature:JSON.stringify(d),positions,normals,min,max,center,radius:Math.sqrt(radiusSq),activeCount,extent:Math.hypot(...d.displacement)*maximumWeight};
+  const localCache=capacity?{signature:['local-flow',...d.local,d.radius,d.coreRadius].join(','),capacity,indices:new Uint32Array(localIndices),active:new Uint8Array(localActive),activeCount}:null;
+  return {signature:JSON.stringify(d),positions,normals,min,max,center,radius:Math.sqrt(radiusSq),activeCount,extent:Math.hypot(...d.displacement)*maximumWeight,localCache};
 }
 
 /** Freeze the complete specimen in the worker before its atomic handoff.
@@ -140,13 +149,16 @@ export function prepareChunkDisplay(mesh,deformation,sampler=null){
 export function prepareFragmentDisplay(descriptor) {
   const deformation=normalizeDeformation(descriptor.deformation),center=deformPoint(descriptor.center,deformation);
   const positions=new Float32Array(descriptor.positions.length),normals=new Float32Array(descriptor.normals.length);
-  const min=[Infinity,Infinity,Infinity],max=[-Infinity,-Infinity,-Infinity];
+  const min=[Infinity,Infinity,Infinity],max=[-Infinity,-Infinity,-Infinity],restMin=[Infinity,Infinity,Infinity],restMax=[-Infinity,-Infinity,-Infinity];
+  const rest=[0,0,0],normal=[0,0,0],mapping={weight:0,gradient:[0,0,0]};
   for(let i=0;i<positions.length;i+=3){
-    const rest=[...descriptor.positions.subarray(i,i+3)],p=deformPoint(rest,deformation);
-    const n=deformation?deformNormal([...descriptor.normals.subarray(i,i+3)],deformationWeight(rest,deformation).gradient,deformation.displacement):descriptor.normals.subarray(i,i+3);
+    for(let axis=0;axis<3;axis++){rest[axis]=descriptor.positions[i+axis];normal[axis]=descriptor.normals[i+axis];}
+    deformationWeightInto(rest,deformation,mapping);
+    const n=deformation?deformNormal(normal,mapping.gradient,deformation.displacement):normal;
     for(let axis=0;axis<3;axis++){
-      positions[i+axis]=p[axis]-center[axis];normals[i+axis]=n[axis];
+      positions[i+axis]=(deformation?rest[axis]+deformation.displacement[axis]*mapping.weight:rest[axis])-center[axis];normals[i+axis]=n[axis];
       min[axis]=Math.min(min[axis],positions[i+axis]);max[axis]=Math.max(max[axis],positions[i+axis]);
+      restMin[axis]=Math.min(restMin[axis],rest[axis]);restMax[axis]=Math.max(restMax[axis],rest[axis]);
     }
   }
   const sphereCenter=min.map((v,i)=>(v+max[i])*.5);let radiusSq=0;
@@ -157,7 +169,7 @@ export function prepareFragmentDisplay(descriptor) {
     for(let i=0;i<positions.length;i+=3){const dot=positions[i]*x+positions[i+1]*y+positions[i+2]*z;if(dot>best){best=dot;index=i;}}
     support.set(positions.subarray(index,index+3),offset);offset+=3;
   }
-  return {signature:JSON.stringify(deformation),center,positions,normals,min,max,sphereCenter,radius:Math.sqrt(radiusSq),support,contactTree:buildSurfaceTree(positions,descriptor.indices)};
+  return {signature:JSON.stringify(deformation),center,positions,normals,min,max,restMin,restMax,sphereCenter,radius:Math.sqrt(radiusSq),support,contactTree:buildSurfaceTree(positions,descriptor.indices)};
 }
 
 export function inverseDeformPoint(point, deformation) {
@@ -703,11 +715,20 @@ export function buildChunks(state, keys,{force=false}={}) {
   }
   return chunks;
 }
+
+// Positive detached-node overrides, prepared beside the authoritative field.
+// A single transferable lookup avoids a large Map insertion at atomic split.
+export function updateExclusionField(exclusions,length,previous=null){
+  if(!previous&&!exclusions.nodeIndices.length)return null;
+  const field=previous??new Float32Array(length);
+  for(let i=0;i<exclusions.nodeIndices.length;i++)field[exclusions.nodeIndices[i]]=exclusions.positiveValues[i];
+  return field;
+}
 function statistics(state) { return { pathology:lesionStatistics(state),removedVolumeMm3: state.removedVolumeMm3, totalVolumeMm3: state.totalVolumeMm3, voxelMm: Math.max(...state.meta.spacing) * 1000, cutCount: state.cuts.length,
   fragmentCount: state.fragmentRecords.length, fragmentVolumeMm3: state.fragmentVolumeMm3, topology: { ...state.topologyMetrics } }; }
 
 if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScope) {
-  let state;const woundChunks=new Map(),woundFragments=new Map();
+  let state,exclusionField=null;const woundChunks=new Map(),woundFragments=new Map();
   self.onmessage = ({ data }) => {
     const started=performance.now();let phaseAt=started;const work={};const phase=name=>{const at=performance.now();work[name]=at-phaseAt;phaseAt=at;};
     try {
@@ -760,12 +781,14 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
       phase('filmIndexMs');
       const transfer = chunks.flatMap(chunk => [chunk.positions.buffer, chunk.normals.buffer, chunk.colors.buffer, chunk.cutMasks.buffer, chunk.indices.buffer]);
       for(const chunk of chunks)if(chunk.display)transfer.push(chunk.display.positions.buffer,chunk.display.normals.buffer);
+      for(const chunk of chunks)if(chunk.display?.localCache)transfer.push(chunk.display.localCache.indices.buffer,chunk.display.localCache.active.buffer);
       for(const chunk of chunks)if(chunk.restContactBounds)transfer.push(chunk.restContactBounds.buffer);
       for(const surface of [...chunks,...fragments])if(surface.filmSpatialIndex)transfer.push(surface.filmSpatialIndex.offsets.buffer,surface.filmSpatialIndex.vertices.buffer);
       for (const fragment of fragments)transfer.push(fragment.positions.buffer, fragment.normals.buffer, fragment.colors.buffer, fragment.cutMasks.buffer, fragment.indices.buffer, fragment.volume.values.buffer,fragment.display.positions.buffer,fragment.display.normals.buffer,fragment.display.support.buffer);
-      for(const owner of [...chunks,...fragments.map(f=>f.display)])if(owner.contactTree)transfer.push(owner.contactTree.boundsStore.buffer,owner.contactTree.triangles.buffer);
+      for(const owner of [...chunks,...fragments.map(f=>f.display)])if(owner.contactTree){owner.contactTree=packSurfaceTree(owner.contactTree);transfer.push(owner.contactTree.boundsStore.buffer,owner.contactTree.triangles.buffer,owner.contactTree.nodes.buffer);}
       if(woundSelection)transfer.push(woundSelection.edges.buffer);
       transfer.push(exclusions.nodeIndices.buffer, exclusions.positiveValues.buffer);
+      if(data.type!=='cut'||exclusions.nodeIndices.length){exclusionField=updateExclusionField(exclusions,state.field.length,data.type==='cut'?exclusionField:null);exclusions.field=exclusionField?.slice()??null;if(exclusions.field)transfer.push(exclusions.field.buffer);}
       work.totalMs=performance.now()-started;
       self.postMessage({ id: data.id, epoch: data.epoch, type: data.type, chunks,woundSelection,reuseWoundSelection,work, statistics: statistics(state), changedSamples, removedMm3, fragments,
         exclusions: { reset: data.type !== 'cut', ...exclusions }, separations: state.separations.map(event => ({ ...event })) }, transfer);

@@ -23,6 +23,7 @@ test('worker-prepared specimens preserve every frozen vertex, normal, material a
       const actual=b.fragments.add(transferred);
       assert.equal(actual.mesh.geometry.userData.filmSpatialIndex,transferred.filmSpatialIndex,'specimen blood adopts the transferred index without rebuilding it');
       assert.equal(transferred.filmSpatialIndex.positions,actual.mesh.geometry.attributes.tissueRestPosition.array,'blood bins refer to the exact original material vertices');
+      assert.deepEqual(actual.mesh.geometry.userData.restBox,new THREE.Box3().setFromBufferAttribute(actual.mesh.geometry.attributes.tissueRestPosition),'blood adopts exact undeformed bounds instead of scanning the new specimen on first draw');
       assert.equal(actual.mesh.geometry.attributes.position.array,transferred.display.positions,'foreground uses the transferred full vertex buffer');
       for(const key of Object.keys(expected.mesh.geometry.attributes))assert.deepEqual(actual.mesh.geometry.attributes[key].array,expected.mesh.geometry.attributes[key].array,key);
       assert.deepEqual(actual.mesh.geometry.index.array,expected.mesh.geometry.index.array);

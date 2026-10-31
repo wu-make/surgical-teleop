@@ -24,6 +24,16 @@ const encode=(data,n,i,owner=0)=>{
   data[k+8]=n.clot??0;data[k+9]=owner;data[k+10]=0;data[k+11]=0;
 };
 
+function uploadChangedFields(fields){
+  const data=fields.texture.image.data,bits=fields.bitView??=new Uint32Array(data.buffer,data.byteOffset,data.length),count=fields.count.value*12,previous=fields.uploaded;
+  let changed=!previous;
+  if(previous)for(let i=0;i<count;i++)if(bits[i]!==previous[i]){changed=true;break;}
+  if(changed){
+    if(previous)previous.set(bits);else fields.uploaded=new Uint32Array(bits);
+    fields.texture.needsUpdate=true;
+  }
+}
+
 function material(gpu,fields,woundOnly=false){
   const m=new THREE.MeshPhysicalMaterial({color:'#610e18',roughness:.26,metalness:0,ior:1.36,clearcoat:.85,clearcoatRoughness:.16,
     transparent:true,depthWrite:false,side:THREE.DoubleSide,forceSinglePass:true,polygonOffset:true,polygonOffsetFactor:-1,polygonOffsetUnits:-1});
@@ -194,7 +204,7 @@ export class BloodSurfaceFilm {
       b.max.x=Math.max(b.max.x,p[0]+r);b.max.y=Math.max(b.max.y,p[1]+r);b.max.z=Math.max(b.max.z,p[2]+r);
       const entry=this.kernelEntries[i]??= {};entry.node=n;entry.r2=r*r;o.list.push(entry);encode(data,n,i,o.index);
     }
-    this.fields.count.value=nodes.length;this.fields.texture.needsUpdate=true;
+    this.fields.count.value=nodes.length;uploadChangedFields(this.fields);
     const active=new Set();let total=0;
     const visit=(mesh,id,piece)=>{
       const owner=owners.get(id);if(!owner)return;const g=mesh.geometry;
@@ -223,7 +233,7 @@ export class BloodSurfaceFilm {
       // Conservative chunk support rejects only kernels whose entire sphere
       // misses the source bounds. All surviving normal/distance decisions are
       // made by the same GPU kernel on every original vertex.
-      candidates.forEach((e,i)=>encode(layer.fields.texture.image.data,e.node,i));layer.fields.count.value=candidates.length;layer.fields.texture.needsUpdate=true;
+      candidates.forEach((e,i)=>encode(layer.fields.texture.image.data,e.node,i));layer.fields.count.value=candidates.length;uploadChangedFields(layer.fields);
       layer.overlay.geometry.userData.filmReferenceVersion=(g.attributes.tissueRestPosition??g.attributes.position).version+':'+(g.userData.materialNormals||g.userData.restNormals?'fixed':g.attributes.normal.version);
       const support=filmSupport(layer.overlay.geometry,layer.fields,layer.support);
       if(support!==layer.support){const index=layer.overlay.geometry.index;index.array.set(support.index.array);index.clearUpdateRanges();if(support.index.count)index.addUpdateRange(0,support.index.count);index.needsUpdate=true;layer.overlay.geometry.setDrawRange(0,support.index.count);layer.support=support;}

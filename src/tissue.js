@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { validateCut, normalizeMetadata, distanceToCut, cutBounds, nodeIndex, normalizeDeformation, deformationWeight, deformationMinimumScale, LOCAL_TRACTION, deformPoint, inverseDeformPoint } from './tissue-worker.js';
+import { validateCut, normalizeMetadata, distanceToCut, cutBounds, nodeIndex, normalizeDeformation, deformationWeight, deformationWeightInto, deformationMinimumScale, LOCAL_TRACTION, deformPoint, inverseDeformPoint } from './tissue-worker.js';
 import { createTissueMaterial } from './tissue-material.js';
 import { TissueFragments } from './tissue-fragments.js';
 import { BloodFlow } from './blood-flow.js';
@@ -53,6 +53,7 @@ export class TissueVolume {
     this.blood=new BloodFlow(this,{gpuSurface:gpuBlood,spread:bloodSpread});
     this._separations = [];
     this._excludedValues = new Map();
+    this._excludedField = null;
     this._restoringFragmentPoses = null;
     this._contactQueryCache=new Map();
     this._contactHistoryScale=1;this._contactHasDeformedCuts=false;
@@ -71,7 +72,10 @@ export class TissueVolume {
     this.metadata = normalizeMetadata(metadata);
     this._baseField = new Float32Array(buffer.slice(0));
     this.worker = new Worker(new URL('./tissue-worker.js', import.meta.url), { type: 'module' });
-    this.worker.onmessage = ({ data }) => this._receive(data);
+    this.worker.onmessage = event => {
+      const messageAt=performance.now(),data=event.data,decodedAt=performance.now();
+      this._receive(data,{messageAt,decodeMs:decodedAt-messageAt});
+    };
     this.worker.onerror = event => this._fail(new Error(event.message || 'Tissue geometry worker failed'));
     await this._enqueue({ type: 'init', metadata, buffer, transfer: [buffer] });
     this.ready = true;
@@ -267,7 +271,7 @@ export class TissueVolume {
     for (let z = 0; z <= 1; z++) for (let y = 0; y <= 1; y++) for (let x = 0; x <= 1; x++) {
       const weight = (x ? fx : 1 - fx) * (y ? fy : 1 - fy) * (z ? fz : 1 - fz);
       const index = nodeIndex(meta, lx + x, ly + y, lz + z);
-      distance += weight * (this._excludedValues.get(index) ?? this._baseField[index]);
+      distance += weight * (this._excludedField?(this._excludedField[index]||this._baseField[index]):(this._excludedValues.get(index) ?? this._baseField[index]));
     }
     this._ensureCutIndex();
     this._queryStats.queries++;
@@ -386,8 +390,10 @@ export class TissueVolume {
     }
     let active=0,maximumWeight=0,first=Infinity,last=-Infinity;
     const [dx,dy,dz]=d.displacement;
+    const mapping=this._localMappingScratch??={weight:0,gradient:[0,0,0]},point=this._localPointScratch??=[0,0,0];
     for(let j=0;j<cache.indices.length;j++){
-      const i=cache.indices[j],{weight,gradient:g}=deformationWeight([rest[i],rest[i+1],rest[i+2]],d);
+      const i=cache.indices[j];point[0]=rest[i];point[1]=rest[i+1];point[2]=rest[i+2];
+      const {weight,gradient:g}=deformationWeightInto(point,d,mapping);
       if(!weight&&!cache.active[j])continue;
       cache.active[j]=weight>0?1:0;active+=cache.active[j];maximumWeight=Math.max(maximumWeight,weight);
       first=Math.min(first,i);last=Math.max(last,i);
@@ -522,7 +528,7 @@ export class TissueVolume {
     this.worker.postMessage(message, transfer ?? []);
   }
 
-  _receive(data) {
+  _receive(data,delivery={}) {
     const receiveStart=performance.now();
     const active = this._inFlight;
     if (!active || data.id !== active.command.id) return;
@@ -534,8 +540,9 @@ export class TissueVolume {
       active.callbacks.forEach(command => command.resolve({ changed: false, cancelled: true }));
     } else {
       const exclusionsStart=performance.now();
-      if (data.exclusions?.reset) this._excludedValues.clear();
-      if (data.exclusions) for (let i = 0; i < data.exclusions.nodeIndices.length; i++) {
+      if (data.exclusions?.reset) {this._excludedValues.clear();this._excludedField=null;}
+      if(data.exclusions&&Object.hasOwn(data.exclusions,'field')){this._excludedField=data.exclusions.field;this._excludedValues.clear();}
+      else if (data.exclusions) for (let i = 0; i < data.exclusions.nodeIndices.length; i++) {
         this._excludedValues.set(data.exclusions.nodeIndices[i], data.exclusions.positiveValues[i]);
       }
       if (data.type === 'init' || data.type === 'restore') {this.fragments.clear();this.transitionTimings.length=0;}
@@ -553,7 +560,7 @@ export class TissueVolume {
       else if(data.type==='cut')this.blood.syncSurface({injury:data.removedMm3>1e-8,selection:woundSelection,deferRender:this.blood.surfaceFilm.gpu});
       else if(data.type==='init')this.blood.reset();
       const roundTripMs=Number.isFinite(active.command.sentAt)?receiveStart-active.command.sentAt:null,queueMs=Number.isFinite(active.command.queuedAt)?active.command.sentAt-active.command.queuedAt:null;
-      this.updateTimings={receivedAt:receiveStart,receiveMs:performance.now()-receiveStart,exclusionsMs:fragmentsStart-exclusionsStart,fragmentsMs:fragmentsEnd-fragmentsStart,chunksMs:woundStart-fragmentsEnd,woundMs:performance.now()-woundStart,chunks:data.chunks.length,fragments:data.fragments?.length??0,roundTripMs,queueMs,worker:data.work??null,reusedWoundSelection:!!data.reuseWoundSelection};
+      this.updateTimings={receivedAt:receiveStart,messageAt:delivery.messageAt??receiveStart,decodeMs:delivery.decodeMs??0,receiveMs:performance.now()-receiveStart,exclusionsMs:fragmentsStart-exclusionsStart,fragmentsMs:fragmentsEnd-fragmentsStart,chunksMs:woundStart-fragmentsEnd,woundMs:performance.now()-woundStart,chunks:data.chunks.length,fragments:data.fragments?.length??0,roundTripMs,queueMs,worker:data.work??null,reusedWoundSelection:!!data.reuseWoundSelection};
       const metrics=this.operationMetrics[data.type]??={responses:0,changedResponses:0,reusedSelections:0,roundTripTotalMs:0,roundTripMaxMs:0,workerTotalMs:0,workerMaxMs:0,applyMaxMs:0};metrics.responses++;metrics.changedResponses+=data.chunks.length>0?1:0;metrics.reusedSelections+=data.reuseWoundSelection?1:0;metrics.roundTripTotalMs+=roundTripMs??0;metrics.roundTripMaxMs=Math.max(metrics.roundTripMaxMs,roundTripMs??0);metrics.workerTotalMs+=data.work?.totalMs??0;metrics.workerMaxMs=Math.max(metrics.workerMaxMs,data.work?.totalMs??0);metrics.applyMaxMs=Math.max(metrics.applyMaxMs,this.updateTimings.receiveMs);
       if(data.fragments?.length){this.transitionTimings.push({...this.updateTimings});if(this.transitionTimings.length>8)this.transitionTimings.shift();}
       const result = { changed: !!data.changedSamples || data.type !== 'cut', removedMm3: data.removedMm3, removedVolumeMm3: this.removedVolumeMm3, totalVolumeMm3: this.totalVolumeMm3,
@@ -605,7 +612,7 @@ export class TissueVolume {
     // History replay also brings back cut surfaces. Keep those exact source
     // draws on undo/redo; a pristine reset can safely rejoin the static batch.
     mesh.userData.dynamicSurface=dynamic;
-    if(prepared){geometry.boundingSphere.radius+=prepared.extent;geometry.boundingBox.expandByScalar(prepared.extent);geometry.userData.deformed=prepared.activeCount>0;geometry.userData.deformationCache={activeCount:prepared.activeCount};this._affectedVertices+=prepared.activeCount;}
+    if(prepared){geometry.boundingSphere.radius+=prepared.extent;geometry.boundingBox.expandByScalar(prepared.extent);geometry.userData.deformed=prepared.activeCount>0;geometry.userData.deformationCache=prepared.localCache??{activeCount:prepared.activeCount};this._affectedVertices+=prepared.activeCount;}
     else this._affectedVertices += this._applyDeformation(mesh);
     if(!previous)this.group.add(mesh);this._meshes.set(chunk.key, mesh);this.blood._surfaceCache.delete(mesh.uuid);
   }
@@ -624,7 +631,7 @@ export class TissueVolume {
     for (const mesh of this._meshes.values()) mesh.geometry.dispose();
     this.blood.dispose();this.fragments.clear(); this._excludedValues.clear();
     this._meshes.clear();this._bloodBroadPhase.clear(); this.group.clear(); this.material.dispose();
-    this._baseField = null;
+    this._baseField = null;this._excludedField=null;
   }
 }
 

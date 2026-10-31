@@ -47,3 +47,11 @@ test('material vertex and normal edits invalidate the spatial index even with an
   g.attributes.filmRestNormal.array.fill(0);g.attributes.filmRestNormal.needsUpdate=true;
   support=filmSupport(g,fields,support);assert.equal(support.index.count,0,'a changed facing direction must not retain a ghost overlay');g.dispose();
 });
+
+test('later blood support changes never overwrite earlier source-ordered support snapshots',()=>{
+  const g=new THREE.PlaneGeometry(.08,.04,100,60);g.setAttribute('filmReference',g.attributes.position);g.setAttribute('filmRestNormal',g.attributes.normal);g.userData.fullFilmIndex=g.index;
+  const fields={count:{value:1},texture:{image:{data:new Float32Array([-.03,0,0,.00001,0,0,1,1,0,0,0,0])}}};
+  const original=g.index.array.slice(),first=filmSupport(g,fields),snapshot=first.index.array.slice();
+  fields.texture.image.data[0]=.03;const second=filmSupport(g,fields,first);
+  assert.notDeepEqual(second.index.array,snapshot);assert.deepEqual(first.index.array,snapshot);assert.deepEqual(g.index.array,original);g.dispose();
+});

@@ -73,7 +73,9 @@ test('worker-prepared raised chunk preserves exact Float32 positions, normals an
     assert.deepEqual(actual.boundingSphere,expected.boundingSphere);assert.deepEqual(actual.boundingBox,expected.boundingBox);
     assert.equal(actual.attributes.position.array,prepared.positions,'adopt the transferred complete array without another copy');
     assert.notEqual(actual.attributes.position.array,actual.attributes.tissueRestPosition.array);
-    tissue.setGrasp({...d,displacement:[.002,-.001,.022]});assert.deepEqual(actual.attributes.position.array,expected.attributes.position.array,'future traction still maps both chunks identically');
+    const builds=tissue.deformationMetrics.cacheBuilds;assert(prepared.localCache.indices.length>0);
+    for(const displacement of [[.002,-.001,.022],[0,0,.001],[0,0,.020]]){tissue.setGrasp({...d,displacement});assert.deepEqual(actual.attributes.position.array,expected.attributes.position.array,'future traction still maps both chunks identically');assert.deepEqual(actual.attributes.normal.array,expected.attributes.normal.array);}
+    assert.equal(tissue.deformationMetrics.cacheBuilds,builds,'first recoil reuses the exact worker-prepared material domain');
   }finally{tissue.dispose();}
 });
 

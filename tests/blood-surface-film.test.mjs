@@ -128,6 +128,17 @@ test('browser GPU blood retains exact source geometry, conservative chunk suppor
   }finally{cpu.dispose();gpu.dispose();}
 });
 
+test('unchanged blood packets reuse GPU storage while real volume, clot and material motion still update it',()=>{
+  const t=new TissueVolume({gpuBlood:true});try{
+    const mesh=plane(t),b=t.blood;b.nodes=[source(0)];b.updatePositions();b.render();
+    const layer=b.surfaceFilm.overlays.get(mesh),texture=layer.fields.texture,bytes=layer.fields.texture.image.data.slice(),initial=texture.version;
+    for(let i=0;i<50;i++)b.render();assert.equal(texture.version,initial,'identical Float32 packets must not schedule texture uploads');assert.deepEqual(layer.fields.texture.image.data,bytes);
+    b.nodes[0].volume+=.02;b.render();assert(texture.version>initial);const changed=texture.version;
+    b.nodes[0].clot=.4;b.render();assert(texture.version>changed);const clotted=texture.version;
+    b.nodes[0].reference[0]+=.001;b.render();assert(texture.version>clotted);assert.equal(b.surfaceFilm.overlays.get(mesh),layer);
+  }finally{t.dispose();}
+});
+
 test('wetting liquid transfers to the real disconnected component and follows its rigid pose and contacts',()=>{
   const t=new TissueVolume();let original;
   try{

@@ -35,6 +35,7 @@ export function buildSurfaceTree(positions,indices){
 /** Alternate exact bounds on the same triangle partition. Preparing recoil
  * bounds in the geometry worker avoids a first-droplet refit on the UI thread. */
 export function surfaceTreeBounds(tree,positions,indices){
+  tree=unpackSurfaceTree(tree);
   const result=new Float64Array(tree.boundsStore.length),base=tree.boundsStore.byteOffset;
   const visit=node=>{
     const offset=(node.bounds.byteOffset-base)/8,b=result.subarray(offset,offset+6);b.set([Infinity,Infinity,Infinity,-Infinity,-Infinity,-Infinity]);
@@ -43,4 +44,30 @@ export function surfaceTreeBounds(tree,positions,indices){
     return b;
   };
   visit(tree.root);return result;
+}
+
+// Structured cloning thousands of node objects and typed-array views can
+// stall message delivery even though their backing stores are transferred.
+// Send the same partition as four integers per node, then adopt it only when
+// that surface is first queried. Bounds and triangle order remain byte-exact.
+export function packSurfaceTree(tree){
+  const nodes=new Uint32Array(tree.boundsStore.length/6*4),base=tree.boundsStore.byteOffset;
+  const visit=node=>{
+    const id=(node.bounds.byteOffset-base)/48,offset=id*4;
+    if(node.triangles){nodes[offset]=nodes[offset+1]=0xffffffff;nodes[offset+2]=(node.triangles.byteOffset-tree.triangles.byteOffset)/4;nodes[offset+3]=node.triangles.length;}
+    else{nodes[offset]=visit(node.left);nodes[offset+1]=visit(node.right);}
+    return id;
+  };
+  return{packed:true,rootId:visit(tree.root),nodes,boundsStore:tree.boundsStore,triangles:tree.triangles};
+}
+
+export function unpackSurfaceTree(tree){
+  if(!tree.packed)return tree;
+  const {nodes,boundsStore,triangles}=tree;
+  const visit=id=>{
+    const offset=id*4,bounds=boundsStore.subarray(id*6,id*6+6);
+    if(nodes[offset]===0xffffffff)return{bounds,triangles:triangles.subarray(nodes[offset+2],nodes[offset+2]+nodes[offset+3])};
+    return{bounds,left:visit(nodes[offset]),right:visit(nodes[offset+1])};
+  };
+  return{root:visit(tree.rootId),boundsStore,triangles};
 }

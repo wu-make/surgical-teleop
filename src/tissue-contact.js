@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import {buildSurfaceTree} from './surface-tree.js';
+import {buildSurfaceTree,unpackSurfaceTree} from './surface-tree.js';
 
 const boxDistanceSquared=(p,b)=>Math.max(b[0]-p.x,0,p.x-b[3])**2+Math.max(b[1]-p.y,0,p.y-b[4])**2+Math.max(b[2]-p.z,0,p.z-b[5])**2;
 const boxesDistanceSquared=(a,b)=>Math.max(b[0]-a[3],a[0]-b[3],0)**2+Math.max(b[1]-a[4],a[1]-b[4],0)**2+Math.max(b[2]-a[5],a[2]-b[5],0)**2;
@@ -42,7 +42,7 @@ class SurfaceIndex {
     const start=profile?performance.now():0;
     this.geometry=geometry;this.positions=geometry.attributes.position;this.indices=geometry.index.array;
     const prepared=geometry.userData.surfaceTree;
-    const tree=prepared??buildSurfaceTree(this.positions.array,this.indices);
+    const tree=prepared?unpackSurfaceTree(prepared):buildSurfaceTree(this.positions.array,this.indices);
     this.root=tree.root;
     this.boundsStore=tree.boundsStore;
     if(profile){if(prepared){profile.preparedTrees++;profile.adoptMs+=performance.now()-start;}else{profile.builds++;profile.buildMs+=performance.now()-start;}}
