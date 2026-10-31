@@ -20,8 +20,9 @@ test('original live tissue variants compile during loading and restore the initi
 test('loading exercises the complete original tissue buffers in both cameras without exposing a duplicate in the ready frame',async()=>{
   const {warmSceneDisplay}=await import('../src/render-preparation.js'),f=fixture(),original=new THREE.Mesh(new THREE.BoxGeometry(),new THREE.MeshPhysicalMaterial());original.layers.mask=0;
   f.view.tissue={_meshes:new Map([['original',original]])};f.view.scene.traverse=fn=>fn(original);f.view.stage={clientWidth:949,clientHeight:612};f.view.endoCamera.layers={mask:2};f.view.overviewCamera.layers={mask:1};let draws=0;const buffer=original.geometry.attributes.position.array;
-  f.view.renderer.render=()=>{draws++;assert.equal(original.layers.mask,3);assert.equal(original.geometry.attributes.position.array,buffer);};f.view.scopeFeed.capture=(r,s,c)=>r.render(s,c);f.view.scopeFeed.blit=()=>{};
-  try{await warmSceneDisplay(f.view,{yieldFrame:f.yieldFrame});assert.equal(draws,2);assert.equal(original.layers.mask,0);}finally{original.geometry.dispose();original.material.dispose();}
+  const cameras=[];
+  f.view.renderer.render=(_s,c)=>{draws++;cameras.push(c);assert.equal(original.layers.mask,3);assert.equal(original.geometry.attributes.position.array,buffer);};f.view.scopeFeed.capture=(r,s,c)=>r.render(s,c);f.view.scopeFeed.blit=()=>{};
+  try{await warmSceneDisplay(f.view,{yieldFrame:f.yieldFrame});assert.equal(draws,4);assert.deepEqual(cameras,[f.view.endoCamera,f.view.overviewCamera,f.view.endoCamera,f.view.overviewCamera]);assert.equal(original.layers.mask,0);}finally{original.geometry.dispose();original.material.dispose();}
 });
 
 test('isolated wet fragments warm in front of both real cameras, then disappear and restore world transforms even on failure',async()=>{

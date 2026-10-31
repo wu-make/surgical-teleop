@@ -57,6 +57,18 @@ export async function warmSceneDisplay(view,options={}){
         object.layers.mask=0;object.frustumCulled=record.culled;yield;
       }
     }
+    if(originalRecord&&original.visible){
+      // Three renders shadows before refreshing the scene's light state.
+      // The real endoscope -> overview transition therefore uses a different
+      // depth-program cache key from repeated isolated overview draws. Prime
+      // that exact source-tissue transition before the first changed cut tile.
+      original.layers.mask=originalRecord.warmMask;original.frustumCulled=false;
+      inner.visible=true;scene.environmentIntensity=.34;r.toneMappingExposure=1.10;
+      view.scopeFeed.capture(r,scene,view.endoCamera,width,height);yield;
+      inner.visible=false;scene.environmentIntensity=.80;r.toneMappingExposure=1.0;
+      r.setRenderTarget(null);r.render(scene,view.overviewCamera);yield;
+      original.layers.mask=0;original.frustumCulled=originalRecord.culled;
+    }
     r.setRenderTarget(null);view.scopeFeed.blit(r,0,0,width,height);yield;
   }
   try{return await runCooperatively(draws(),{yieldFrame:yieldPreparationTask,...options});}
