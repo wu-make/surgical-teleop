@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import {TissueVolume} from '../src/tissue.js';
 import {prepareFragmentDisplay} from '../src/tissue-worker.js';
+import {prepareFilmIndex} from '../src/film-support-index.js';
 
 function descriptor(deformation){
   const g=new THREE.SphereGeometry(.009,24,18);g.translate(.004,-.002,.006);
@@ -17,9 +18,11 @@ test('worker-prepared specimens preserve every frozen vertex, normal, material a
   for(const deformation of [null,{local:[.002,0,.005],displacement:[.003,-.004,.008],radius:.03},{model:'local-flow',local:[.004,-.002,.006],displacement:[-.009,.003,.025]}]){
     const d=descriptor(deformation),a=new TissueVolume(),b=new TissueVolume();
     try{
-      const expected=a.fragments.add(d);d.display=prepareFragmentDisplay(d);
-      const transferred=structuredClone(d,{transfer:[d.display.positions.buffer,d.display.normals.buffer,d.display.support.buffer]});
+      const expected=a.fragments.add(d);d.display=prepareFragmentDisplay(d);d.filmSpatialIndex=prepareFilmIndex(d.positions);
+      const transferred=structuredClone(d,{transfer:[d.display.positions.buffer,d.display.normals.buffer,d.display.support.buffer,d.filmSpatialIndex.offsets.buffer,d.filmSpatialIndex.vertices.buffer]});
       const actual=b.fragments.add(transferred);
+      assert.equal(actual.mesh.geometry.userData.filmSpatialIndex,transferred.filmSpatialIndex,'specimen blood adopts the transferred index without rebuilding it');
+      assert.equal(transferred.filmSpatialIndex.positions,actual.mesh.geometry.attributes.tissueRestPosition.array,'blood bins refer to the exact original material vertices');
       assert.equal(actual.mesh.geometry.attributes.position.array,transferred.display.positions,'foreground uses the transferred full vertex buffer');
       for(const key of Object.keys(expected.mesh.geometry.attributes))assert.deepEqual(actual.mesh.geometry.attributes[key].array,expected.mesh.geometry.attributes[key].array,key);
       assert.deepEqual(actual.mesh.geometry.index.array,expected.mesh.geometry.index.array);

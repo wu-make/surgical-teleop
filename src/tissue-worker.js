@@ -753,12 +753,15 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
       const displayDeformation=state.cuts.at(-1)?.deformation,sampler=displayDeformation?materialSampler(state,displayDeformation):null;
       for(const chunk of chunks)if(chunk.positions.length){chunk.display=prepareChunkDisplay(chunk,displayDeformation,sampler);chunk.contactTree=buildSurfaceTree(chunk.display?.positions??chunk.positions,chunk.indices);if(chunk.display?.activeCount)chunk.restContactBounds=surfaceTreeBounds(chunk.contactTree,chunk.positions,chunk.indices);}
       phase('contactTreesMs');
-      for(const chunk of chunks)chunk.filmSpatialIndex=prepareFilmIndex(chunk.positions);
+      // Newly separated specimens need the same complete material-space bins
+      // as cut chunks. Transfer them before the first wet specimen draw so the
+      // UI does not rebuild a large vertex index during the grasp transition.
+      for(const surface of [...chunks,...fragments])surface.filmSpatialIndex=prepareFilmIndex(surface.positions);
       phase('filmIndexMs');
       const transfer = chunks.flatMap(chunk => [chunk.positions.buffer, chunk.normals.buffer, chunk.colors.buffer, chunk.cutMasks.buffer, chunk.indices.buffer]);
       for(const chunk of chunks)if(chunk.display)transfer.push(chunk.display.positions.buffer,chunk.display.normals.buffer);
       for(const chunk of chunks)if(chunk.restContactBounds)transfer.push(chunk.restContactBounds.buffer);
-      for(const chunk of chunks)if(chunk.filmSpatialIndex)transfer.push(chunk.filmSpatialIndex.offsets.buffer,chunk.filmSpatialIndex.vertices.buffer);
+      for(const surface of [...chunks,...fragments])if(surface.filmSpatialIndex)transfer.push(surface.filmSpatialIndex.offsets.buffer,surface.filmSpatialIndex.vertices.buffer);
       for (const fragment of fragments)transfer.push(fragment.positions.buffer, fragment.normals.buffer, fragment.colors.buffer, fragment.cutMasks.buffer, fragment.indices.buffer, fragment.volume.values.buffer,fragment.display.positions.buffer,fragment.display.normals.buffer,fragment.display.support.buffer);
       for(const owner of [...chunks,...fragments.map(f=>f.display)])if(owner.contactTree)transfer.push(owner.contactTree.boundsStore.buffer,owner.contactTree.triangles.buffer);
       if(woundSelection)transfer.push(woundSelection.edges.buffer);

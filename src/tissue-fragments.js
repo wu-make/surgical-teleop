@@ -63,6 +63,7 @@ export class TissueFragments {
     geometry.setAttribute('tissueCutMask', new THREE.BufferAttribute(descriptor.cutMasks, 1));
     geometry.userData.materialNormals=descriptor.normals;
     geometry.userData.woundSurface=descriptor.woundSurface;
+    geometry.userData.filmSpatialIndex=descriptor.filmSpatialIndex;
     geometry.userData.surfaceTree=prepared?.contactTree;
     geometry.setIndex(new THREE.BufferAttribute(descriptor.indices, 1));
     if(prepared){geometry.boundingBox=new THREE.Box3(vec(prepared.min),vec(prepared.max));geometry.boundingSphere=new THREE.Sphere(vec(prepared.sphereCenter),prepared.radius);}

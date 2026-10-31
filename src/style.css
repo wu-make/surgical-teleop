@@ -82,18 +82,18 @@
 @media (max-width:900px) and (max-height:520px){.stage{min-height:120px}.instrument-card{padding:5px}.collaboration-bar{padding:4px 0}.bottom-bar{margin-top:4px}}
 /* View tabs and model controls share one compact toolbar frame. */
 .view-left{display:flex;min-width:0;max-width:calc(100% - 104px)}
-.viewtabs{flex-wrap:wrap;align-items:center;gap:3px;min-width:0}
+.viewtabs{flex-wrap:nowrap;align-items:center;gap:3px;min-width:0}
 .viewtabs>button{flex-shrink:0;white-space:nowrap}
 .viewtools{flex-shrink:0}.viewtools button{white-space:nowrap}
-.case-picker{display:flex;align-items:center;gap:4px;min-width:0;margin-left:2px;padding-left:5px;border-left:1px solid #4d625355}
-.case-picker select{max-width:196px;min-width:0;width:auto;padding:7px 24px 7px 9px;border:0;border-radius:4px;background-color:#21372e;color:#e2eee5;font-size:11px;cursor:pointer}
+.case-picker{display:flex;flex:0 1 auto;align-items:center;gap:4px;min-width:0;margin-left:2px;padding-left:5px;border-left:1px solid #4d625355}
+.case-picker select{flex:1 1 auto;max-width:196px;min-width:70px;width:auto;padding:7px 24px 7px 9px;border:0;border-radius:4px;background-color:#21372e;color:#e2eee5;font-size:11px;cursor:pointer}
 .case-picker button{font-size:10px;padding:7px 8px;color:#c4ae7c;background:#27332a;border:1px solid #74674788}
 .case-picker button[aria-pressed=false]{color:#8c9c91;border-color:transparent;background:transparent}
 .case-picker button[data-engaged=true]{border-color:#d1b574;color:#ffe4ab}
 .case-info{padding:15px 22px;background:#202c26;border-bottom:1px solid var(--line)}
 .case-info strong{font-size:12px;color:#d8e6d9}.case-info p{font-size:11px;color:#a4b8a9;line-height:1.6;margin:7px 0}.case-info>span{font-size:10px;color:#d0bd93}
 h1>.case-title{font:inherit;color:inherit;background:none;border:0;padding:0;margin:0;letter-spacing:inherit}
-@media(max-width:700px){.case-picker{margin-left:0;padding-left:0;border-left:0;gap:3px}.case-picker select{max-width:158px;font-size:9px;padding:6px 19px 6px 6px}.case-picker button{font-size:8px;padding:6px 4px}.viewbar{align-items:flex-start}.mini-view{top:100px}.lens-label{top:100px}.case-info{padding:12px 18px}}
+@media(max-width:700px){.view-left{max-width:calc(100% - 78px)}.viewtabs>button{padding:6px;font-size:9px}.viewtabs span{display:none}.case-picker{margin-left:0;padding-left:0;border-left:0;gap:3px}.case-picker select{max-width:158px;font-size:9px;padding:6px 17px 6px 5px}.case-picker button{flex-shrink:0;width:22px;min-width:22px;font-size:0;padding:5px 3px}.case-picker button:before{content:'↝';font-size:14px;line-height:16px}#view-home{font-size:0;padding:7px}#view-home:before{content:'↺';font-size:16px;line-height:16px}.viewbar{align-items:flex-start}.mini-view{top:63px}.lens-label{top:63px}.case-info{padding:12px 18px}}
 /* Keep the left adnexal target clear of the overview in the normal window. */
 .stage:not([data-render-size])[data-model="uterus-adnexa"] .mini-view{left:18px;right:auto}
 @media(max-width:700px){.stage:not([data-render-size])[data-model="uterus-adnexa"] .mini-view{left:11px;right:auto}}
