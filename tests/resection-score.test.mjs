@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {resectionScore} from '../src/resection-score.js';
+import {resectionScore,targetShareLabel} from '../src/resection-score.js';
 
 test('completion credits only removed or truly detached target volume, not traction or cut count',()=>{
   assert.deepEqual(resectionScore({totalMm3:100,attachedMm3:100,detachedMm3:0,excisedMm3:0,cutCount:900}),{complete:false,percent:0,points:0});
@@ -8,6 +8,15 @@ test('completion credits only removed or truly detached target volume, not tract
   assert.deepEqual(resectionScore({totalMm3:100,attachedMm3:0,detachedMm3:97.5,excisedMm3:2.5}),{complete:true,percent:100,points:100});
   const tinyRemainder=resectionScore({totalMm3:100,attachedMm3:1e-10,detachedMm3:100-1e-10,excisedMm3:0});
   assert.equal(tinyRemainder.complete,false);assert.equal(tinyRemainder.percent,99.9);assert.equal(tinyRemainder.points,99);
+});
+
+test('small but nonzero remaining targets cannot be formatted as zero or partial specimens as fully removed',()=>{
+  assert.equal(targetShareLabel(13.5,12349.125),'0.1%');
+  assert.equal(targetShareLabel(.421875,4344.46875),'<0.1%');
+  assert.equal(targetShareLabel(4344.046875,4344.46875),'>99.9%');
+  assert.equal(targetShareLabel(0,100),'0%');assert.equal(targetShareLabel(100,100),'100%');
+  assert.equal(targetShareLabel(24.55,100),'24.6%');
+  for(const pair of [[NaN,100],[-1,100],[2,1],[1,0]])assert.equal(targetShareLabel(...pair),'—');
 });
 
 test('state-derived scores reverse on undo, redo, reset and scenario switch',()=>{

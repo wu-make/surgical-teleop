@@ -8,6 +8,16 @@ export async function verifyCompleteWorkflow(view,sim,interaction,pause,options)
   const {demo}=options,tissue=view.tissue,auditEvery=Number(new URLSearchParams(location.search).get('canvas-audit-every')??120),report={phases:[],frames:[],visibleAudits:[],stops:[],auditEvery,mode:null,complete:false};let clock=performance.now(),frameResolve=null,auditTask=null;
   const originalStop=demo.stop;demo.stop=function(message){if(this.active)report.stops.push({at:performance.now(),message,phase:this.phase,stack:new Error().stack});return originalStop.call(this,message);};
   const assert=(value,message)=>{if(!value)throw new Error(message);};
+  const verifyScoreHistory=new URLSearchParams(location.search).has('verify-score-history');
+  const scoreCheck=label=>{
+    if(!verifyScoreHistory)return;
+    const s=tissue.pathology,bar=Number(document.querySelector('#case-score-bar').getAttribute('value')),points=parseFloat(document.querySelector('#case-points').textContent),remaining=document.querySelector('#case-progress').textContent;
+    const actual=(s.detachedMm3+s.excisedMm3)/s.totalMm3*100;
+    assert(Math.abs(bar-actual)<.101&&points<=actual+1e-7&&actual-points<1.001,'score does not match actual target volume: '+label);
+    if(s.attachedMm3>0)assert(bar<100&&points<100&&!remaining.includes('病灶仍连接 0%'),'residual target was shown as complete: '+label);
+    else assert(bar===100&&points===100,'fully removed target did not reach full score: '+label);
+    (report.scoreChecks??=[]).push({label,pathology:{...s},percent:bar,points,remaining});
+  };
   const send=async(name,data,type='application/json')=>fetch('/__qa__/'+name,{method:'POST',headers:{'Content-Type':type},body:type==='application/json'?JSON.stringify(data):data});
   const state=()=>({model:tissue.caseDefinition?.id??'liver',pathology:tissue.pathology,cutCount:tissue._cuts.length,removed:tissue.removedVolumeMm3,fragments:tissue.fragmentMetrics,grasp:interaction.metrics.grasp,blood:tissue.blood.metrics,tools:structuredClone(sim.state.tools),scope:structuredClone(sim.state.scope)});
   const phase=async name=>{const current=state();if(!tissue.blood.spread)assert(!current.blood.spreading&&!current.blood.droplets&&!current.blood.surfacePools&&Math.abs(current.blood.balanceErrorMm3)<1e-4,'wound-confined blood policy failed');report.phases.push({name,at:performance.now(),state:current});await send('v38-workflow-progress.json',{...report,frames:report.frames.slice(-8)});};
@@ -26,7 +36,7 @@ export async function verifyCompleteWorkflow(view,sim,interaction,pause,options)
   };
   const capture=async name=>{sim.state.paused=true;view.update(sim.state,0);view.render();await send('v38-workflow-'+name+'.png',await new Promise(resolve=>view.canvas.toBlob(resolve,'image/png')),'image/png');};
   try{
-    await options.reset();sim.state.paused=true;await phase('reset');options.setExclusive(false);options.setFrameCallback(frame);sim.state.paused=false;
+    await options.reset();sim.state.paused=true;scoreCheck('initial');await phase('reset');options.setExclusive(false);options.setFrameCallback(frame);sim.state.paused=false;
     const first=performance.now(),before=report.frames.length;
     await Promise.race([(async()=>{for(let i=0;i<8;i++)await nativeFrame();})(),new Promise(resolve=>setTimeout(resolve,4000))]);
     const sample=report.frames.slice(before),span=sample.length>1?sample.at(-1).now-sample[0].now:Infinity;
@@ -47,9 +57,17 @@ export async function verifyCompleteWorkflow(view,sim,interaction,pause,options)
     tissue.blood.updatePositions();const rotation=piece.quaternion.clone().multiply(beforeRotation.clone().invert());let bloodError=0;owned.forEach((n,i)=>bloodError=Math.max(bloodError,n.display.distanceTo(bloodBefore[i].sub(beforePosition).applyQuaternion(rotation).add(piece.position))));report.bloodFollow={ownedCells:owned.length,maxPositionError:bloodError};assert(owned.length>0&&bloodError<1e-8,'blood did not follow the moved specimen');await phase('manual-move-and-blood-follow');
     const releasedFrom=piece.position.clone();await steps(48,['KeyV']);await steps(90);assert(!piece.held&&!interaction.grasp,'open grasper did not release specimen');assert(piece.position.distanceTo(releasedFrom)>.001,'released specimen did not fall');await phase('released-and-fallen');
     sim.state.paused=false;assert(demo.approachSpecimen(),'actual same-specimen approach failed');sim.state.paused=true;for(let i=0;demo.active&&i<300;i++){if(report.mode==='ordinary-raf'){sim.state.paused=false;await nativeFrame();}else await sharedStep([],true);}await steps(55,['KeyC']);assert(interaction.grasp?.fragmentId===id,'regrasp did not acquire the same real specimen');await phase('same-specimen-regrasped');
-    sim.state.paused=false;assert(await demo.approachBleedingAsync({yieldFrame:yieldPreparationTask}),'no collision-free pressure approach was found');sim.state.paused=true;for(let i=0;demo.active&&i<300;i++){if(report.mode==='ordinary-raf'){sim.state.paused=false;await nativeFrame();}else await sharedStep([],true);}sim.select('right');await steps(180,['KeyH']);assert(tissue.blood.metrics.lastPressureContacts>0&&tissue.blood.metrics.pressureExposureSeconds>2,'local pressure never contacted a real bleeding surface');assert(Math.abs(tissue.blood.metrics.balanceErrorMm3)<1e-4,'blood mass balance failed');await phase('pressure-contact-confirmed');await capture('pressure');
+    sim.state.paused=false;assert(await demo.approachBleedingAsync({yieldFrame:yieldPreparationTask}),'no collision-free pressure approach was found');sim.state.paused=true;for(let i=0;demo.active&&i<300;i++){if(report.mode==='ordinary-raf'){sim.state.paused=false;await nativeFrame();}else await sharedStep([],true);}sim.select('right');await steps(180,['KeyH']);report.pressureObserved={metrics:tissue.blood.metrics,tool:structuredClone(sim.state.tools.right),selected:sim.state.selected,sourceKey:demo._bleedingKey,sources:tissue.blood.nodes.filter(n=>n.fragmentId==null&&n.injured).map(n=>({key:n.key,position:n.display.toArray(),normal:n.normal.toArray()})),blade:interaction._bladeGeometry().segments.map(s=>({a:s.a.toArray(),b:s.b.toArray()}))};assert(tissue.blood.metrics.lastPressureContacts>0&&tissue.blood.metrics.pressureExposureSeconds>2,'local pressure never contacted a real bleeding surface');assert(Math.abs(tissue.blood.metrics.balanceErrorMm3)<1e-4,'blood mass balance failed');await phase('pressure-contact-confirmed');await capture('pressure');
+    if(verifyScoreHistory){
+      pause(true);scoreCheck('actual-resection-complete');const target=structuredClone(tissue.pathology),cuts=tissue._cuts.length,fragments=tissue.fragmentMetrics.count;let undos=0;
+      while(tissue._cuts.length&&sim.canUndo&&undos<32){await options.undo();pause(true);scoreCheck('undo-step-'+(++undos));}
+      assert(undos>0&&!tissue._cuts.length&&tissue.pathology.attachedMm3===tissue.pathology.totalMm3,'undo did not restore intact target');scoreCheck('undo-resection');
+      for(let i=0;i<undos;i++){assert(sim.canRedo,'redo history missing');await options.redo();pause(true);scoreCheck('redo-step-'+(i+1));}
+      scoreCheck('redo-resection');assert(tissue._cuts.length===cuts&&tissue.fragmentMetrics.count===fragments&&JSON.stringify(tissue.pathology)===JSON.stringify(target),'redo did not restore the same real resection');
+      report.historyCycles={undos,redos:undos};
+    }
     if(auditTask)await auditTask;if(auditEvery>0)assert(report.visibleAudits.length>0&&report.visibleAudits.every(a=>a.coloredPixels>0&&a.opaquePixels===a.width*a.height),'visible output contained a blank or transparent frame');assert(report.frames.every(f=>f.presented),'a complete rendered frame failed presentation');report.final=state();report.presentation=view.presentation.metrics;report.pressureRouteTimings=demo.pressureRouteTimings;report.diagnostics=options.diagnostics();report.complete=true;await send('v38-workflow-result.json',report);
-    await options.reset();sim.state.paused=true;view.update(sim.state,0);view.render();const tips=['left','right'].map(side=>new THREE.Vector3(...sim.state.tools[side].position).project(view.endoCamera));assert(!tissue._cuts.length&&!tissue.fragmentMetrics.count&&tips.every(p=>Math.abs(p.x)<1&&Math.abs(p.y)<1),'reset did not restore the complete organ and both visible tips');report.resetVerified=true;await send('v38-workflow-result.json',report);
+    await options.reset();sim.state.paused=true;scoreCheck('reset');view.update(sim.state,0);view.render();const tips=['left','right'].map(side=>new THREE.Vector3(...sim.state.tools[side].position).project(view.endoCamera));assert(!tissue._cuts.length&&!tissue.fragmentMetrics.count&&tips.every(p=>Math.abs(p.x)<1&&Math.abs(p.y)<1),'reset did not restore the complete organ and both visible tips');report.resetVerified=true;await send('v38-workflow-result.json',report);
   }catch(error){report.error=String(error);report.stack=error.stack;report.diagnostics=options.diagnostics();await send('v38-workflow-result.json',report);}
   finally{demo.stop=originalStop;options.holdKeys([]);options.setFrameCallback(null);options.setExclusive(false);pause(true);}
 }

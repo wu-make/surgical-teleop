@@ -29,3 +29,13 @@ test('cooperative pressure routing cancels when a user moves an instrument',asyn
   const accepted=await demo.approachBleedingAsync({yieldFrame:async()=>{if(++yields===1)sim.nudge('x',1,.001,'left');}});
   assert.equal(accepted,false);assert.equal(demo.active,false);assert.notEqual(sim.state.tools.left.position[0],-.025);
 });
+
+test('pressure navigation follows its preflight endpoint before fine alignment instead of bending the swept path',async()=>{
+  const {sim,demo,tissue,interaction}=setup(),start=sim.state.tools.right.position[0],left=structuredClone(sim.state.tools.left);
+  interaction.pressureApproachTarget=source=>source.display.clone().add(new THREE.Vector3(.004*(sim.state.tools.right.position[0]-start)/.08,0,0));
+  assert(await demo.approachBleedingAsync({yieldFrame:()=>Promise.resolve()}));const checked=demo.end.clone();
+  for(let i=0;i<66;i++){demo.update(1/60);assert.deepEqual(demo.end,checked,'the long movement must keep its collision-checked endpoint');}
+  for(let i=0;i<100&&demo.active;i++)demo.update(1/60);
+  assert.equal(demo.active,false);assert.equal(sim.state.collision.active,false);assert.deepEqual(sim.state.tools.left,left);
+  const target=interaction.pressureApproachTarget(tissue.blood.nodes.find(n=>n.key===demo._bleedingKey));assert(new THREE.Vector3(...sim.state.tools.right.position).distanceTo(target)<=.0003);
+});

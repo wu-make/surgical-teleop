@@ -19,7 +19,7 @@ import {getStartupScreen} from './startup-screen.js';
 import {ControlTaps} from './control-taps.js';
 import {surgicalCase,initializeCase} from './surgical-cases.js';
 import {assistBoundary} from './boundary-assistance.js';
-import {resectionScore} from './resection-score.js';
+import {resectionScore,targetShareLabel} from './resection-score.js';
 const startupScreen=getStartupScreen(),controlTaps=new ControlTaps();
 
 const $=id=>document.getElementById(id),base=import.meta.env.BASE_URL;
@@ -66,7 +66,7 @@ function updateCaseUI(){
   setAttribute($('case-score-bar'),'value',String(score?.percent??0));
   setAttribute($('case-score'),'data-complete',String(!!score?.complete));
   setAttribute($('case-score-bar'),'aria-valuetext',score?'切除完成 '+score.percent+'%，完成评分 '+score.points+' 分':'等待目标组织数据');
-  setText($('case-progress'),status?.totalMm3>0?'病灶仍连接 '+Math.round(status.attachedMm3/status.totalMm3*100)+'% · 随标本分离 '+Math.round(status.detachedMm3/status.totalMm3*100)+'%'+(status.excisedMm3>0?' · 切缘耗损 '+Math.round(status.excisedMm3/status.totalMm3*100)+'%':''):'');
+  setText($('case-progress'),score?'病灶仍连接 '+targetShareLabel(status.attachedMm3,status.totalMm3)+' · 随标本分离 '+targetShareLabel(status.detachedMm3,status.totalMm3)+(status.excisedMm3>0?' · 切缘耗损 '+targetShareLabel(status.excisedMm3,status.totalMm3):''):'');
   $('boundary-assist').hidden=!activeCase.boundary;setAttribute($('boundary-assist'),'aria-pressed',String(assistEnabled));
   setAttribute($('boundary-assist'),'data-engaged',String(assistStatus.engaged));
   setText($('boundary-assist'),assistStatus.engaged?'沿缘辅助 · 贴合中':assistEnabled?'沿缘辅助':'沿缘辅助 · 关');
@@ -267,7 +267,7 @@ async function init(){try{
   if(import.meta.env.DEV&&new URLSearchParams(location.search).has('verify-cut')){const {attachCutVerification}=await import('./cut-verification.js');attachCutVerification(view,sim,interactionController,pause);}
   if(import.meta.env.DEV&&(new URLSearchParams(location.search).has('verify-cut-flicker')||new URLSearchParams(location.search).has('verify-closed-motion')||new URLSearchParams(location.search).has('verify-complete-workflow'))){
     const {attachCutFlickerVerification}=await import('./cut-flicker-verification.js');
-    const options={demo,reset,beginPressure,setExclusive:value=>verificationExclusive=value,setFrameCallback:fn=>verificationFrame=fn,holdKeys:keys=>{held.clear();if(keys.includes('KeyH'))beginPressure();for(const key of keys){armManualCut(sim,interactionController,key);held.add(key);}},diagnostics:()=>({session:frameStats.report({includeIntervals:true}),browser:browserStalls.report({detach:true}),errors:[...runtimeErrors],resizeTimings:view.resizeTimings}),advance:(keys,now,withDemo=false)=>advanceSimulationStep({sim,tissue,interaction:interactionController,demo:withDemo?demo:null,keys:new Set(keys),duration:1/60,beforeControl:()=>sim.setScopeContext({...makeScopeContext(sim,tissue,interactionController,now),viewAspect:view.scopeAspect}),afterControl:dt=>{enforceScopeClearance();view.update(sim.state,dt);},afterInteraction:()=>{view.render();updateUI();}})};
+    const options={demo,reset,undo,redo:()=>undo(true),beginPressure,setExclusive:value=>verificationExclusive=value,setFrameCallback:fn=>verificationFrame=fn,holdKeys:keys=>{held.clear();if(keys.includes('KeyH'))beginPressure();for(const key of keys){armManualCut(sim,interactionController,key);held.add(key);}},diagnostics:()=>({session:frameStats.report({includeIntervals:true}),browser:browserStalls.report({detach:true}),errors:[...runtimeErrors],resizeTimings:view.resizeTimings}),advance:(keys,now,withDemo=false)=>advanceSimulationStep({sim,tissue,interaction:interactionController,demo:withDemo?demo:null,keys:new Set(keys),duration:1/60,beforeControl:()=>sim.setScopeContext({...makeScopeContext(sim,tissue,interactionController,now),viewAspect:view.scopeAspect}),afterControl:dt=>{enforceScopeClearance();view.update(sim.state,dt);},afterInteraction:()=>{view.render();updateUI();}})};
     if(new URLSearchParams(location.search).has('verify-closed-motion')){const {verifyClosedMotion}=await import('./closed-motion-verification.js');void verifyClosedMotion(view,sim,interactionController,pause,options);}
     else if(new URLSearchParams(location.search).has('verify-complete-workflow')){const {verifyCompleteWorkflow}=await import('./workflow-verification.js');void verifyCompleteWorkflow(view,sim,interactionController,pause,options);}
     else attachCutFlickerVerification(view,sim,interactionController,pause,options);

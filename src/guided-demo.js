@@ -225,7 +225,7 @@ export class GuidedDemo {
   _acceptBleedingRoute(route){
     if(!route){this.active=false;this.onMessage('当前渗血切面被另一器械挡住；请先移开另一器械再就位');this.onChange();return false;}
     this.mode='approach';this.active=true;this.time=0;this.side='right';this.approachFragment=null;this._bleedingKey=route.key;
-    this._pressureWaypoints=route.waypoints;this._pressureWaypoint=0;
+    this._pressureWaypoints=route.waypoints;this._pressureWaypoint=0;this._pressureAligning=false;
     this.start=new THREE.Vector3(...this.sim.state.tools.right.position);this.end=route.waypoints[0];
     this.onMessage('右端已闭合，正在以实际剪刃接近渗血切面；就位后按住 H 局部压迫');this.onChange();return true;
   }
@@ -376,7 +376,15 @@ export class GuidedDemo {
       if(this._bleedingKey){
         const source=this.tissue.blood?.nodes.find(n=>n.key===this._bleedingKey&&n.fragmentId==null&&n.injured);
         if(!source){this.stop('目标切面已改变，请重新选择渗血切面');return;}
-        this.end=this._pressureWaypoint<this._pressureWaypoints.length-1?this._pressureWaypoints[this._pressureWaypoint]:this.interaction.pressureApproachTarget(source);
+        if(this._pressureAligning){
+          const current=new THREE.Vector3(...this.sim.state.tools.right.position),target=this.interaction.pressureApproachTarget(source),distance=current.distanceTo(target);
+          if(distance<=.0003){this.active=false;this.onMessage('已闭合接近渗血切面：按住 H 局部压迫，松开后检查是否再渗血');this.onChange();return;}
+          if(this.time>3){this.stop('切面就位尚未收敛，请稳定组织后重新就位或手动贴近');return;}
+          this.move(current.lerp(target,Math.min(1,.012*dt/distance)).toArray(),'right');return;
+        }
+        // Execute the same straight waypoints that passed the CAD sweep.
+        // Correct blade/RCM offset only after arrival, through guarded small steps.
+        this.end=this._pressureWaypoints[this._pressureWaypoint];
       }
       if(this.approachFragment){
         const piece=this.tissue.getFragment?.(this.approachFragment.id);
@@ -386,6 +394,7 @@ export class GuidedDemo {
       }
       if (!this.move(this.start.clone().lerp(this.end, smooth(Math.min(1, this.time / 1.1))).toArray(), this.side)) return;
       if(this.time>=1.1&&this._bleedingKey&&this._pressureWaypoint<this._pressureWaypoints.length-1){this._pressureWaypoint++;this.start=new THREE.Vector3(...this.sim.state.tools.right.position);this.time=0;return;}
+      if(this.time>=1.1&&this._bleedingKey){this._pressureAligning=true;return;}
       if (this.time >= 1.1) { this.active = false;if(this.side==='right'&&!this._bleedingKey)this.sim.setCutting(true); this.onMessage(this._bleedingKey?'已闭合接近渗血切面：按住 H 局部压迫，松开后检查是否再渗血':this.approachFragment?'已接近独立标本表面：按 C 闭合重抓，随后可移动或旋转':'已贴近组织表面：C 闭合，E 抬起；右剪 C 闭合即可剪切'); this.onChange(); }
       return;
     }
