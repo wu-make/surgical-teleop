@@ -327,7 +327,7 @@ export class InteractionController {
           const reference=this.tissue.toReferencePoint?.(anchor)??anchor;
           this.grasp = { kind:'tissue',fragmentId:null,deformationModel:'local-flow',local: reference.toArray(),reference:reference.toArray(),displacement: [0, 0, 0] };
           this.onEvent('grasp');
-          this.onMessage('左钳已夹住肝包膜：按 E 抬起，组织会随钳尖牵拉；V 松开');
+          this.onMessage('左钳已夹住组织表面：按 E 抬起，组织会随钳尖牵拉；V 松开');
         }
       }else this.onMessage(this.relaxing?'组织正在回弹，请稍候再张开并闭合左钳':'左钳未夹到组织：先 V 张开，贴近表面后 C 夹持');
     }
