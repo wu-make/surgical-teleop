@@ -9,9 +9,9 @@
   <link rel="preload" as="fetch" href="./assets/liver-volume.bin" crossorigin/>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23101819'/%3E%3Cpath d='M14 43V21l18 16 18-16v22' fill='none' stroke='%238ce2c2' stroke-width='5'/%3E%3C/svg%3E"/>
   <title>MIRA · 微创遥操作实验室</title>
-  <script type="module" crossorigin src="./assets/index-BTwkXU-y.js"></script>
+  <script type="module" crossorigin src="./assets/index-D9oQt3dy.js"></script>
   <link rel="modulepreload" crossorigin href="./assets/preparation-task-B3e_FUSy.js">
-  <link rel="stylesheet" crossorigin href="./assets/index-CkjLa4Ww.css">
+  <link rel="stylesheet" crossorigin href="./assets/index-DFyjLxjR.css">
 </head>
 <body>
 <div id="app">
@@ -25,7 +25,7 @@
       <div class="workspace-heading"><div><div class="eyebrow">TELEOPERATION WORKSPACE <span>01</span></div><h1><span id="case-title" class="case-title">肝脏精细操作</span><span>交互演示</span></h1></div><div class="session-id">SESSION <b id="session-time">00:00</b><span id="run-status">● 准备中</span></div></div>
       <section id="stage" class="stage" tabindex="0" aria-label="三维手术仿真，按1选择左器械，2选择右器械，3选择内窥镜">
         <canvas id="scene" aria-label="实时三维手术场景"></canvas>
-        <div class="viewbar"><div class="view-left"><div class="viewtabs"><button id="view-endo" class="active">内窥镜画面 <span>LIVE</span></button><button id="view-overview">系统总览</button></div><div class="case-picker"><select id="model-select" aria-label="手术模型" title="切换模型并恢复完整组织、双臂和镜头"><option value="liver">正常肝脏</option><option value="lesion-liver">病灶肝 · 左半肝</option><option value="uterus-adnexa">子宫附件 · 左侧病灶</option></select><button id="boundary-assist" aria-pressed="true" title="仅在切缘附近轻微修正真实剪口位置；松开 C 即停止辅助" hidden>沿缘辅助</button></div></div><div class="viewtools"><button id="view-home" title="恢复观察视角">视角复位</button><button id="fullscreen" title="全屏">⛶</button></div></div>
+        <div class="viewbar"><div class="view-left"><div class="viewtabs"><button id="view-endo" class="active">内窥镜画面 <span>LIVE</span></button><button id="view-overview">系统总览</button><div class="case-picker"><select id="model-select" aria-label="手术模型" title="切换模型并恢复完整组织、双臂和镜头"><option value="liver">正常肝脏</option><option value="lesion-liver">病灶肝 · 左半肝</option><option value="uterus-adnexa">子宫附件 · 左侧病灶</option></select><button id="boundary-assist" aria-pressed="true" title="仅在切缘附近轻微修正真实剪口位置；松开 C 即停止辅助" hidden>沿缘辅助</button></div></div></div><div class="viewtools"><button id="view-home" title="恢复观察视角">视角复位</button><button id="fullscreen" title="全屏">⛶</button></div></div>
         <div id="endo-overlay" class="endo-overlay"><span class="lens-label">LAPAROSCOPE · 55° FOV</span><div class="crosshair" aria-hidden="true"><i></i><i></i></div><div class="reticle-bracket tl"></div><div class="reticle-bracket br"></div><span class="lens-scale" id="lens-scale">|<span>10 mm @ TCP</span>|</span></div>
         <div class="stage-status"><span class="status-dot"></span><span id="view-status">内窥镜 · 当前器械尖端居中</span><span class="stage-divider"></span><span id="selected-badge">R 右手 · 分离剪</span></div>
         <div id="mini-view" class="mini-view" aria-label="辅助观察窗口"><div><span id="mini-title">系统总览</span><button id="swap-view" title="交换主辅视图">↗</button></div><span class="mini-caption" id="mini-caption">UNITREE G1 + 胸部持镜概念集成</span></div>
