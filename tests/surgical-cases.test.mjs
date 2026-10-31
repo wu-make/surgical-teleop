@@ -7,6 +7,7 @@ import {assistBoundary,BOUNDARY_ASSIST} from '../src/boundary-assistance.js';
 import {Simulation} from '../src/simulation.js';
 import {createVolumeState,applyCapsuleCut,initializeConnectivity,separateDisconnectedComponents} from '../src/tissue-worker.js';
 import {lesionNodes,lesionStatistics} from '../src/lesion-volume.js';
+import {resectionScore} from '../src/resection-score.js';
 import {createTissueMaterial} from '../src/tissue-material.js';
 import {TissueVolume} from '../src/tissue.js';
 import {GuidedDemo,planPeripheralResections} from '../src/guided-demo.js';
@@ -26,12 +27,12 @@ test('actual pelvic volume cuts off the left target and accounts for lesion in t
   const c=surgicalCase('uterus-adnexa'),meta=JSON.parse(fs.readFileSync(new URL('../public/assets/pelvic-volume.json',import.meta.url))),b=fs.readFileSync(new URL('../public/assets/pelvic-volume.bin',import.meta.url));
   meta.pathology=c.lesion;const state=createVolumeState(meta,new Float32Array(b.buffer.slice(b.byteOffset,b.byteOffset+b.byteLength)));
   state.lesionNodes=lesionNodes(meta,state.base);initializeConnectivity(state);
-  const before=lesionStatistics(state);assert(before.totalMm3>1000);assert.equal(before.attachedMm3,before.totalMm3);
+  const before=lesionStatistics(state);assert(before.totalMm3>1000);assert.equal(before.attachedMm3,before.totalMm3);assert.equal(resectionScore(before).points,0);
   const x=c.lesion.center[0]-c.lesion.radii[0]-.004;
   for(let y=meta.bounds[0][1]-.003;y<=meta.bounds[1][1]+.003;y+=.0025)applyCapsuleCut(state,{a:[x,y,meta.bounds[0][2]-.003],b:[x,y,meta.bounds[1][2]+.003],radius:.00165});
   const result=separateDisconnectedComponents(state,{force:true}),after=lesionStatistics(state);
   assert(result.fragments.length>0,'the target must truly disconnect from the registered mother');
-  assert.equal(after.attachedMm3,0);assert(after.detachedMm3/before.totalMm3>.99,'a medial section should preserve the labelled lesion inside its specimen');
+  assert.equal(after.attachedMm3,0);assert.deepEqual(resectionScore(after),{complete:true,percent:100,points:100});assert(after.detachedMm3/before.totalMm3>.99,'a medial section should preserve the labelled lesion inside its specimen');
   assert(after.excisedMm3/before.totalMm3<.01,'the lesion cannot disappear by replacing it with a visual dummy');
 });
 

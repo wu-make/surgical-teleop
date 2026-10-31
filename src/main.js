@@ -19,6 +19,7 @@ import {getStartupScreen} from './startup-screen.js';
 import {ControlTaps} from './control-taps.js';
 import {surgicalCase,initializeCase} from './surgical-cases.js';
 import {assistBoundary} from './boundary-assistance.js';
+import {resectionScore} from './resection-score.js';
 const startupScreen=getStartupScreen(),controlTaps=new ControlTaps();
 
 const $=id=>document.getElementById(id),base=import.meta.env.BASE_URL;
@@ -59,6 +60,12 @@ function updateCaseUI(){
   setText($('case-title'),activeCase.title);$('case-info').hidden=!activeCase.lesion;
   setText($('case-label'),activeCase.label);setText($('case-hint'),activeCase.hint);
   const status=tissue?.pathology;
+  const score=resectionScore(status);
+  setText($('case-completion'),score?score.percent.toFixed(1).replace(/\.0$/,'')+'%':'—');
+  setText($('case-points'),score?score.points+' / 100 分':'— / 100 分');
+  setAttribute($('case-score-bar'),'value',String(score?.percent??0));
+  setAttribute($('case-score'),'data-complete',String(!!score?.complete));
+  setAttribute($('case-score-bar'),'aria-valuetext',score?'切除完成 '+score.percent+'%，完成评分 '+score.points+' 分':'等待目标组织数据');
   setText($('case-progress'),status?.totalMm3>0?'病灶仍连接 '+Math.round(status.attachedMm3/status.totalMm3*100)+'% · 随标本分离 '+Math.round(status.detachedMm3/status.totalMm3*100)+'%'+(status.excisedMm3>0?' · 切缘耗损 '+Math.round(status.excisedMm3/status.totalMm3*100)+'%':''):'');
   $('boundary-assist').hidden=!activeCase.boundary;setAttribute($('boundary-assist'),'aria-pressed',String(assistEnabled));
   setAttribute($('boundary-assist'),'data-engaged',String(assistStatus.engaged));

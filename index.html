@@ -41,7 +41,7 @@
       <div class="bottom-bar"><span><i class="tiny-dot"></i>官方 G1 几何 · 体积组织交互 · 本地计算</span><span>研发演示 · 专用器械与胸部持镜臂为概念模型 <button id="about">模型与边界 ↗</button></span></div>
     </section>
     <aside class="control-panel">
-      <div class="panel-heading"><span class="eyebrow">CONTROL DESK</span><span class="live-tag">LOCAL</span></div><div class="case-info" id="case-info" hidden><strong id="case-label"></strong><p id="case-hint"></p><span id="case-progress" role="status"></span></div>
+      <div class="panel-heading"><span class="eyebrow">CONTROL DESK</span><span class="live-tag">LOCAL</span></div><div class="case-info" id="case-info" hidden><strong id="case-label"></strong><p id="case-hint"></p><div class="case-score" id="case-score" title="按实际切除进度评分；病灶全部切离或移除后达到 100 分。撤销、重做和重置会同步更新。"><div class="case-score-line"><span>切除完成率 <b id="case-completion">—</b></span><span id="case-points">— / 100 分</span></div><progress id="case-score-bar" max="100" value="0" aria-label="病灶切除完成率"></progress></div><span id="case-progress" role="status"></span></div>
       <section class="control-section"><div class="section-title"><h2>末端控制</h2><span id="active-tool">RIGHT / R</span></div>
         <div class="segmented" id="precision"><button data-speed="normal" class="active">标准</button><button data-speed="fine">精细 <small>低速</small></button></div>
         <div class="position-grid"><div><span>X 横向</span><strong id="pos-x">0.0<small>mm</small></strong></div><div><span>Y 高度</span><strong id="pos-y">0.0<small>mm</small></strong></div><div><span>Z 深度</span><strong id="pos-z">0.0<small>mm</small></strong></div></div>
