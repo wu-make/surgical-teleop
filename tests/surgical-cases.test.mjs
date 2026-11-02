@@ -13,6 +13,7 @@ import {TissueVolume} from '../src/tissue.js';
 import {GuidedDemo,planPeripheralResections,areaResectionPlan} from '../src/guided-demo.js';
 import {InteractionController} from '../src/interaction-controller.js';
 import {instrumentPose} from '../src/instrument-pose.js';
+import {loadBodyTriangleGeometry} from '../src/scissors-body-catalogue.js';
 
 test('pelvic reference includes both ovaries, both tubes and uterus in a closed connected submillimetre volume',()=>{
   const m=JSON.parse(fs.readFileSync(new URL('../public/assets/pelvic-volume.json',import.meta.url)));
@@ -51,7 +52,7 @@ test('both lesion examples cover the complete target and prepare a source-CAD en
   }
 });
 
-test('hepatic area operations preserve every curved cut segment while avoiding per-cell instrument traversal',()=>{
+test('hepatic area operations preserve every curved cut segment while avoiding per-cell instrument traversal',async()=>{
  const c=surgicalCase('lesion-liver'),meta=JSON.parse(fs.readFileSync(new URL('../public/assets/liver-volume.json',import.meta.url))),b=fs.readFileSync(new URL('../public/assets/liver-volume.bin',import.meta.url)),tissue=new TissueVolume({caseDefinition:c});
  tissue.metadata=meta;tissue._baseField=new Float32Array(b.buffer.slice(b.byteOffset,b.byteOffset+b.byteLength));tissue.group.position.y=1.035;tissue.group.rotation.x=-Math.PI/2;tissue.group.updateMatrixWorld(true);
  try{
@@ -60,6 +61,13 @@ test('hepatic area operations preserve every curved cut segment while avoiding p
   const area=areaResectionPlan(tissue,raw);assert(area);assert.equal(area.pattern,'area');assert(area.path.length<raw.path.length/8,'the robot uses a few region operations instead of scanning all material points');
   assert(area.areaBands.every(band=>band.length<=256));assert.deepEqual(area.areaBands.flat().map(s=>[s.a.toArray(),s.b.toArray()]),expected,'the real curved volume cut cannot drop geometry between controls');
   assert.deepEqual(raw.path.map(p=>p.toArray()),before);assert.deepEqual(area.path[0].toArray(),raw.path[0].toArray(),'preserve the collision-checked entry point');
+  await loadBodyTriangleGeometry();const sim=new Simulation();initializeCase(sim,tissue,c,949/612);
+  const demo=new GuidedDemo(sim,tissue,new InteractionController(sim,tissue)),prepared=demo._preparePlan(area);
+  assert(prepared,'a modest pull must retain a source-CAD checked entry');
+  assert(prepared.leftLift.distanceTo(prepared.leftRest)<=.0120001,'area assistance must not stretch the target into a tall lifted column');
+  assert(prepared.leftLiftFinal.distanceTo(prepared.leftLift)<1e-9,'the area example does not need progressively deeper traction');
+  const blocked=new GuidedDemo(sim,tissue,new InteractionController(sim,tissue),{contextGuard:{clearance:()=>-1,sweep:()=>false}});
+  assert.equal(blocked._preparePlan(area),null,'unchanged neighboring anatomy must also be able to reject an entry');
  }finally{tissue.dispose();}
 });
 

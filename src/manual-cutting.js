@@ -3,7 +3,9 @@
 // The armed mode is permission, not a continuously running cutting command.
 export function cuttingRequested(sim,keys,demo){
   if(keys.has('KeyH')||keys.has('Space'))return false;
-  return sim.state.selected==='right'&&keys.has('KeyC')||!!(demo?.active&&demo.mode==='example');
+  // A region demonstration records its own complete cut band. Running the
+  // physical fine sweep as well would submit duplicate jaw-closing samples.
+  return sim.state.selected==='right'&&keys.has('KeyC')||!!(demo?.active&&demo.mode==='example'&&demo.plan?.pattern!=='area');
 }
 export function armManualCut(sim,interaction,code,{pressureHeld=false}={}){
   if(code!=='KeyC'||pressureHeld||sim.state.selected!=='right'||sim.state.paused||sim.state.cutting)return false;

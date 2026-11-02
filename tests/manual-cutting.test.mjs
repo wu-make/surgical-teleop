@@ -27,3 +27,11 @@ test('closure never arms cutting while pressing, paused, using the left jaw or a
   sim.setPaused(true);assert.equal(armManualCut(sim,interaction,'KeyC'),false);sim.setPaused(false);
   sim.select('left');assert.equal(armManualCut(sim,interaction,'KeyC'),false);sim.select('right');assert.equal(armManualCut(sim,interaction,'KeyV'),false);assert.equal(sim.state.cutting,false);
 });
+
+test('guided area preparation does not also request a continuous physical blade cut',()=>{
+ const sim=new Simulation();sim.select('right');sim.setCutting(true);
+ const area={active:true,mode:'example',plan:{pattern:'area'}};
+ assert.equal(cuttingRequested(sim,new Set(),area),false,'the region queue owns area material removal');
+ assert.equal(cuttingRequested(sim,new Set(['KeyC']),area),true,'an explicit manual closure remains available');
+ assert.equal(cuttingRequested(sim,new Set(),{...area,plan:{pattern:'raster'}}),true,'pelvic attachment sweeps keep physical blade cutting');
+});

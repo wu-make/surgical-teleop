@@ -6,6 +6,7 @@ import {TissueVolume} from '../src/tissue.js';
 import {InteractionController} from '../src/interaction-controller.js';
 import {createVolumeState,applyCapsuleCut,nodeIndex} from '../src/tissue-worker.js';
 import {captureBladePose,bladeSpan,sampleBladeSpan,CUT_SWEEP} from '../src/blade-sweep.js';
+import {cuttingRequested} from '../src/manual-cutting.js';
 
 function bench({plate=false,holdFirst=false}={}){
   const dims=plate?[81,81,9]:[17,81,17],spacing=[.0005,.0005,.0005],origin=plate?[-.02,-.02,-.002]:[-.004,-.02,-.004];
@@ -86,6 +87,21 @@ test('guided region cuts remove real material, require a closed active broad too
   assert.equal(f.interaction.queueRegionCut(segments),true);segments[0].a.y=.1;f.interaction.setCutRadius(.00165);
   await f.interaction.update(1/60,{cutRequested:false});assert(f.field([0,0,0])>0);assert(f.field([0,.004,0])>0);assert(f.field([0,.008,0])<0);
   const cut=f.operations.flatMap(op=>op.cuts).find(c=>c.radius===.005);assert(cut);assert.equal(cut.a[1],0,'later caller changes cannot move the recorded region');
+ }finally{f.tissue.dispose();}
+});
+
+test('an area example keeps preparation intact and drains only its explicitly recorded region',async()=>{
+ const f=bench({plate:true});try{
+  f.sim.select('right');f.interaction.setCutRadius(.005);
+  const demo={active:true,mode:'example',plan:{pattern:'area'}},keys=new Set();
+  for(const y of [-.012,-.006,0]){f.at(y);await f.interaction.update(1/60,{cutRequested:cuttingRequested(f.sim,keys,demo)});}
+  assert.equal(f.operations.length,0,'preparing closed jaws must not create physical sweep cuts');
+  const segments=[{a:new THREE.Vector3(-.01,0,0),b:new THREE.Vector3(.01,0,0)}];
+  assert.equal(f.interaction.queueRegionCut(segments),true);f.sim.setCutting(false);
+  await f.interaction.update(1/60,{cutRequested:cuttingRequested(f.sim,keys,demo)});
+  assert(f.field([0,0,0])>0,'the accepted region still removes real material');
+  assert(f.field([0,-.012,0])<0,'the preceding positioning path stays intact');
+  assert.equal(f.operations.flatMap(op=>op.cuts).length,1);
  }finally{f.tissue.dispose();}
 });
 

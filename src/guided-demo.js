@@ -41,10 +41,11 @@ function exteriorTransfer(query,meta,a,b){
 
 // The real controller still sweeps each complete segment against source CAD.
 // Bound a preflight unit so a long withdrawal cannot monopolize one RAF slice.
-export function* probeToolMoveSteps(probe,target,side){
+export function* probeToolMoveSteps(probe,target,side,move=null){
   const start=new THREE.Vector3(...probe.state.tools[side].position),count=Math.max(1,Math.ceil(start.distanceTo(target)/.002));
   for(let i=1;i<=count;i++){
-    const blocked=probe.moveToolTo(i===count?target.toArray():start.clone().lerp(target,i/count).toArray(),side).limited;
+    const point=i===count?target.toArray():start.clone().lerp(target,i/count).toArray();
+    const blocked=move?move(probe,point,side):probe.moveToolTo(point,side).limited;
     yield;if(blocked)return true;
   }
   return false;
@@ -180,8 +181,8 @@ export function areaResectionPlan(tissue,plan){
 
 /** An actual controller/tissue operation example. It contains no baked geometry. */
 export class GuidedDemo {
-  constructor(sim, tissue, interaction, { onMessage = () => {}, onChange = () => {}, wristPlanner = null } = {}) {
-    Object.assign(this, { sim, tissue, interaction, onMessage, onChange, wristPlanner });
+  constructor(sim, tissue, interaction, { onMessage = () => {}, onChange = () => {}, wristPlanner = null,contextGuard=null } = {}) {
+    Object.assign(this, { sim, tissue, interaction, onMessage, onChange, wristPlanner,contextGuard });
     this.active = false;
     this.mode = null;
   }
@@ -215,12 +216,23 @@ export class GuidedDemo {
   }
 
   move(position, side) {
+    if(side==='right'&&this._context()){
+      const probe=new this.sim.constructor();probe.restore(this.sim.snapshot());probe.setPaused(false);
+      if(this._probeMove(probe,position,side)){this.stop('自动通道受到邻近解剖结构阻挡，已保持器械位置');return false;}
+    }
     const result = this.sim.moveToolTo(position, side);
     if (result.limited) {
       this.stop('自动路径被另一器械挡住；请先移开另一器械，再重新就位');
       return false;
     }
     return true;
+  }
+
+  _context(){return typeof this.contextGuard==='function'?this.contextGuard():this.contextGuard;}
+  _probeMove(probe,position,side){
+    const guard=side==='right'?this._context():null,before=guard?structuredClone(probe.state.tools.right):null;
+    const result=probe.moveToolTo(position,side);
+    return result.limited||!!(guard&&!guard.sweep(before,probe.state.tools.right));
   }
 
   _moveBlade(point){
@@ -260,6 +272,12 @@ export class GuidedDemo {
   }
 
   _currentBladeGuard(tool,{protectTarget=true,exactBody=false}={}){
+    const result=this._organBladeGuard(tool,{protectTarget,exactBody}),gap=this._context()?.clearance(tool)??Infinity;
+    if(gap>=result.bodyMinimum)return result;
+    return{...result,bodyMinimum:gap,minimum:Math.min(result.minimum,gap),bodyGaps:result.bodyGaps?.map(v=>Math.min(v,gap)),penalty:result.penalty+Math.max(0,SCISSORS_GUIDE_CLEARANCE-gap)**2};
+  }
+
+  _organBladeGuard(tool,{protectTarget=true,exactBody=false}={}){
     const route=this._bladeSteering?.route;
     const bodyProof=route?.bodyProof??this._bodyWorldProof,proofIndex=route?(route.poseIndex??0):(bodyProof?.poses.length??1)-1;
     if(!exactBody&&bodyProof){const proof=queryBodyProof(this.tissue,bodyProof,tool,proofIndex);if(proof){if(route)route.proofHits=(route.proofHits??0)+1;const lesionClearance=protectTarget&&this.plan?.traction?bladeLesionClearance(this.tissue,tool,this.plan?.cutRadius??CUT_RADIUS):Infinity;return{...proof,lesionClearance,minimum:Math.min(proof.bodyMinimum,lesionClearance),penalty:proof.penalty+Math.max(0,SCISSORS_GUIDE_CLEARANCE-lesionClearance)**2};}}
@@ -313,6 +331,7 @@ export class GuidedDemo {
   _recordedBladeStep(sim,pose,minimum=0){
     const tool=sim.state.tools.right,predicted=sweepInstrument(tool,{...tool,position:[...pose.position],wrist:[...pose.wrist],jaw:pose.jaw},sim.state.tools.left);
     if(predicted.limited){this._poseRejection='metal';return false;}
+    if(this._context()&&!this._context().sweep(tool,predicted.tool)){this._poseRejection='context';return false;}
     const bodyMoves=instrumentMotionBound(tool,predicted.tool,{bodyOnly:true})>2e-12,protectTarget=sim.state.cutting,first=this._currentBladeGuard(tool,{protectTarget}),last=this._currentBladeGuard(predicted.tool,{protectTarget}),bodyFloor=0,lesionFloor=Math.min(minimum,first.lesionClearance);
     const permitted=(g,p)=>{const body=bodyMoves&&g.bodyMinimum<bodyFloor-1e-9,lesion=g.lesionClearance<lesionFloor-1e-9;if(!body&&!lesion)return true;this._poseRejection=lesion?'lesion':'tissue';this.lastBladeRejection={bodyMinimum:g.bodyMinimum,lesionClearance:g.lesionClearance,required:minimum,position:[...p.position],wrist:[...p.wrist]};return false;};
     if(!permitted(last,predicted.tool))return false;
@@ -775,6 +794,10 @@ export class GuidedDemo {
         if(route.validation){
           const index=route.poseIndex??0,begin=index?route.validatedPoses[index-1]:route.validation.base,end=route.validatedPoses[index],from=route.poseFraction??0;
           const duration=Math.max(new THREE.Vector3(...begin.position).distanceTo(new THREE.Vector3(...end.position))/.04,...end.wrist.map((v,i)=>Math.abs(v-begin.wrist[i])/.8),Math.abs(end.jaw-begin.jaw)/1.5),to=Math.min(1,from+budget/Math.max(duration,1e-12));
+          if(this._context()){
+            const next={...begin,position:begin.position.map((v,i)=>THREE.MathUtils.lerp(v,end.position[i],to)),wrist:begin.wrist.map((v,i)=>THREE.MathUtils.lerp(v,end.wrist[i],to)),jaw:THREE.MathUtils.lerp(begin.jaw,end.jaw,to)};next.alignment=resolveInstrumentAlignment(next,begin.alignment);
+            if(!this._context().sweep(tool,next))return retry();
+          }
           if(!validatedMotionStep(this.tissue,this.sim,route.validation,index,from,to))return retry();
           steering.expectedAnchor=new THREE.Vector3(...this._anchor(tool));this._rememberBlade();
           budget-=Math.min(budget,(to-from)*duration);route.poseFraction=to;
@@ -905,8 +928,8 @@ export class GuidedDemo {
       const via=distance?start.clone().addScaledVector(withdrawal,distance):null;
       for(const source of sources){
         const probe=new this.sim.constructor();probe.restore(snapshot);probe.setPaused(false);yield;
-        if(via){const blocked=probe.moveToolTo(via.toArray(),'right').limited;yield;if(blocked)break;}
-        const target=this.interaction.pressureApproachTarget(source),blocked=probe.moveToolTo(target.toArray(),'right').limited;yield;
+        if(via){const blocked=this._probeMove(probe,via.toArray(),'right');yield;if(blocked)break;}
+        const target=this.interaction.pressureApproachTarget(source),blocked=this._probeMove(probe,target.toArray(),'right');yield;
         if(!blocked)return {key:source.key,waypoints:via?[via,target]:[target]};
       }
     }
@@ -994,6 +1017,16 @@ export class GuidedDemo {
   }
 
   *_preparePlanSteps(plan) {
+    if(plan.traction&&plan.pattern==='area'){
+      // A whole connection band needs a working gap, not the deep traction
+      // required by successive fine rows. Check the same source-CAD entry
+      // with a modest pull and keep that pull until genuine separation.
+      for(const height of [.008,.010,.012])for(const rightWrist of [[0,-1.3,-Math.PI/2],[0,1.3,-Math.PI/2],[0,-1.3,Math.PI/2],[0,1.3,Math.PI/2],[0,0,Math.PI/2]]){
+        const prepared=yield* this._prepareTrajectorySteps(plan,[0,height,0],{rightWrist,leftWrist:[-1.3,0,0],tractionEndOffset:[0,height,0]});
+        if(prepared)return prepared;
+      }
+      return null;
+    }
     if(plan.traction){
       // Open the first edge with a small pull. Increase traction between rows,
       // after the scissors have left tissue, so an existing kerf opens before
@@ -1039,19 +1072,19 @@ export class GuidedDemo {
       try{
         const probe=new this.sim.constructor();probe.restore(this.sim.snapshot());probe.setPaused(false);
         probe.setJaw('left',.75);probe.setJaw('right',plan.jawOpening);
-        let blocked=probe.moveToolTo(rightStandby.toArray(),'right').limited;yield;
-        if(!blocked&&rightWrist)for(let axis=0;axis<3;axis++){probe.adjustWrist(axis,rightWrist[axis]-probe.state.tools.right.wrist[axis],'right');blocked=Math.abs(probe.state.tools.right.wrist[axis]-rightWrist[axis])>.0001;yield;if(blocked)break;}
+        let blocked=this._probeMove(probe,rightStandby.toArray(),'right');yield;
+        if(!blocked&&rightWrist)for(let axis=0;axis<3;axis++){const before=structuredClone(probe.state.tools.right);probe.adjustWrist(axis,rightWrist[axis]-probe.state.tools.right.wrist[axis],'right');blocked=Math.abs(probe.state.tools.right.wrist[axis]-rightWrist[axis])>.0001||!!(this._context()&&!this._context().sweep(before,probe.state.tools.right));yield;if(blocked)break;}
         if(!blocked&&leftWrist){blocked=probe.moveToolTo(leftStandby.toArray(),'left').limited;yield;}
         if(!blocked&&leftWrist)for(let axis=0;axis<3;axis++){probe.adjustWrist(axis,leftWrist[axis]-probe.state.tools.left.wrist[axis],'left');blocked=Math.abs(probe.state.tools.left.wrist[axis]-leftWrist[axis])>.0001;yield;if(blocked)break;}
         if(!blocked){blocked=probe.moveToolTo(leftRest.toArray(),'left').limited;yield;}
         probe.setJaw('left',0);yield;
         if(!blocked){blocked=probe.moveToolTo(leftLift.toArray(),'left').limited;yield;}
-        const moveBlade=point=>{const target=this._target(probe.state.tools.right,point.toArray(),plan);return target.error>.00015||probe.moveToolTo(target.position,'right').limited;};
+        const moveBlade=point=>{const target=this._target(probe.state.tools.right,point.toArray(),plan);return target.error>.00015||this._probeMove(probe,target.position,'right');};
         if(!blocked&&plan.traction){
           const from=new THREE.Vector3(...this._anchor(probe.state.tools.right,plan)),n=Math.max(1,Math.ceil(from.distanceTo(rightEntry)/.0005));
           for(let i=1;i<=n;i++){
             const point=from.clone().lerp(rightEntry,i/n),c=scissorsBodyClearance({...probe.state.tools.right,jaw:plan.anchorJaw??probe.state.tools.right.jaw,bodyEnvelope:!!plan.traction.section},point.toArray(),previewDistance);
-            blocked=c.minimum<.0001||c.solution.error>.00015||probe.moveToolTo(c.solution.position,'right').limited;yield;if(blocked)break;
+            blocked=c.minimum<.0001||c.solution.error>.00015||this._probeMove(probe,c.solution.position,'right');yield;if(blocked)break;
           }
           if(!blocked)for(const jaw of [0,plan.jawOpening*.5,plan.jawOpening]){const c=scissorsBodyClearance({...probe.state.tools.right,jaw:plan.anchorJaw??jaw,bodyEnvelope:!!plan.traction.section},rightEntry.toArray(),previewDistance);blocked=c.minimum<.0001;yield;if(blocked)break;}
         }else if(!blocked){blocked=moveBlade(rightEntry);yield;}
@@ -1274,7 +1307,7 @@ export class GuidedDemo {
     for(const rightTarget of rightCandidates){
       for(const leftTarget of leftCandidates){
         const probe=new this.sim.constructor();probe.restore(snapshot);probe.setPaused(false);yield;
-        const rightBlocked=yield* probeToolMoveSteps(probe,rightTarget,'right');if(rightBlocked)continue;
+        const rightBlocked=yield* probeToolMoveSteps(probe,rightTarget,'right',(p,target,side)=>this._probeMove(p,target,side));if(rightBlocked)continue;
         probe.setJaw('right',.75);yield;
         if(probe.state.tools.right.jaw<.7)continue;
         const leftBlocked=yield* probeToolMoveSteps(probe,leftTarget,'left');if(leftBlocked)continue;
@@ -1365,7 +1398,7 @@ export class GuidedDemo {
       this.sim.setJaw('left',.75*(1-progress(.6)));
       if(this.phaseTime>=.7&&this.interaction.grasp?.kind==='tissue'){
         if(this.plan.traction){this.interaction.grasp.deformationRadius=this.plan.traction.radius;this.interaction.grasp.deformationCoreRadius=this.plan.traction.coreRadius;this.interaction.grasp.deformationSection=structuredClone(this.plan.traction.section);}
-        this._phase('lift','左钳牵开目标组织，右剪逐层剪断连接');
+        this._phase('lift',this.plan.pattern==='area'?'左钳牵开目标连接面，右剪准备宽幅切离':'左钳牵开目标组织，右剪逐层剪断连接');
       }
       else if(this.phaseTime>1.3)this.stop('未成功抓住附着组织，示范已停止；请重置或重新表面就位');
     }else if(this.phase==='lift'){
@@ -1374,7 +1407,7 @@ export class GuidedDemo {
     }else if(this.phase==='approach-cut'){
       if(this.plan.traction){if(!this._moveBlade(this._entryAnchorStart.clone().lerp(this._displayReference(this.plan.path[0]),progress(1.2))))return;}
       else if(!this.move(this.rightBeforeCut.clone().lerp(this._entryCommand,progress(1.2)).toArray(),'right'))return;
-      if(this.phaseTime>=1.2){this.sim.setScopeFollow(true,this._demoScopeMode??'active');this.sim.setCutting(true);this._phase('close-right','右剪已贴近切缘，开合剪切并逐层推进');}
+      if(this.phaseTime>=1.2){this.sim.setScopeFollow(true,this._demoScopeMode??'active');this.sim.setCutting(true);this._phase('close-right',this.plan.pattern==='area'?'右剪已贴近切缘，闭合进行区域辅助切离':'右剪已贴近切缘，开合剪切并逐层推进');}
     }else if(this.phase==='close-right'){
       this.sim.setJaw('right',this.plan.jawOpening*(1-progress(.6)));
       if(!this._moveBlade(this._displayReference(this.pathPoint)))return;

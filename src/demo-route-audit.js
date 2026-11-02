@@ -18,7 +18,7 @@ export function auditDemoFrame(view,sim,interaction,demo){
     if(!surface)continue;const depth=Math.max(0,-p.clone().sub(surface).dot(surface.normal))*1000;
     if(capsule.part==='shaft')shaftDepth=Math.max(shaftDepth,depth);else wristDepth=Math.max(wristDepth,depth);
   }
-  return{phase:demo.phase,pathIndex:demo.pathIndex,jaw:sim.state.tools.right.jaw,wrist:[...sim.state.tools.right.wrist],steering:!!steering,reentryStage:steering?.route?.stage??null,anchor:anchor.toArray(),anchorErrorMm:expected&&['raster','close-right','row-transfer'].includes(demo.phase)?anchor.distanceTo(expected)*1000:null,pathTargetGapMm:pathTarget?anchor.distanceTo(pathTarget)*1000:null,obscuredMm:obscured,wristCentreDepthMm:wristDepth,wristImplicitDepthMm:wristImplicitDepth,shaftCentreDepthMm:shaftDepth,bodyEnvelopeClearanceMm:demo.plan?.traction?.section?demo._currentBladeGuard(sim.state.tools.right).bodyMinimum*1000:null,pending:interaction.cuttingBusy};
+  return{phase:demo.phase,pathIndex:demo.pathIndex,jaw:sim.state.tools.right.jaw,wrist:[...sim.state.tools.right.wrist],steering:!!steering,reentryStage:steering?.route?.stage??null,anchor:anchor.toArray(),anchorErrorMm:expected&&['raster','close-right','row-transfer'].includes(demo.phase)?anchor.distanceTo(expected)*1000:null,pathTargetGapMm:pathTarget?anchor.distanceTo(pathTarget)*1000:null,obscuredMm:obscured,wristCentreDepthMm:wristDepth,wristImplicitDepthMm:wristImplicitDepth,shaftCentreDepthMm:shaftDepth,bodyEnvelopeClearanceMm:demo.plan?.traction?.section?demo._currentBladeGuard(sim.state.tools.right).bodyMinimum*1000:null,contextClearanceMm:demo._context?.()?.clearance(sim.state.tools.right)*1000,pending:interaction.cuttingBusy};
 }
 
 export function auditHeldTarget(tissue,interaction){
