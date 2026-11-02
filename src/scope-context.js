@@ -1,3 +1,4 @@
+import {instrumentFocusPoint} from './scissors-kinematics.js';
 import * as THREE from 'three';
 
 const caches=new WeakMap();
@@ -70,9 +71,9 @@ export function makeScopeContext(sim,tissue,interaction,now=globalThis.performan
   // tool out of grasp-follow composition, even when剪切 remains enabled.
   const operating=state.activeTool==='right'&&!!(state.cutting||interaction?.grasp||interaction?.contact?.cutting||interaction?.cuttingBusy);
   let intent;
-  if(scope.followMode==='grasp'&&graspTarget)intent=operating?midpoint(graspTarget,state.tools.right.position):graspTarget;
-  else if(scope.followMode==='midpoint'||scope.followMode==='grasp')intent=midpoint(state.tools.left.position,state.tools.right.position);
-  else intent=[...state.tools[state.activeTool].position];
+  if(scope.followMode==='grasp'&&graspTarget)intent=operating?midpoint(graspTarget,instrumentFocusPoint(state.tools.right)):graspTarget;
+  else if(scope.followMode==='midpoint'||scope.followMode==='grasp')intent=midpoint(instrumentFocusPoint(state.tools.left),instrumentFocusPoint(state.tools.right));
+  else intent=[...instrumentFocusPoint(state.tools[state.activeTool])];
 
   if(!cache.surface&&validVector(scope.fieldAnchor))cache.surface=tissue.group.worldToLocal(point(scope.fieldAnchor));
   const needsQuery=now<cache.queriedAt||now-cache.queriedAt>=150||cache.epoch!==tissue._epoch;

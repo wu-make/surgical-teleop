@@ -40,6 +40,55 @@ function bench({plate=false,holdFirst=false}={}){
     field(point){const grid=point.map((v,i)=>Math.round((v-origin[i])/spacing[i]));return volume.field[nodeIndex(volume.meta,...grid)];}};
 }
 
+test('wide strokes keep their recorded width when fine control resumes during meshing',async()=>{
+ const f=bench({plate:true,holdFirst:true});
+ try{
+  f.interaction.setCutRadius(.005);
+  const first=f.interaction.update(1/60);f.at(-.006);await f.interaction.update(1/60);
+  f.interaction.setCutRadius(.00165);f.at(.012);await f.interaction.update(1/60);
+  f.releaseFirst();await first;
+  const cuts=f.operations.flatMap(op=>op.cuts);
+  assert.equal(cuts[0].radius,.005);assert.equal(cuts.at(-1).radius,.00165);
+  for(const op of f.operations)assert(op.cuts.every(c=>c.radius===op.cuts[0].radius),'one worker pass must retain one recorded width');
+  assert(f.field([0,-.008,0])>0,'the wide stroke must remove a real strip of material');
+  assert(f.field([0,.008,0])<0,'resuming fine control must retain its original kerf');
+  assert(f.field([0,.003,0])<0,'changing width must not invent a connecting cut');
+ }finally{f.tissue.dispose();}
+});
+
+test('cut width survives session history and reset restores the fine tool',async()=>{
+ const f=bench();try{
+  f.interaction.setCutRadius(.005);const saved=f.interaction.snapshot();
+  f.interaction.reset();assert.equal(f.interaction.cutRadius,.00165);
+  await f.interaction.restore(saved);assert.equal(f.interaction.cutRadius,.005);
+  assert.throws(()=>f.interaction.setCutRadius(NaN));assert.throws(()=>f.interaction.setCutRadius(.006));
+  assert.equal(f.interaction.cutRadius,.005,'invalid input must not alter the active width');
+ }finally{f.tissue.dispose();}
+});
+
+test('a broad continuous stroke merges rebuilds without dropping any sampled blade pose',async()=>{
+ const f=bench({plate:true,holdFirst:true});try{
+  f.interaction.setCutRadius(.005);const first=f.interaction.update(1/60);
+  f.at(.012);await f.interaction.update(1/60);f.releaseFirst();await first;
+  const cuts=f.operations.flatMap(op=>op.cuts);assert(cuts.length>=25,'all submillimetre source-blade samples remain present');
+  assert(f.operations.length<=3,'a continuous broad stroke should not rebuild the same organ for every few samples');
+  for(const op of f.operations)assert(op.cuts.reduce((n,c)=>n+(c.segments?.length??1),0)<=256,'worker work remains bounded');
+  for(let y=-.012;y<=.012;y+=.001)assert(f.field([0,y,0])>0,'merging work must not leave a material bridge');
+ }finally{f.tissue.dispose();}
+});
+
+test('guided region cuts remove real material, require a closed active broad tool, and freeze the accepted band',async()=>{
+ const f=bench({plate:true});try{
+  const segments=[{a:new THREE.Vector3(-.01,0,0),b:new THREE.Vector3(.01,0,0)}];
+  assert.equal(f.interaction.queueRegionCut(segments),false,'fine manual control cannot trigger an area operation');
+  f.interaction.setCutRadius(.005);f.sim.state.tools.right.jaw=.6;assert.equal(f.interaction.queueRegionCut(segments),false);
+  f.sim.state.tools.right.jaw=0;f.sim.setPaused(true);assert.equal(f.interaction.queueRegionCut(segments),false);f.sim.setPaused(false);
+  assert.equal(f.interaction.queueRegionCut(segments),true);segments[0].a.y=.1;f.interaction.setCutRadius(.00165);
+  await f.interaction.update(1/60,{cutRequested:false});assert(f.field([0,0,0])>0);assert(f.field([0,.004,0])>0);assert(f.field([0,.008,0])<0);
+  const cut=f.operations.flatMap(op=>op.cuts).find(c=>c.radius===.005);assert(cut);assert.equal(cut.a[1],0,'later caller changes cannot move the recorded region');
+ }finally{f.tissue.dispose();}
+});
+
 test('partial opening and movement cannot cut; the next actual closure resumes cutting',async()=>{
   const f=bench();try{
     await f.interaction.update(1/60);const before=f.operations.length;

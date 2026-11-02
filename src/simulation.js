@@ -1,3 +1,4 @@
+import {instrumentFocusPoint} from './scissors-kinematics.js';
 import {instrumentPose,instrumentCapsules} from './instrument-pose.js';
 import {sourceInstrumentContact,sweepInstrument,sourceSegmentDistance} from './instrument-contact.js';
 import {SCOPE_FRAMING,resolveScopeFraming,resolveInitialScopeFraming,advanceScopeDepth,validOrganBounds} from './scope-framing.js';
@@ -355,6 +356,7 @@ export class Simulation {
   }
 
   setPaused(value) {
+    if(this.state.paused===Boolean(value))return;
     this.state.paused = Boolean(value);
     this._gesture = false;
     this._controlAges.clear();
@@ -438,9 +440,9 @@ export class Simulation {
 
   _scopeIntentTarget() {
     const s=this.state.scope;
-    if(s.followMode==='grasp'&&s.graspTarget)return s.operating?interpolate(s.graspTarget,this.state.tools.right.position,.5):[...s.graspTarget];
-    if(s.followMode==='midpoint'||s.followMode==='grasp')return interpolate(this.state.tools.left.position,this.state.tools.right.position,.5);
-    return [...this.state.tools[this.state.activeTool].position];
+    if(s.followMode==='grasp'&&s.graspTarget)return s.operating?interpolate(s.graspTarget,instrumentFocusPoint(this.state.tools.right),.5):[...s.graspTarget];
+    if(s.followMode==='midpoint'||s.followMode==='grasp')return interpolate(instrumentFocusPoint(this.state.tools.left),instrumentFocusPoint(this.state.tools.right),.5);
+    return [...instrumentFocusPoint(this.state.tools[this.state.activeTool])];
   }
 
   _scopeFraming(intentTarget=this._scopeIntentTarget(),projection={}) {
@@ -511,6 +513,14 @@ export class Simulation {
     if (this.state.paused) return {changed: false, limited: false};
     if (checkpoint) this.checkpoint(label, ()=>this.getExtraData?.(),{takeOwnership:this.ownsExtraData});
     return this._moveTool(sub(position, this._tool(id).position), id);
+  }
+
+  /** Coordinated pose replay keeps the same RCM and continuous CAD sweep. */
+  moveToolPose(pose,id=this.state.selected){
+    const tool=this._tool(id),position=pose.position??tool.position,wrist=pose.wrist??tool.wrist,jaw=pose.jaw??tool.jaw;
+    if(!validVector(position)||!validVector(wrist)||!finite(jaw))throw new TypeError('Tool pose requires finite position, wrist and jaw values.');
+    if(this.state.paused)return{changed:false,limited:false};
+    return this._applyTool({...tool,position:constrainToolPosition(position,tool.port),wrist:[...wrist],jaw:clamp(jaw,0,1)},id);
   }
 
   moveTool(delta, id = this.state.selected) {

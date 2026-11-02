@@ -1,3 +1,4 @@
+import {instrumentFocusPoint} from '../src/scissors-kinematics.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
@@ -10,7 +11,7 @@ const nearVector=(a,b,tolerance=1e-9)=>a.forEach((v,i)=>near(v,b[i],tolerance));
 const settle=(sim,seconds=3)=>{for(let i=0;i<seconds*60;i++)sim.update(1/60);};
 const context=()=>({surfaceTarget:[-.08,1.05,.04],organBounds:{min:[-.14,1.01,-.09],max:[.14,1.14,.1]},
   heldSpecimen:{id:'held',position:[-.15,1.14,-.1],radius:.008}});
-function projected(sim,target=sim.state.tools[sim.state.activeTool].position){
+function projected(sim,target=instrumentFocusPoint(sim.state.tools[sim.state.activeTool])){
   const s=sim.state.scope,camera=new THREE.PerspectiveCamera(s.fov,sim.viewAspect,.003,5);
   camera.position.fromArray(s.position);camera.up.fromArray(s.cameraUp);camera.lookAt(new THREE.Vector3(...s.lookAt));
   camera.updateMatrixWorld();return new THREE.Vector3(...target).project(camera);
@@ -35,7 +36,7 @@ function mouseFixture(){
   return {canvas,sim,navigation,advance:n=>time+=n,enable:v=>enabled=v,get began(){return began;},get changed(){return changed;},get focused(){return focused;}};
 }
 
-test('active following keeps the actual moving TCP centred every frame despite stale mother and specimen anchors',()=>{
+test('active following keeps the actual moving distal tip centred every frame despite stale mother and specimen anchors',()=>{
   const sim=new Simulation();sim.setScopeFollow(true,'active');sim.setScopeContext(context());sim.select('left');settle(sim);
   centred(sim);
   let moved=0;
@@ -54,7 +55,7 @@ test('active following keeps the actual moving TCP centred every frame despite s
   }
   assert.ok(moved>.08,'test must include meaningful live movement, not a stationary end pose');
   sim.select('right');settle(sim);centred(sim);
-  assert.deepEqual(sim.state.scope.target,sim.state.tools.right.position);
+  assert.deepEqual(sim.state.scope.target,instrumentFocusPoint(sim.state.tools.right));
   sim.select('left');sim.setScopeContext({...context(),graspTarget:sim.state.tools.left.position,operating:true});settle(sim);
   for(let frame=0;frame<40;frame++){sim.update(1/60,new Set(['KeyE','ShiftLeft']));centred(sim);}
   assert.equal(sim.state.activeTool,'left','left specimen carriage remains the active control target');
@@ -66,12 +67,12 @@ test('large target changes remain speed limited while explicit midpoint and gras
   const after=new THREE.Vector3(...sim.state.scope.direction);
   assert.ok(before.angleTo(after)<=.9/60+1e-9);
   sim.setScopeFollow(true,'midpoint');settle(sim);
-  const midpoint=sim.state.tools.left.position.map((v,i)=>(v+sim.state.tools.right.position[i])/2);
+  const midpoint=sim.state.tools.left.position.map((v,i)=>(v+instrumentFocusPoint(sim.state.tools.right)[i])/2);
   assert.deepEqual(sim.state.scope.target,midpoint);centred(sim,midpoint);
   const grasp=[-.04,1.08,-.02];sim.setScopeContext({...context(),graspTarget:grasp,operating:false});sim.setScopeFollow(true,'grasp');settle(sim);
   assert.deepEqual(sim.state.scope.target,grasp);centred(sim,grasp);
   sim.setScopeViewMode('specimen');sim.setScopeFollow(true,'active');settle(sim);
-  assert.deepEqual(sim.state.scope.target,sim.state.tools.right.position);centred(sim);
+  assert.deepEqual(sim.state.scope.target,instrumentFocusPoint(sim.state.tools.right));centred(sim);
 });
 
 test('manual canvas dragging controls RCM yaw/pitch with one history gesture and no tool movement',()=>{
@@ -127,7 +128,7 @@ test('manual navigation and optical zoom validate inputs, home/reset restore def
   assert.throws(()=>sim.navigateScope(NaN,0),TypeError);assert.throws(()=>sim.zoomScope(Infinity),TypeError);assert.deepEqual(sim.snapshot(),before);
   sim.navigateScope(.4,-.25);sim.zoomScope(-.3);const depth=sim.state.scope.depth;
   sim.homeScopeView();near(sim.state.scope.fov,55);near(sim.state.scope.roll,0);near(sim.state.scope.depth,depth);
-  const midpoint=sim.state.tools.left.position.map((v,i)=>(v+sim.state.tools.right.position[i])*.5);
+  const midpoint=sim.state.tools.left.position.map((v,i)=>(v+instrumentFocusPoint(sim.state.tools.right)[i])*.5);
   const ray=new THREE.Vector3(...sim.state.scope.direction),target=new THREE.Vector3(...midpoint).sub(new THREE.Vector3(...sim.state.scope.port)).normalize();
   assert.ok(ray.angleTo(target)<1e-7);
   sim.setScopeFollow(true);const auto=sim.snapshot();assert.equal(sim.navigateScope(.1,.1),false);assert.deepEqual(sim.snapshot(),auto);

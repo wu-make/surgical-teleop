@@ -316,7 +316,7 @@ test('fragment history restores its exact frozen rigid pose before the next fres
   let worldRotation=new THREE.Quaternion();interaction.toolQuaternion=()=>worldRotation;
   await interaction.update(1/60);
   const snapshot=interaction.snapshot();
-  assert.equal(snapshot.version,3);assert.equal(snapshot.grasp.kind,'fragment');
+  assert.equal(snapshot.version,4);assert.equal(snapshot.grasp.kind,'fragment');
   const saved=snapshot.tissue.fragments[0];
   // Stub only the asynchronous worker transport: the tissue module owns exact
   // specimen pose restoration; interaction must not overwrite it with stale CAD.

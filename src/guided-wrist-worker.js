@@ -1,0 +1,2 @@
+import{planJob}from'./guided-wrist-planning-job.js';let current;
+self.onmessage=async({data})=>{if(data.type==='cancel'){if(current?.id===data.id)current.cancelled=true;return;}if(data.type!=='plan')return;if(current)current.cancelled=true;const token=current={id:data.id,cancelled:false};try{const result=await planJob(data.context,{valid:()=>!token.cancelled});self.postMessage({id:data.id,result});}catch(error){self.postMessage({id:data.id,error:error.stack??String(error)});}finally{if(current===token)current=null;}};

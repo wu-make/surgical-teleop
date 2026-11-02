@@ -1,11 +1,17 @@
 import * as THREE from 'three';
-import {yieldPreparationTask} from './preparation-task.js';
+import {yieldPreparationTask as yieldBackgroundPreparation} from './preparation-task.js';
+import {auditDemoFrame,auditHeldTarget} from './demo-route-audit.js';
+
+// Functional stepping must not queue each test tick at background priority.
+// This remains a task yield, and deliberately makes no native FPS claim.
+const yieldPreparationTask=()=>yieldBackgroundPreparation({scheduler:null});
 
 // Development-only end-to-end execution of the actual application controller.
 // Try ordinary RAF first. A throttled host can still check the exact shared
 // single-step/render/worker path, but that run is explicitly no FPS acceptance.
 export async function verifyCompleteWorkflow(view,sim,interaction,pause,options){
   const {demo}=options,tissue=view.tissue,auditEvery=Number(new URLSearchParams(location.search).get('canvas-audit-every')??120),report={phases:[],frames:[],visibleAudits:[],stops:[],auditEvery,mode:null,complete:false};let clock=performance.now(),frameResolve=null,auditTask=null;
+  const routeAudit=new URLSearchParams(location.search).has('verify-demo-route'),routeImages=new Set(),imageTasks=[],stepMs=new URLSearchParams(location.search).has('workflow-step')?50:1000/60;report.stepMs=stepMs;if(routeAudit)report.routeAudit=[];
   const originalStop=demo.stop;demo.stop=function(message){if(this.active)report.stops.push({at:performance.now(),message,phase:this.phase,stack:new Error().stack});return originalStop.call(this,message);};
   const assert=(value,message)=>{if(!value)throw new Error(message);};
   const verifyScoreHistory=new URLSearchParams(location.search).has('verify-score-history');
@@ -19,6 +25,7 @@ export async function verifyCompleteWorkflow(view,sim,interaction,pause,options)
     (report.scoreChecks??=[]).push({label,pathology:{...s},percent:bar,points,remaining});
   };
   const send=async(name,data,type='application/json')=>fetch('/__qa__/'+name,{method:'POST',headers:{'Content-Type':type},body:type==='application/json'?JSON.stringify(data):data});
+  const heartbeat=setInterval(()=>{void send('v38-workflow-heartbeat.json',{at:performance.now(),phase:demo.phase,mode:demo.mode,pathIndex:demo.pathIndex,total:demo.plan?.path.length,transferIndex:demo._transferIndex,transferTotal:demo._transferPath?.length,biteTime:demo._biteTime,biteWaiting:demo._biteWaiting,steering:!!demo._bladeSteering,goals:demo.wristGoalCandidates,paused:sim.state.paused,tissueBusy:tissue.busy,cuttingBusy:interaction.cuttingBusy,contact:{...interaction.contact},cuts:tissue._cuts.length,worker:tissue._inFlight?.command?.type,timings:{...tissue.updateTimings}});},1000);
   const state=()=>({model:tissue.caseDefinition?.id??'liver',pathology:tissue.pathology,cutCount:tissue._cuts.length,removed:tissue.removedVolumeMm3,fragments:tissue.fragmentMetrics,grasp:interaction.metrics.grasp,blood:tissue.blood.metrics,tools:structuredClone(sim.state.tools),scope:structuredClone(sim.state.scope)});
   const phase=async name=>{const current=state();if(!tissue.blood.spread)assert(!current.blood.spreading&&!current.blood.droplets&&!current.blood.surfacePools&&Math.abs(current.blood.balanceErrorMm3)<1e-4,'wound-confined blood policy failed');report.phases.push({name,at:performance.now(),state:current});await send('v38-workflow-progress.json',{...report,frames:report.frames.slice(-8)});};
   const audit=()=>{
@@ -26,13 +33,23 @@ export async function verifyCompleteWorkflow(view,sim,interaction,pause,options)
     const phase=demo.phase;
     auditTask=(async()=>{const start=performance.now(),image=await createImageBitmap(view.canvas),c=new OffscreenCanvas(image.width,image.height),x=c.getContext('2d',{willReadFrequently:true});x.drawImage(image,0,0);image.close();const p=x.getImageData(0,0,c.width,c.height).data;let colored=0,opaque=0;for(let i=0;i<p.length;i+=4){if(p[i]||p[i+1]||p[i+2])colored++;if(p[i+3])opaque++;}report.visibleAudits.push({phase,width:c.width,height:c.height,coloredPixels:colored,opaquePixels:opaque,ms:performance.now()-start});})().finally(()=>auditTask=null);
   };
-  const frame=now=>{report.frames.push({now,cutCount:tissue._cuts.length,phase:demo.phase,presented:view.renderTimings.presented,tissueMs:tissue.updateTimings.receiveMs,renderMs:view.renderTimings.scopeMs+view.renderTimings.overviewMs+(view.renderTimings.presentationMs??0),hidden:document.hidden});if(auditEvery>0&&report.frames.length%auditEvery===0)audit();if(frameResolve){const done=frameResolve;frameResolve=null;done();}};
+  const frame=now=>{report.frames.push({now,cutCount:tissue._cuts.length,phase:demo.phase,presented:view.renderTimings.presented,tissueMs:tissue.updateTimings.receiveMs,renderMs:view.renderTimings.scopeMs+view.renderTimings.overviewMs+(view.renderTimings.presentationMs??0),hidden:document.hidden});if(routeAudit&&demo.active&&report.frames.length%12===0)report.routeAudit.push(auditDemoFrame(view,sim,interaction,demo));if(routeAudit&&demo.phase==='raster')for(const percent of [10,40,70])if(!routeImages.has(percent)&&demo.pathIndex/demo.plan.path.length>=percent/100){routeImages.add(percent);imageTasks.push(new Promise(resolve=>view.canvas.toBlob(resolve,'image/png')).then(blob=>send('v39-demo-cut-'+percent+'.png',blob,'image/png')));}if(auditEvery>0&&report.frames.length%auditEvery===0)audit();if(frameResolve){const done=frameResolve;frameResolve=null;done();}};
   const nativeFrame=()=>new Promise(resolve=>frameResolve=resolve);
   const settle=async()=>{sim.state.paused=false;try{while(tissue.busy||interaction.cuttingBusy){if(tissue.busy)await new Promise(resolve=>tissue.worker.addEventListener('message',resolve,{once:true}));else await interaction.update(1/60);await yieldPreparationTask();}}finally{sim.state.paused=true;}};
-  const sharedStep=async(keys=[],withDemo=true)=>{await settle();sim.state.paused=true;assert(await options.advance(keys,clock+=1000/60,withDemo),'shared application frame was rejected');frame(clock);await yieldPreparationTask();};
+  const sharedStep=async(keys=[],withDemo=true)=>{
+    if(options.advanceLive){
+      // Suspend verification time while the real controller is waiting for
+      // an unchanged cut queue. Avoid rendering thousands of identical wait
+      // frames and starving the same geometry worker being verified.
+      if(withDemo&&(demo._bladeSteering||demo.phase==='area-cut'||demo.phase==='row-transfer'||demo.phase==='return-cut'||demo._biteWaiting||(interaction.contact?.pendingCutSamples??0)>12||(interaction.contact?.cutBacklogMm??0)>(interaction.cutRadius??.00165)*2000))await settle();
+      assert(options.advanceLive(keys,clock+=stepMs,stepMs/1000,withDemo),'shared live application frame was rejected');report.frameDriver='application-live-loop';
+    }
+    else{await settle();sim.state.paused=true;assert(await options.advance(keys,clock+=stepMs,withDemo,stepMs/1000),'shared application frame was rejected');}
+    frame(clock);await yieldPreparationTask();
+  };
   const steps=async(count,keys=[])=>{
     if(report.mode==='ordinary-raf'){options.holdKeys(keys);sim.state.paused=false;for(let i=0;i<count;i++)await nativeFrame();options.holdKeys([]);sim.state.paused=true;}
-    else{if(keys.includes('KeyH'))options.beginPressure();for(let i=0;i<count;i++)await sharedStep(keys,false);}
+    else{if(keys.includes('KeyH'))options.beginPressure();for(let i=0;i<Math.ceil(count*(1000/60)/stepMs);i++)await sharedStep(keys,false);}
   };
   const capture=async name=>{sim.state.paused=true;view.update(sim.state,0);view.render();await send('v38-workflow-'+name+'.png',await new Promise(resolve=>view.canvas.toBlob(resolve,'image/png')),'image/png');};
   try{
@@ -40,17 +57,22 @@ export async function verifyCompleteWorkflow(view,sim,interaction,pause,options)
     const first=performance.now(),before=report.frames.length;
     await Promise.race([(async()=>{for(let i=0;i<8;i++)await nativeFrame();})(),new Promise(resolve=>setTimeout(resolve,4000))]);
     const sample=report.frames.slice(before),span=sample.length>1?sample.at(-1).now-sample[0].now:Infinity;
-    report.mode=!document.hidden&&sample.length>=8&&span<800?'ordinary-raf':'shared-single-step-no-fps-claim';report.nativeProbe={frames:sample.length,wallMs:performance.now()-first,spanMs:span,hidden:document.hidden};
+    report.mode=!new URLSearchParams(location.search).has('workflow-step')&&!document.hidden&&sample.length>=8&&span<800?'ordinary-raf':'shared-single-step-no-fps-claim';report.nativeProbe={frames:sample.length,wallMs:performance.now()-first,spanMs:span,hidden:document.hidden};
     frameResolve=null;options.setFrameCallback(report.mode==='ordinary-raf'?frame:null);options.setExclusive(report.mode!=='ordinary-raf');sim.state.paused=true;
-    assert(await demo.startExampleAsync({yieldFrame:yieldPreparationTask}),'actual peripheral resection plan failed');sim.state.paused=true;await phase('grasp-traction-and-cut-start');
+    assert(await demo.startExampleAsync({yieldFrame:yieldPreparationTask}),'actual peripheral resection plan failed');
+    sim.state.paused=true;await phase('grasp-traction-and-cut-start');
+    report.wristRoutes=demo.wristRouteTimings??[];
     let previous=demo.phase;
-    for(let i=0;demo.active&&i<12000;i++){
+    for(let i=0;demo.active&&i<(routeAudit?60000:12000);){
+      if(demo.mode==='planning'){if(demo.planningTask)await demo.planningTask;else await yieldPreparationTask();continue;}
       if(report.mode==='ordinary-raf'){sim.state.paused=false;await nativeFrame();}
-      else if(demo.mode==='planning')await yieldPreparationTask();else await sharedStep([],true);
+      else await sharedStep([],true);
+      i++;
       if(demo.phase!==previous){previous=demo.phase;await phase(previous);}
       else if(i%120===0)await send('v38-workflow-progress.json',{...report,current:state(),frames:report.frames.slice(-8)});
     }
     await settle();assert(!demo.active,'actual resection exceeded bounded duration');assert(tissue.fragmentMetrics.count>0,'no true separated specimen was generated');assert(interaction.grasp?.kind==='fragment','left grasper did not retain the real separated specimen');
+    if(routeAudit){report.heldTarget=auditHeldTarget(tissue,interaction);assert(!report.heldTarget||report.heldTarget.heldFraction>.9,'held specimen is not the actual target');}
     const id=interaction.grasp.fragmentId,piece=tissue.getFragment(id);await phase('separated-and-carried');await capture('carried');
     sim.select('left');const beforePosition=piece.position.clone(),beforeRotation=piece.quaternion.clone();tissue.blood.updatePositions();const owned=tissue.blood.nodes.filter(n=>n.fragmentId===id),bloodBefore=owned.map(n=>n.display.clone());
     await steps(30,['KeyE']);await steps(20,['KeyD']);assert(piece.held&&piece.position.distanceTo(beforePosition)>.0001,'manual held specimen movement failed');
@@ -66,8 +88,8 @@ export async function verifyCompleteWorkflow(view,sim,interaction,pause,options)
       scoreCheck('redo-resection');assert(tissue._cuts.length===cuts&&tissue.fragmentMetrics.count===fragments&&JSON.stringify(tissue.pathology)===JSON.stringify(target),'redo did not restore the same real resection');
       report.historyCycles={undos,redos:undos};
     }
-    if(auditTask)await auditTask;if(auditEvery>0)assert(report.visibleAudits.length>0&&report.visibleAudits.every(a=>a.coloredPixels>0&&a.opaquePixels===a.width*a.height),'visible output contained a blank or transparent frame');assert(report.frames.every(f=>f.presented),'a complete rendered frame failed presentation');report.final=state();report.presentation=view.presentation.metrics;report.pressureRouteTimings=demo.pressureRouteTimings;report.diagnostics=options.diagnostics();report.complete=true;await send('v38-workflow-result.json',report);
+    if(auditTask)await auditTask;await Promise.all(imageTasks);if(auditEvery>0)assert(report.visibleAudits.length>0&&report.visibleAudits.every(a=>a.coloredPixels>0&&a.opaquePixels===a.width*a.height),'visible output contained a blank or transparent frame');assert(report.frames.every(f=>f.presented),'a complete rendered frame failed presentation');report.final=state();report.presentation=view.presentation.metrics;report.pressureRouteTimings=demo.pressureRouteTimings;report.diagnostics=options.diagnostics();report.complete=true;await send('v38-workflow-result.json',report);
     await options.reset();sim.state.paused=true;scoreCheck('reset');view.update(sim.state,0);view.render();const tips=['left','right'].map(side=>new THREE.Vector3(...sim.state.tools[side].position).project(view.endoCamera));assert(!tissue._cuts.length&&!tissue.fragmentMetrics.count&&tips.every(p=>Math.abs(p.x)<1&&Math.abs(p.y)<1),'reset did not restore the complete organ and both visible tips');report.resetVerified=true;await send('v38-workflow-result.json',report);
-  }catch(error){report.error=String(error);report.stack=error.stack;report.diagnostics=options.diagnostics();await send('v38-workflow-result.json',report);}
-  finally{demo.stop=originalStop;options.holdKeys([]);options.setFrameCallback(null);options.setExclusive(false);pause(true);}
+  }catch(error){report.error=String(error);report.stack=error.stack;report.diagnostics=options.diagnostics();try{report.failedState={state:sim.snapshot(),interaction:interaction.snapshot()};}catch{}await send('v38-workflow-result.json',report);}
+  finally{clearInterval(heartbeat);demo.stop=originalStop;options.holdKeys([]);options.setFrameCallback(null);options.setExclusive(false);pause(true);}
 }

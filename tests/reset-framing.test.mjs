@@ -47,12 +47,12 @@ test('initial/reset framing contains both actual CAD TCPs and metal jaw ends in 
   }
 });
 
-test('first real instrument input leaves startup framing for active TCP, while explicit midpoint/grasp remain authoritative',()=>{
+test('first real instrument input leaves startup framing for the visible distal blade, while explicit midpoint/grasp remain authoritative',()=>{
   const sim=new Simulation();sim.prepareInitialScopeView(.462);sim.select('right');
   sim.update(.05,new Set());assert.equal(sim.state.scope.startupOverview,true,'selection and idle frames do not discard the initial two-tip view');
   sim.update(.05,new Set(['KeyD']));assert.equal(sim.state.scope.startupOverview,false);assert.equal(sim.state.scope.followMode,'active');assert.equal(sim.state.activeTool,'right');
   sim.update(.01,new Set());for(let i=0;i<120;i++)sim.update(1/60);
-  const projected=assemblies.toolTipPositions.right;assemblies.update(sim.state,1/60);const p=projected.clone().project(cameraFor(sim,.462));near(p.x,0,1e-8);near(p.y,0,1e-8);
+  assemblies.update(sim.state,1/60);const blade=assemblies.toolBlade('right'),projected=blade.segments[5].b.clone().add(blade.segments[11].b).multiplyScalar(.5),p=projected.project(cameraFor(sim,.462));near(p.x,0,1e-8);near(p.y,0,1e-8);
   sim.undo();assert.equal(sim.state.scope.startupOverview,true);bothVisible(sim,.462);
   for(const mode of ['midpoint','grasp']){
     sim.reset();sim.setScopeFollow(true,mode);sim.moveTool([-.002,0,0],'left');assert.equal(sim.state.scope.followMode,mode);assert.equal(sim.state.scope.startupOverview,false);

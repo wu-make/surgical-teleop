@@ -1,3 +1,4 @@
+import {instrumentFocusPoint} from '../src/scissors-kinematics.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
@@ -83,7 +84,7 @@ test('scope follows selected tip, preserves RCM, changes depth and accepts manua
   s.select('right');
   hold(s, ['KeyD', 'KeyQ'], .6);
   hold(s, [], 6);
-  nearVector(s.state.scope.target, s.state.tools.right.position);
+  nearVector(s.state.scope.target, instrumentFocusPoint(s.state.tools.right));
   const scope = s.state.scope;
   const shaft = sub(scope.position, scope.port);
   const sight = sub(scope.lookAt, scope.port);
@@ -104,7 +105,7 @@ test('scope follows selected tip, preserves RCM, changes depth and accepts manua
   near(scope.yaw, yaw);
   s.setScopeFollow(true, 'midpoint');
   s.update(.01, new Set());
-  nearVector(scope.target, s.state.tools.left.position.map((v, i) => (v + s.state.tools.right.position[i]) / 2));
+  nearVector(scope.target, s.state.tools.left.position.map((v, i) => (v + instrumentFocusPoint(s.state.tools.right)[i]) / 2));
 });
 
 test('automatic scope centres free-space tips above and below its port, then freezes on pause', () => {
@@ -121,7 +122,7 @@ test('automatic scope centres free-space tips above and below its port, then fre
     hold(s, [], 10, .02);
     const camera = s.state.scope;
     const forward = sub(camera.lookAt, camera.position);
-    const toTarget = sub(tool.position, camera.position);
+    const toTarget = sub(instrumentFocusPoint(tool), camera.position);
     // The norm of this cross product is the sine of the off-axis angle. With
     // positive forward projection this also verifies a perspective image centre.
     const normalizedError = Math.hypot(...cross(forward, toTarget)) / (Math.hypot(...forward) * Math.hypot(...toTarget));
@@ -431,9 +432,9 @@ test('cooperative scope context chooses grasp or combined cutting work point', (
   s.setScopeFollow(true,'grasp'); s.update(.01,new Set());
   nearVector(s.state.scope.target,target);
   s.setScopeContext({graspTarget:target, operating:true}); s.update(.01,new Set());
-  nearVector(s.state.scope.target,target.map((v,i)=>(v+s.state.tools.right.position[i])/2));
+  nearVector(s.state.scope.target,target.map((v,i)=>(v+instrumentFocusPoint(s.state.tools.right)[i])/2));
   s.setScopeContext(); s.update(.01,new Set());
-  nearVector(s.state.scope.target,s.state.tools.left.position.map((v,i)=>(v+s.state.tools.right.position[i])/2));
+  nearVector(s.state.scope.target,s.state.tools.left.position.map((v,i)=>(v+instrumentFocusPoint(s.state.tools.right)[i])/2));
   assert.throws(()=>s.setScopeContext({graspTarget:[NaN,0,0]}),TypeError);
 });
 
@@ -658,13 +659,13 @@ test('anatomical framing preserves active, midpoint and cooperative grasp intent
   s.setScopeFollow(true,'active');
   s.setScopeContext({...context,graspTarget:grasp});
   s.select('right');s.update(.02);
-  nearVector(s.state.scope.intentTarget,s.state.tools.right.position);
+  nearVector(s.state.scope.intentTarget,instrumentFocusPoint(s.state.tools.right));
   s.setScopeFollow(true,'midpoint');s.update(.02);
-  nearVector(s.state.scope.intentTarget,s.state.tools.left.position.map((v,i)=>(v+s.state.tools.right.position[i])/2));
+  nearVector(s.state.scope.intentTarget,s.state.tools.left.position.map((v,i)=>(v+instrumentFocusPoint(s.state.tools.right)[i])/2));
   s.setScopeFollow(true,'grasp');s.update(.02);
   nearVector(s.state.scope.intentTarget,grasp);
   s.setScopeContext({graspTarget:grasp,operating:true});s.update(.02);
-  nearVector(s.state.scope.intentTarget,grasp.map((v,i)=>(v+s.state.tools.right.position[i])/2));
+  nearVector(s.state.scope.intentTarget,grasp.map((v,i)=>(v+instrumentFocusPoint(s.state.tools.right)[i])/2));
   assert.equal(s.state.scope.viewMode,'field');
 });
 
@@ -815,4 +816,12 @@ test('explicit ownership avoids a duplicate history clone and normal checkpoints
   assert.equal(sim.undoStack[1].extraData.blood.volume,5);
   const result=sim.undo({blood:{volume:6}});result.extraData.blood.volume=100;
   assert.equal(sim.redoStack[0].extraData.blood.volume,6);
+});
+
+test('reasserting the running state preserves one held gesture, its acceleration and the earliest undo snapshot',()=>{
+  const repeated=new Simulation(),reference=new Simulation(),start=repeated.snapshot();
+  for(let i=0;i<20;i++){repeated.setPaused(false);repeated.update(.02,new Set(['KeyA']));reference.update(.02,new Set(['KeyA']));}
+  nearVector(repeated.state.tools.left.position,reference.state.tools.left.position);
+  assert.equal(repeated.undoStack.length,1);repeated.undo();nearVector(repeated.state.tools.left.position,start.state.tools.left.position);
+  reference.setPaused(true);reference.setPaused(false);reference.update(.02,new Set(['KeyA']));assert.equal(reference.undoStack.length,2,'a real pause still starts a new gesture');
 });

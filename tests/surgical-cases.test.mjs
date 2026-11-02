@@ -10,7 +10,7 @@ import {lesionNodes,lesionStatistics} from '../src/lesion-volume.js';
 import {resectionScore} from '../src/resection-score.js';
 import {createTissueMaterial} from '../src/tissue-material.js';
 import {TissueVolume} from '../src/tissue.js';
-import {GuidedDemo,planPeripheralResections} from '../src/guided-demo.js';
+import {GuidedDemo,planPeripheralResections,areaResectionPlan} from '../src/guided-demo.js';
 import {InteractionController} from '../src/interaction-controller.js';
 import {instrumentPose} from '../src/instrument-pose.js';
 
@@ -36,18 +36,31 @@ test('actual pelvic volume cuts off the left target and accounts for lesion in t
   assert(after.excisedMm3/before.totalMm3<.01,'the lesion cannot disappear by replacing it with a visual dummy');
 });
 
-test('both lesion examples cover the complete target and preflight their full CAD paths without empty-corner collisions',()=>{
+test('both lesion examples cover the complete target and prepare a source-CAD entry without empty-corner collisions',()=>{
   for(const id of ['lesion-liver','uterus-adnexa']){
     const c=surgicalCase(id),meta=JSON.parse(fs.readFileSync(new URL('../public/assets/'+c.asset+'.json',import.meta.url))),b=fs.readFileSync(new URL('../public/assets/'+c.asset+'.bin',import.meta.url));
     const tissue=new TissueVolume({caseDefinition:c});tissue.metadata=meta;tissue._baseField=new Float32Array(b.buffer.slice(b.byteOffset,b.byteOffset+b.byteLength));tissue.group.position.y=1.035;tissue.group.rotation.x=-Math.PI/2;tissue.group.updateMatrixWorld(true);
     const sim=new Simulation(),interaction=new InteractionController(sim,tissue),demo=new GuidedDemo(sim,tissue,interaction);initializeCase(sim,tissue,c,949/612);
     try{
       const plans=planPeripheralResections(tissue);assert.equal(plans.length,1);const plan=plans[0];
-      assert(plan.plane<c.lesion.center[0]-c.lesion.radii[0]);assert(plan.referenceAnchor.x>plan.plane);
-      assert(demo._preparePlan(plan),'every planned source-CAD movement must be accepted by the actual collision controller');
+      assert.equal(plan.axis,id==='lesion-liver'?2:0);
+      assert(plan.plane<c.lesion.center[plan.axis]-c.lesion.radii[plan.axis]);assert(plan.referenceAnchor.getComponent(plan.axis)>plan.plane);
+      assert(demo._preparePlan(plan),'the prepared entry must be accepted by the actual collision controller');
       assert(Math.abs(tissue.queryReferenceDistance(plan.referenceAnchor))<meta.spacing[0]*.1);
     }finally{tissue.dispose();}
   }
+});
+
+test('hepatic area operations preserve every curved cut segment while avoiding per-cell instrument traversal',()=>{
+ const c=surgicalCase('lesion-liver'),meta=JSON.parse(fs.readFileSync(new URL('../public/assets/liver-volume.json',import.meta.url))),b=fs.readFileSync(new URL('../public/assets/liver-volume.bin',import.meta.url)),tissue=new TissueVolume({caseDefinition:c});
+ tissue.metadata=meta;tissue._baseField=new Float32Array(b.buffer.slice(b.byteOffset,b.byteOffset+b.byteLength));tissue.group.position.y=1.035;tissue.group.rotation.x=-Math.PI/2;tissue.group.updateMatrixWorld(true);
+ try{
+  const raw=planPeripheralResections(tissue,{cutRadius:.005})[0],before=raw.path.map(p=>p.toArray()),expected=[];
+  for(let row=0;row<raw.strokeStarts.length;row++)for(let i=raw.strokeStarts[row]+1;i<(raw.strokeStarts[row+1]??raw.path.length);i++)expected.push([raw.path[i-1].toArray(),raw.path[i].toArray()]);
+  const area=areaResectionPlan(tissue,raw);assert(area);assert.equal(area.pattern,'area');assert(area.path.length<raw.path.length/8,'the robot uses a few region operations instead of scanning all material points');
+  assert(area.areaBands.every(band=>band.length<=256));assert.deepEqual(area.areaBands.flat().map(s=>[s.a.toArray(),s.b.toArray()]),expected,'the real curved volume cut cannot drop geometry between controls');
+  assert.deepEqual(raw.path.map(p=>p.toArray()),before);assert.deepEqual(area.path[0].toArray(),raw.path[0].toArray(),'preserve the collision-checked entry point');
+ }finally{tissue.dispose();}
 });
 
 test('new scenario tips retain true fixed-port shaft alignment and can be reset repeatedly',()=>{

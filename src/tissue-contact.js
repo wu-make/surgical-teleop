@@ -141,6 +141,22 @@ class SurfaceIndex {
     }
     return result;
   }
+  boxVertexDistance(box,inverse,bounds,maximum){
+    this.refit();let best=maximum;
+    const triangle=new THREE.Triangle(),stack=[this.root],positions=this.positions,indices=this.indices;
+    while(stack.length){
+      const node=stack.pop();if(boxesDistanceSquared(bounds,node.bounds)>best*best)continue;
+      if(!node.triangles){stack.push(node.left,node.right);continue;}
+      for(const id of node.triangles){
+        triangle.a.fromBufferAttribute(positions,indices[id*3]).applyMatrix4(inverse);
+        triangle.b.fromBufferAttribute(positions,indices[id*3+1]).applyMatrix4(inverse);
+        triangle.c.fromBufferAttribute(positions,indices[id*3+2]).applyMatrix4(inverse);
+        if(box.intersectsTriangle(triangle))return 0;
+        best=Math.min(best,box.distanceToPoint(triangle.a),box.distanceToPoint(triangle.b),box.distanceToPoint(triangle.c));
+      }
+    }
+    return best;
+  }
 }
 
 const indices=new WeakMap();
@@ -185,4 +201,100 @@ export function closestParentSegment(meshes,start,end,margin){
     result=candidate;best=candidate.distance;if(best<1e-10)break;
   }
   return result;
+}
+
+/** Exact distance between the displayed triangles and a rigid oriented box.
+ * Triangle vertices, box edges, and SAT intersections cover all closest cases.
+ */
+export function closestParentBox(meshes,box,matrix,margin){
+  const list=Array.from(meshes),world=box.clone().applyMatrix4(matrix),inverse=matrix.clone().invert(),bounds=[...world.min.toArray(),...world.max.toArray()];let best=margin;
+  for(const mesh of list){
+    const geometry=mesh.geometry,b=geometry.boundingBox;
+    if(!geometry.index?.count||boxesDistanceSquared(bounds,[...b.min.toArray(),...b.max.toArray()])>best*best)continue;
+    let index=indices.get(geometry);if(!index){index=new SurfaceIndex(geometry);indices.set(geometry,index);}
+    best=Math.min(best,index.boxVertexDistance(box,inverse,bounds,best));if(best===0)return 0;
+  }
+  const corners=[];for(let z=0;z<2;z++)for(let y=0;y<2;y++)for(let x=0;x<2;x++)corners.push(new THREE.Vector3(x?box.max.x:box.min.x,y?box.max.y:box.min.y,z?box.max.z:box.min.z).applyMatrix4(matrix));
+  for(let i=0;i<8;i++)for(const bit of [1,2,4])if(!(i&bit)){
+    const hit=closestParentSegment(list,corners[i],corners[i|bit],best);if(hit)best=Math.min(best,hit.distance);if(best===0)return 0;
+  }
+  return best;
+}
+
+function trianglePairDistance(a,b,s){
+  let best=Infinity;
+  const take=(p,q)=>{const d=p.distanceToSquared(q);if(d<best){best=d;s.closestA.copy(p);s.closestB.copy(q);}};
+  for(const p of [a.a,a.b,a.c]){b.closestPointToPoint(p,s.q);take(p,s.q);}
+  for(const p of [b.a,b.b,b.c]){a.closestPointToPoint(p,s.p);take(s.p,p);}
+  const av=[a.a,a.b,a.c],bv=[b.a,b.b,b.c];
+  for(let i=0;i<3;i++)for(let j=0;j<3;j++){closestSegments(av[i],av[(i+1)%3],bv[j],bv[(j+1)%3],s.p,s.q,s.u,s.v,s.r);take(s.p,s.q);}
+  for(let side=0;side<2;side++)for(let i=0;i<3;i++){
+    const vertices=side?bv:av,p=vertices[i],q=vertices[(i+1)%3],two=side?a:b;
+    s.direction.subVectors(q,p);const length=s.direction.length();if(length<1e-15)continue;
+    s.ray.set(p,s.direction.divideScalar(length));
+    if(s.ray.intersectTriangle(two.a,two.b,two.c,false,s.hit)&&s.hit.distanceToSquared(p)<=length*length+1e-18){s.closestA.copy(s.hit);s.closestB.copy(s.hit);return 0;}
+  }
+  return Math.sqrt(best);
+}
+
+/** Full original metal triangles against full displayed organ triangles.
+ * Both immutable hierarchies remain complete; boxes only prune distant pairs.
+ * This resolves the empty spaces that conservative wrist boxes also enclose. */
+export function closestParentMetal(meshes,metal,matrix,margin,details=null){
+  const transformed=new Map(),localParents=new Map(),faces=new Map(),parentFaces=new Map(),m=matrix.elements;
+  let rigid=true;for(let i=0;i<3;i++)for(let j=0;j<3;j++)if(Math.abs(m[i*4]*m[j*4]+m[i*4+1]*m[j*4+1]+m[i*4+2]*m[j*4+2]-(i===j?1:0))>1e-10)rigid=false;
+  const inverse=rigid?matrix.clone().invert().elements:null;
+  const transformBounds=(b,e)=>{
+    const c=[(b[0]+b[3])*.5,(b[1]+b[4])*.5,(b[2]+b[5])*.5],h=[(b[3]-b[0])*.5,(b[4]-b[1])*.5,(b[5]-b[2])*.5],p=[],r=[];
+    for(let i=0;i<3;i++){p[i]=e[i]*c[0]+e[4+i]*c[1]+e[8+i]*c[2]+e[12+i];r[i]=Math.abs(e[i])*h[0]+Math.abs(e[4+i])*h[1]+Math.abs(e[8+i])*h[2]+1e-12;}
+    return[p[0]-r[0],p[1]-r[1],p[2]-r[2],p[0]+r[0],p[1]+r[1],p[2]+r[2]];
+  };
+  const faceBounds=t=>[Math.min(t.a.x,t.b.x,t.c.x)-1e-12,Math.min(t.a.y,t.b.y,t.c.y)-1e-12,Math.min(t.a.z,t.b.z,t.c.z)-1e-12,Math.max(t.a.x,t.b.x,t.c.x)+1e-12,Math.max(t.a.y,t.b.y,t.c.y)+1e-12,Math.max(t.a.z,t.b.z,t.c.z)+1e-12];
+  const bounds=node=>{
+    let out=transformed.get(node);if(out)return out;out=transformBounds(node.bounds,m);transformed.set(node,out);return out;
+  };
+  const lowerBound=(metalNode,parentNode)=>{
+    const world=boxesDistanceSquared(bounds(metalNode),parentNode.bounds);if(!inverse)return world;
+    let local=localParents.get(parentNode);if(!local){local=transformBounds(parentNode.bounds,inverse);localParents.set(parentNode,local);}
+    // A long diagonal shaft has a very loose world-axis box. The same
+    // complete pair in source axes supplies another conservative distance;
+    // rigid transforms preserve the metric, so their maximum is still safe.
+    return Math.max(world,boxesDistanceSquared(metalNode.bounds,local));
+  };
+  const scratch={p:new THREE.Vector3(),q:new THREE.Vector3(),u:new THREE.Vector3(),v:new THREE.Vector3(),r:new THREE.Vector3(),direction:new THREE.Vector3(),hit:new THREE.Vector3(),closestA:new THREE.Vector3(),closestB:new THREE.Vector3(),ray:new THREE.Ray()};
+  const root=metal.tree.root,rootBounds=bounds(root),stack=[];let best=margin;
+  for(const mesh of meshes){
+    const g=mesh.geometry,box=g.boundingBox;if(!g.index?.count||boxesDistanceSquared(rootBounds,[...box.min.toArray(),...box.max.toArray()])>best*best)continue;
+    let index=indices.get(g);if(!index){index=new SurfaceIndex(g);indices.set(g,index);}index.refit();
+    const lower=lowerBound(root,index.root);if(lower<=best*best)stack.push({metal:root,parent:index.root,index,lower});
+  }
+  stack.sort((x,y)=>y.lower-x.lower);
+  const span=b=>(b[3]-b[0])**2+(b[4]-b[1])**2+(b[5]-b[2])**2;
+  while(stack.length){
+    const item=stack.pop();if(item.lower>best*best)continue;
+    const x=item.metal,y=item.parent;
+    if(x.triangles&&y.triangles){
+      let parent=parentFaces.get(item.index);if(!parent){parent=new Map();parentFaces.set(item.index,parent);}
+      for(const id of x.triangles){
+        let face=faces.get(id);if(!face){const t=new THREE.Triangle();t.a.fromArray(metal.positions,metal.indices[id*3]*3).applyMatrix4(matrix);t.b.fromArray(metal.positions,metal.indices[id*3+1]*3).applyMatrix4(matrix);t.c.fromArray(metal.positions,metal.indices[id*3+2]*3).applyMatrix4(matrix);face={triangle:t,bounds:faceBounds(t)};faces.set(id,face);}
+        for(const other of y.triangles){
+          let target=parent.get(other);if(!target){const t=new THREE.Triangle();t.a.fromBufferAttribute(item.index.positions,item.index.indices[other*3]);t.b.fromBufferAttribute(item.index.positions,item.index.indices[other*3+1]);t.c.fromBufferAttribute(item.index.positions,item.index.indices[other*3+2]);target={triangle:t,bounds:faceBounds(t)};parent.set(other,target);}
+          // Leaf boxes contain several faces. Keep every face, but skip a
+          // pair whose own conservative bounds already exceed the best gap.
+          if(boxesDistanceSquared(face.bounds,target.bounds)>best*best)continue;
+          const distance=trianglePairDistance(face.triangle,target.triangle,scratch);
+          if(distance<best){best=distance;if(details){details.point=scratch.closestA.clone();details.surface=scratch.closestB.clone();details.normal=target.triangle.getNormal(new THREE.Vector3());}}
+          if(best<1e-12)return 0;
+        }
+      }
+    }else{
+      const splitMetal=!x.triangles&&(y.triangles||span(bounds(x))>=span(y.bounds)),children=[];
+      for(const child of splitMetal?[x.left,x.right]:[y.left,y.right]){
+        const one=splitMetal?child:x,two=splitMetal?y:child,lower=lowerBound(one,two);
+        if(lower<=best*best)children.push({metal:one,parent:two,index:item.index,lower});
+      }
+      children.sort((one,two)=>two.lower-one.lower);stack.push(...children);
+    }
+  }
+  return best;
 }

@@ -13,7 +13,7 @@ const GRASP_CONTACT_MARGIN=.002;
 // A 3.3 mm kerf follows the source CAD distal transverse envelope (~3.26 mm)
 // instead of treating the TCP as a 4.8 mm circular cutter.
 // The complete curved CAD edges still define its length and closing sweep.
-export const CUT_RADIUS=.00165;
+export const CUT_RADIUS=CUT_SWEEP.fineRadius;
 
 /** Shared interaction path for manual input and the optional guided example. */
 export class InteractionController {
@@ -29,6 +29,7 @@ export class InteractionController {
     this.relaxing = null;
     this.cuttingBusy = false;
     this.lastCut = null;
+    this.cutRadius = CUT_RADIUS;
     this.contact = contactState();
     this._generation = 0;
     this._fragmentRebaseId = null;
@@ -40,12 +41,31 @@ export class InteractionController {
     this._cutSpans=[];this._cutTail=null;this._pendingCutSamples=0;this._cutOverflow=false;
   }
 
-  snapshot(options) { return { version: 3, tissue: this.tissue.snapshot(options), grasp: copy(this.grasp), relaxing: copy(this.relaxing),requiresReopen:this.requiresReopen }; }
+  snapshot(options) { return { version: 4, tissue: this.tissue.snapshot(options), grasp: copy(this.grasp), relaxing: copy(this.relaxing),requiresReopen:this.requiresReopen,cutRadius:this.cutRadius }; }
+
+  setCutRadius(radius=CUT_RADIUS){
+    if(!Number.isFinite(radius)||radius<CUT_RADIUS||radius>.005)throw new RangeError('Cut radius must be between 1.65 and 5 mm.');
+    if(radius===this.cutRadius)return;
+    this.cutRadius=radius;this._breakCutTrajectory();this.lastCut=null;this._noMaterialAttempt=null;this._bladeContactCache=null;
+  }
+
+  /** A guided area operation records an entire displayed connection band.
+   * It uses the normal immutable cut queue, material map and CSG worker. */
+  queueRegionCut(segments){
+    if(!this.tissue.ready||this._cutOverflow||this.cutRadius<CUT_SWEEP.wideRadius||this.sim.state.paused||!this.sim.state.cutting||this.sim.state.tools.right.jaw>.22||this.tissue.busy||this.cuttingBusy)return false;
+    if(!Array.isArray(segments)||!segments.length||segments.length>CUT_SWEEP.wideBatchSegments)throw new RangeError('A region requires 1–256 segments.');
+    if(segments.some(s=>!finitePoint(s.a)||!finitePoint(s.b)))throw new TypeError('Region endpoints must be finite.');
+    const right=this.sim.state.tools.right,point=localPoint(this.tissue,right.position);
+    for(let i=0;i<segments.length;i+=CUT_SWEEP.maxBatchSegments){const band={source:'guided-region',segments:segments.slice(i,i+CUT_SWEEP.maxBatchSegments).map(s=>({a:asVector(s.a),b:asVector(s.b)}))};this._breakCutTrajectory();this._appendBladePose(captureBladePose(band,point,this._toolQuaternionLocal('right'),right.jaw,right.wrist,this.tissue._deformation??null),{contact:true});}
+    this._breakCutTrajectory();
+    return true;
+  }
 
   async restore(data) {
     const generation = ++this._generation;
     this._cutTask=null;this.cuttingBusy=false;this.contact=contactState();this._noMaterialAttempt=null;this._bladeContactCache=null;
     this._clearCutTrajectory();
+    this.setCutRadius(data?.cutRadius??CUT_RADIUS);
     this._fragmentRebaseId=null;
     this.lastCut = null;
     this.relaxing = null;
@@ -91,6 +111,7 @@ export class InteractionController {
   reset(){
     ++this._generation;this._cutTask=null;this.cuttingBusy=false;this.lastCut=null;this._noMaterialAttempt=null;this._bladeContactCache=null;
     this._clearCutTrajectory();
+    this.cutRadius=CUT_RADIUS;
     this._pressurePosition=null;
     this.release(true);this.contact=contactState();
   }
@@ -111,6 +132,7 @@ export class InteractionController {
   }
   _appendBladePose(pose,{contact=false}={}){
     if(this._cutOverflow)return;
+    pose.cutRadius=this.cutRadius;
     const previous=this._cutTail;this._cutTail=pose;
     const stationary=previous&&previous.deformation===pose.deformation&&previous.segments.length===pose.segments.length&&previous.segments.every((segment,i)=>segment.a.distanceToSquared(pose.segments[i].a)<1e-18&&segment.b.distanceToSquared(pose.segments[i].b)<1e-18);
     if(stationary){
@@ -127,11 +149,12 @@ export class InteractionController {
     this._cutSpans.push(span);this._pendingCutSamples+=span.steps;this._pendingCutFeedback();
   }
   _takeCutBatch(){
-    const batch=[];let segments=0;
+    const batch=[];let segments=0;const radius=this._cutSpans[0]?.to.cutRadius??CUT_RADIUS,limit=radius>=CUT_SWEEP.wideRadius?CUT_SWEEP.wideBatchSegments:CUT_SWEEP.maxBatchSegments;
     while(this._cutSpans.length){
       const span=this._cutSpans[0],count=span.to.segments.length;
-      if(segments+count>CUT_SWEEP.maxBatchSegments)break;
-      batch.push(sampleBladeSpan(span,++span.index));segments+=count;this._pendingCutSamples--;
+      if((span.to.cutRadius??CUT_RADIUS)!==radius)break;
+      if(segments+count>limit)break;
+      batch.push({...sampleBladeSpan(span,++span.index),cutRadius:radius});segments+=count;this._pendingCutSamples--;
       if(span.index===span.steps)this._cutSpans.shift();
     }
     return batch;
@@ -148,13 +171,13 @@ export class InteractionController {
         const batch=this._takeCutBatch();task.batch=batch;this._pendingCutFeedback();
         this.contact.cutting=true;this._setCutStatus('busy','正在完成已执行的剪切，请稍候');
         const before=this.tissue.removedVolumeMm3;let result;
-        if(this.tissue.cutSamples)result=await this.tissue.cutSamples(batch.map(pose=>({segments:pose.segments,deformation:pose.material})),CUT_RADIUS);
+        if(this.tissue.cutSamples)result=await this.tissue.cutSamples(batch.map(pose=>({segments:pose.segments,deformation:pose.material})),batch[0]?.cutRadius??CUT_RADIUS);
         else{
           // Lightweight test adapters and old integrations can accept one pose
           // at a time. Production uses cutSamples to freeze each material map.
           for(const pose of batch){
-            if(this.tissue.cutSegments)result=await this.tissue.cutSegments(pose.segments,CUT_RADIUS);
-            else for(const segment of pose.segments)result=await this.tissue.cutSegment(segment.a,segment.b,CUT_RADIUS);
+            if(this.tissue.cutSegments)result=await this.tissue.cutSegments(pose.segments,pose.cutRadius??CUT_RADIUS);
+            else for(const segment of pose.segments)result=await this.tissue.cutSegment(segment.a,segment.b,pose.cutRadius??CUT_RADIUS);
           }
         }
         if(task.generation!==this._generation||this._cutTask!==task)return;
@@ -212,6 +235,7 @@ export class InteractionController {
   }
 
   _sameCut(signature,previous=this.lastCut){
+    if((previous?.cutRadius??CUT_RADIUS)!==(signature?.cutRadius??CUT_RADIUS))return false;
     if(!previous||previous.deformation!==signature.deformation||previous.segments.length!==signature.segments.length||Math.abs(previous.jaw-signature.jaw)>.002||previous.quaternion.angleTo(signature.quaternion)>.0001)return false;
     if(previous.wrist.some((v,i)=>Math.abs(v-signature.wrist[i])>.0001))return false;
     return previous.segments.every((segment,i)=>segment.a.distanceTo(signature.segments[i].a)<.00055&&segment.b.distanceTo(signature.segments[i].b)<.00055);
@@ -272,8 +296,9 @@ export class InteractionController {
   }
 
   _setAttachedDeformation(grasp,delta){
-    if(grasp.deformationModel==='legacy')this.tissue.setGrasp({local:[...grasp.local],displacement:delta.toArray(),radius:grasp.deformationRadius??.065});
-    else this.tissue.setGrasp(new THREE.Vector3(...grasp.local),delta);
+    if(grasp.deformationModel==='legacy')return this.tissue.setGrasp({local:[...grasp.local],displacement:delta.toArray(),radius:grasp.deformationRadius??.065});
+    else if(grasp.deformationRadius!=null)return this.tissue.setGrasp({model:'local-flow',local:[...grasp.local],displacement:delta.toArray(),radius:grasp.deformationRadius,coreRadius:grasp.deformationCoreRadius,section:grasp.deformationSection});
+    else return this.tissue.setGrasp(new THREE.Vector3(...grasp.local),delta);
   }
 
   applyGrasp({restoring=false}={}) {
@@ -300,14 +325,15 @@ export class InteractionController {
     }
     const position = localPoint(this.tissue, this.sim.state.tools.left.position);
     const delta = position.sub(new THREE.Vector3(...this.grasp.local));
-    if(!restoring&&delta.length()>LOCAL_TRACTION.radius*LOCAL_TRACTION.slipStrain){
+    const tractionRadius=this.grasp.deformationModel==='local-flow'&&Number.isFinite(this.grasp.deformationRadius)?Math.max(.012,Math.min(.05,this.grasp.deformationRadius)):LOCAL_TRACTION.radius;
+    if(!restoring&&delta.length()>tractionRadius*LOCAL_TRACTION.slipStrain){
       this.release();this.requiresReopen=true;this.lastCut=null;
-      this.onEvent('grasp-slip',{strain:delta.length()/LOCAL_TRACTION.radius});
+      this.onEvent('grasp-slip',{strain:delta.length()/tractionRadius});
       this.onMessage('局部组织过度牵拉，已从左钳滑脱并回弹；请张开后重新夹持。此为未标定的几何应变模型');
       return;
     }
+    if(this._setAttachedDeformation(this.grasp,delta)===false){this.release();this.requiresReopen=true;this.onMessage('牵拉超过当前组织的可逆形变范围，已松脱并回弹；请张开后重新夹持');return;}
     this.grasp.displacement = delta.toArray();
-    this._setAttachedDeformation(this.grasp,delta);
   }
 
   updateGrasp(dt) {
@@ -369,13 +395,13 @@ export class InteractionController {
     const bloodStart=performance.now();
     this.tissue.blood?.update(dt,{pressureSegments:canPress?(selected==='right'?blade.segments:[{a:pressurePoint,b:pressurePoint}]):[]});
     const bloodEnd=performance.now();
-    const contactKey=[this.tissue._contactRevision??0,this.tissue._epoch??0,this.tissue._cuts?.length??0,...blade.segments.flatMap(segment=>[...segment.a.toArray(),...segment.b.toArray()])].join(',');
+    const contactKey=[this.cutRadius,this.tissue._contactRevision??0,this.tissue._epoch??0,this.tissue._cuts?.length??0,...blade.segments.flatMap(segment=>[...segment.a.toArray(),...segment.b.toArray()])].join(',');
     let hits;
     if(pending)hits=[];
     else if(this._bladeContactCache?.key===contactKey)hits=this._bladeContactCache.hits;
     else{
-      hits=this.tissue.contactSegments?.(blade.segments,CUT_RADIUS)??blade.segments.map(segment=>this.tissue.contactSegment?.(segment.a,segment.b,CUT_RADIUS)??
-        {contact:Math.min(this.tissue.sampleDistance(segment.a),this.tissue.sampleDistance(segment.b))<=CUT_RADIUS,distance:Infinity});
+      hits=this.tissue.contactSegments?.(blade.segments,this.cutRadius)??blade.segments.map(segment=>this.tissue.contactSegment?.(segment.a,segment.b,this.cutRadius)??
+        {contact:Math.min(this.tissue.sampleDistance(segment.a),this.tissue.sampleDistance(segment.b))<=this.cutRadius,distance:Infinity});
       this._bladeContactCache={key:contactKey,hits};
     }
     const hit=hits.find(value=>value.contact);

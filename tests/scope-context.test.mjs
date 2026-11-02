@@ -1,3 +1,4 @@
+import {instrumentFocusPoint} from '../src/scissors-kinematics.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
@@ -31,7 +32,7 @@ test('mother-only queries are cached for 150 ms while intent and grasp state sta
   assert.equal(cached.operating,true);nearVector(cached.graspTarget,sim.state.tools.left.position);
   nearVector(first.surfaceTarget,cached.surfaceTarget);
   sim.setScopeFollow(true,'grasp');makeScopeContext(sim,tissue,interaction,1150);assert.equal(queries.length,2);
-  const midpoint=sim.state.tools.left.position.map((v,i)=>(v+sim.state.tools.right.position[i])/2);
+  const midpoint=sim.state.tools.left.position.map((v,i)=>(v+instrumentFocusPoint(sim.state.tools.right)[i])/2);
   const expected=tissue.group.worldToLocal(new THREE.Vector3(...midpoint));
   const box=new THREE.Box3(new THREE.Vector3(...tissue.metadata.bounds[0]),new THREE.Vector3(...tissue.metadata.bounds[1]));box.clampPoint(expected,expected);
   nearVector(queries[1].point.toArray(),expected.toArray());
@@ -136,7 +137,7 @@ test('grasp following leaves an armed but parked right cutter when the left hand
   interaction.grasp={kind:'fragment',fragmentId:'carried'};sim.setCutting(true);sim.setScopeFollow(true,'grasp');
   sim.select('right');let context=makeScopeContext(sim,tissue,interaction,0);assert.equal(context.operating,true);
   sim.setScopeContext(context);sim.update(.02);
-  nearVector(sim.state.scope.target,sim.state.tools.left.position.map((v,i)=>(v+sim.state.tools.right.position[i])/2));
+  nearVector(sim.state.scope.target,sim.state.tools.left.position.map((v,i)=>(v+instrumentFocusPoint(sim.state.tools.right)[i])/2));
   sim.select('left');context=makeScopeContext(sim,tissue,interaction,1);
   assert.equal(context.operating,false);assert.equal(sim.state.cutting,true,'the B switch may stay armed without defining the view');
   sim.setScopeContext(context);sim.update(.02);nearVector(sim.state.scope.target,sim.state.tools.left.position);

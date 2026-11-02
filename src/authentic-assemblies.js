@@ -13,7 +13,7 @@ const SCOPE_ARM_SEED = Object.freeze([0, 1.4, -1.8, .35, 0, 0]);
 // station lies on an actual source triangle/plane intersection. The GLB has no
 // labelled clinical cutting edge: these finite polylines follow its visible
 // opposed jaw boundaries rather than an invented line through the empty TCP.
-function sourceBladeProfile(group,linkName,side){
+export function sourceBladeProfile(group,linkName,side){
   const link=group.getObjectByName(linkName);if(!link)return [];
   group.updateWorldMatrix(true,true);
   const inverse=link.matrixWorld.clone().invert(),triangles=[],matrix=new THREE.Matrix4();

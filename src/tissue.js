@@ -7,8 +7,11 @@ import {closestParentSurface,closestParentSegment,firstParentHit} from './tissue
 import {MeshBroadPhase} from './mesh-broad-phase.js';
 import {CutSpatialIndex} from './cut-spatial-index.js';
 import {fetchVolumeBytes} from './binary-asset.js';
+import {CUT_SWEEP} from './blade-sweep.js';
 
 const vectorArray = point => Array.isArray(point) ? [...point] : [point.x, point.y, point.z];
+const cutPassLimit=cuts=>cuts.some(c=>c.radius>=CUT_SWEEP.wideRadius)?CUT_SWEEP.wideBatchSegments:CUT_SWEEP.maxBatchSegments;
+const sameCutWidth=(a,b)=>a.every(c=>c.radius===a[0]?.radius)&&b.every(c=>c.radius===a[0]?.radius);
 // Accepted cutter records are append-only. History can share these immutable
 // records while owning its array; public exports still receive detached copies.
 const freezeRecord = value => { if(value && typeof value === 'object' && !Object.isFrozen(value)){for(const child of Object.values(value))freezeRecord(child);Object.freeze(value);}return value; };
@@ -56,7 +59,8 @@ export class TissueVolume {
     this._excludedField = null;
     this._restoringFragmentPoses = null;
     this._contactQueryCache=new Map();
-    this._contactHistoryScale=1;this._contactHasDeformedCuts=false;
+    this._contactHistoryScale=1;this._contactHasDeformedCuts=false;this._contactHasSectionCuts=false;
+    this._contactCuts=this._cuts;this._contactCutCount=0;
     this._contactRevision=0;
   }
 
@@ -90,13 +94,14 @@ export class TissueVolume {
   cutSegments(segments,radius){return this.cutSamples([{segments,deformation:this._deformation}],radius);}
 
   /** Ordered, complete CAD blade samples, each with its own frozen material
-   * map. A pass is bounded to 64 real blade segments, not 64 render frames. */
+   * map. Fine passes contain at most 64 source segments; broad passes 256. */
   cutSamples(samples,radius){
     if (!this.ready || this._disposed) return Promise.resolve({ changed: false, removedMm3: 0, reason: 'not-ready' });
     if(!samples?.length)return Promise.resolve({changed:false,removedMm3:0,reason:'no-blade'});
     let primitives;
     try {
-      if(samples.reduce((n,sample)=>n+(sample.segments?.length??0),0)>64)throw new Error('A cutting pass supports at most 64 source blade segments');
+      const limit=radius>=CUT_SWEEP.wideRadius?CUT_SWEEP.wideBatchSegments:CUT_SWEEP.maxBatchSegments;
+      if(samples.reduce((n,sample)=>n+(sample.segments?.length??0),0)>limit)throw new Error('A cutting pass supports at most '+limit+' source blade segments');
       primitives=samples.filter(sample=>sample.segments?.length).map(sample=>{
         const points=sample.segments.map(segment=>({a:vectorArray(segment.a),b:vectorArray(segment.b)}));
         return freezeRecord(validateCut({...points[0],...(points.length>1?{segments:points}:{}),radius,deformation:sample.deformation}));
@@ -186,6 +191,14 @@ export class TissueVolume {
     if(!point)return Infinity;
     const coordinates=vectorArray(point);
     if(coordinates.length!==3||!coordinates.every(Number.isFinite)||!Number.isFinite(margin)||margin<=0)return Infinity;
+    this._ensureContactHistory();
+    if(this._meshes.size&&(this._deformation?.section||this._contactHasSectionCuts)){
+      const key=['section-distance',this._epoch,this._contactRevision,...coordinates,margin].join(',');
+      if(this._contactQueryCache.has(key))return this._contactQueryCache.get(key);
+      const p=new THREE.Vector3(...coordinates),surface=closestParentSurface(this._meshes.values(),p,Infinity);
+      const distance=surface?p.distanceTo(surface)*(p.clone().sub(surface).dot(surface.normal)<0?-1:1):Infinity;
+      if(this._contactQueryCache.size>=64)this._contactQueryCache.clear();this._contactQueryCache.set(key,distance);return distance;
+    }
     const raw=this.sampleDistance(coordinates);
     if(!this._deformation&&!this._contactHasDeformedCuts)return raw;
     const result=this._parentContact(coordinates,margin,raw);
@@ -205,6 +218,22 @@ export class TissueVolume {
     const a=vectorArray(start),b=vectorArray(end),miss={contact:false,distance:Infinity,point:null,surface:null,t:null,inside:false};
     if(a.length!==3||b.length!==3||![...a,...b,margin].every(Number.isFinite)||margin<=0)return miss;
     const from=new THREE.Vector3(...a),to=new THREE.Vector3(...b);
+    if(this._meshes.size){
+      this._ensureContactHistory();
+      if(this._deformation?.section||this._contactHasSectionCuts){
+        // A highly opened kerf is not metric in the reference CSG field.
+        // Test the actual displayed blade/triangle geometry directly, sharing
+        // its exact hierarchy with the body and blood contact queries.
+        for(const [t,point]of [[0,from],[1,to]]){
+          const key='section-endpoint,'+point.toArray().join(',');let surface;
+          if(samples?.has(key))surface=samples.get(key);
+          else{surface=closestParentSurface(this._meshes.values(),point,.02);samples?.set(key,surface);}
+          if(surface&&point.clone().sub(surface).dot(surface.normal)<0)return{contact:true,distance:-point.distanceTo(surface),point:point.clone(),surface:null,t,inside:true};
+        }
+        const closest=closestParentSegment(this._meshes.values(),from,to,margin);
+        return closest?{...closest,contact:true,inside:false}:miss;
+      }
+    }
     const steps=this._meshes.size?2:Math.max(2,Math.ceil(from.distanceTo(to)/Math.min(.00075,margin*.5)));
     for(let i=0;i<=steps;i++){
       const t=i/steps,point=from.clone().lerp(to,t);let raw;
@@ -285,10 +314,26 @@ export class TissueVolume {
     return distance;
   }
 
+  // Contact with the committed triangles needs only these immutable-history
+  // flags. Building analytic CSG indices here made the first blade query after
+  // a restore pay for thousands of historical cutters that it never used.
+  _ensureContactHistory(){
+    if(this._contactCuts!==this._cuts||this._contactCutCount>this._cuts.length){
+      this._contactCuts=this._cuts;this._contactCutCount=0;
+      this._contactHistoryScale=1;this._contactHasDeformedCuts=false;this._contactHasSectionCuts=false;this._contactQueryCache.clear();
+    }
+    while(this._contactCutCount<this._cuts.length){
+      const deformation=this._cuts[this._contactCutCount++].deformation;
+      this._contactHistoryScale=Math.min(this._contactHistoryScale,deformationMinimumScale(deformation));
+      this._contactHasDeformedCuts||=!!deformation;this._contactHasSectionCuts||=!!deformation?.section;
+    }
+  }
+
   _ensureCutIndex() {
+    this._ensureContactHistory();
     if (this._indexedCuts !== this._cuts || this._indexedCutCount > this._cuts.length) {
       this._cutGroups = []; this._cutGroupMap.clear(); this._indexedCuts = this._cuts; this._indexedCutCount = 0;
-      this._contactHistoryScale=1;this._contactHasDeformedCuts=false;this._contactQueryCache.clear();
+      this._contactQueryCache.clear();
     }
     while (this._indexedCutCount < this._cuts.length) {
       // History records stay deeply immutable. Hot SDF queries use their own
@@ -299,7 +344,6 @@ export class TissueVolume {
       let group = this._cutGroupMap.get(key);
       if (!group) {
         const minimumScale = deformationMinimumScale(deformation);
-        this._contactHistoryScale=Math.min(this._contactHistoryScale,minimumScale);this._contactHasDeformedCuts||=!!deformation;
         group = { deformation, minimumScale, entries: [], index:new CutSpatialIndex(), low: [Infinity, Infinity, Infinity], high: [-Infinity, -Infinity, -Infinity], referenceLow: [Infinity, Infinity, Infinity], referenceHigh: [-Infinity, -Infinity, -Infinity] };
         this._cutGroupMap.set(key, group); this._cutGroups.push(group);
       }
@@ -516,7 +560,7 @@ export class TissueVolume {
     const callbacks = [command];
     if (command.type === 'cut') {
       let segmentCount=command.cuts.reduce((n,cut)=>n+(cut.segments?.length??1),0);
-      while (this._commands[0]?.type === 'cut' && this._commands[0].epoch === command.epoch && segmentCount+this._commands[0].cuts.reduce((n,cut)=>n+(cut.segments?.length??1),0)<=64) {
+      while (this._commands[0]?.type === 'cut' && this._commands[0].epoch === command.epoch && sameCutWidth(command.cuts,this._commands[0].cuts) && segmentCount+this._commands[0].cuts.reduce((n,cut)=>n+(cut.segments?.length??1),0)<=cutPassLimit(command.cuts)) {
         const next = this._commands.shift(); callbacks.push(next); command.cuts.push(...next.cuts);
         segmentCount=command.cuts.reduce((n,cut)=>n+(cut.segments?.length??1),0);
       }

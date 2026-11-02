@@ -3,6 +3,7 @@ import {refineIncisionSurface} from './incision-surface.js';
 import {buildSurfaceTree,surfaceTreeBounds,packSurfaceTree} from './surface-tree.js';
 import {prepareFilmIndex} from './film-support-index.js';
 import {lesionNodes,lesionStatistics} from './lesion-volume.js';
+import {normalizeTractionSection,tractionSectionInto,tractionSectionBounds,sectionRigidWeight} from './section-traction.js';
 // Anatomy is sampled in metres. The field is negative inside the source organ.
 // These exports deliberately have no browser dependencies so the same geometry
 // and CSG code can be checked with Node's test runner.
@@ -48,12 +49,14 @@ export function normalizeDeformation(input) {
   if (length < 1e-10) return null;
   const delta = [...displacement];
   if(input.model==='local-flow'){
-    const radius=clamp(Number.isFinite(input.radius)?input.radius:LOCAL_TRACTION.radius,.012,.03);
-    const coreRadius=clamp(Number.isFinite(input.coreRadius)?input.coreRadius:LOCAL_TRACTION.coreRadius,.001,radius*.25);
-    const stepFraction=Math.min(1,(radius-coreRadius)*LOCAL_TRACTION.stepFraction/length);
+    const radius=clamp(Number.isFinite(input.radius)?input.radius:LOCAL_TRACTION.radius,.012,.05);
+    const section=normalizeTractionSection(input.section);
+    const coreRadius=clamp(Number.isFinite(input.coreRadius)?input.coreRadius:LOCAL_TRACTION.coreRadius,.001,radius*(section?.8:.25));
+    const sectionBounds=section?tractionSectionBounds(section,local,delta,radius):null;
+    const stepFraction=section?Math.min(1,LOCAL_TRACTION.stepFraction/(length/(radius-coreRadius)+2*sectionBounds.contraction)):Math.min(1,(radius-coreRadius)*LOCAL_TRACTION.stepFraction/length);
     const steps=Math.max(1,Math.ceil(1/stepFraction));
     if(steps>512)throw new Error('Local traction exceeds supported material strain; the grasp must slip.');
-    return {model:'local-flow',local:[...local],displacement:delta,radius,coreRadius,steps,stepFraction};
+    return {model:'local-flow',local:[...local],displacement:delta,radius,coreRadius,steps,stepFraction,...(section?{section,sectionBounds}:{})};
   }
   const radius = Math.max(clamp(Number.isFinite(input.radius) ? input.radius : 0.065, 0.02, 0.2), 3.2 * Math.hypot(...delta));
   return { local: [...local], displacement: delta, radius };
@@ -73,15 +76,20 @@ export function deformationWeightInto(point,deformation,out){
     const lengthSquared=dx*dx+dy*dy+dz*dz,along=clamp((px*dx+py*dy+pz*dz)/lengthSquared,0,1);
     const ex=px-dx*along,ey=py-dy*along,ez=pz-dz*along;
     if(ex*ex+ey*ey+ez*ez>=deformation.radius*deformation.radius)return out;
+    if(deformation.section){const exact=sectionRigidWeight(point[0],point[1],point[2],deformation,out.sectionScratch??={gradient:[0,0,0]});if(exact!==null){out.weight=exact;return out;}}
     let weight=0,gx=0,gy=0,gz=0;
     for(let i=0;i<count;i++){
       const start=i*deformation.stepFraction,fraction=Math.min(deformation.stepFraction,1-start);
       const shift=weight-start,x=px+dx*shift,y=py+dy*shift,z=pz+dz*shift;
       const length=Math.sqrt(x*x+y*y+z*z),core=deformation.coreRadius,falloff=deformation.radius-core;
       if(length>=deformation.radius)continue;
-      const r=Math.max(0,(length-core)/falloff),t=1-r,stepWeight=t**4*(4*r+1);
+      const r=Math.max(0,(length-core)/falloff),t=1-r;let stepWeight=t**4*(4*r+1);
       const derivative=length>core?-20*r*t**3/(falloff*length):0;
-      const ax=x*derivative,ay=y*derivative,az=z*derivative;
+      let ax=x*derivative,ay=y*derivative,az=z*derivative;
+      if(deformation.section){
+        const mask=tractionSectionInto(point[0]+dx*weight,point[1]+dy*weight,point[2]+dz*weight,deformation.section,out.sectionScratch??={gradient:[0,0,0]});
+        ax=ax*mask.weight+stepWeight*mask.gradient[0];ay=ay*mask.weight+stepWeight*mask.gradient[1];az=az*mask.weight+stepWeight*mask.gradient[2];stepWeight*=mask.weight;
+      }
       const gain=1+(dx*ax+dy*ay+dz*az)*fraction;
       gx=gx*gain+ax*fraction;gy=gy*gain+ay*fraction;gz=gz*gain+az*fraction;
       weight+=stepWeight*fraction;
@@ -175,20 +183,44 @@ export function prepareFragmentDisplay(descriptor) {
 export function inverseDeformPoint(point, deformation) {
   if (!deformation) return [...point];
   if(deformation.model==='local-flow'){
+    if(deformation.section){
+      const delta=deformation.displacement,scratch={gradient:[0,0,0]},candidate=point.map((v,i)=>v-delta[i]);
+      if(sectionRigidWeight(...candidate,deformation,scratch)===1)return candidate;
+      if(sectionRigidWeight(...point,deformation,scratch)===0)return[...point];
+    }
     let x=point[0],y=point[1],z=point[2];const count=deformation.steps;
     const [dx,dy,dz]=deformation.displacement,[ax,ay,az]=deformation.local;
-    const core=deformation.coreRadius,falloff=deformation.radius-core;
+    const core=deformation.coreRadius,falloff=deformation.radius-core,sectionScratch=deformation.section?{gradient:[0,0,0]}:null;
     for(let i=count-1;i>=0;i--){
       const start=i*deformation.stepFraction,fraction=Math.min(deformation.stepFraction,1-start);
       const sx=dx*fraction,sy=dy*fraction,sz=dz*fraction,lx=ax+dx*start,ly=ay+dy*start,lz=az+dz*start;
       // Each near-identity compact step has a strictly positive Jacobian;
       // undo its own map before moving to the preceding material frame.
       const tx=x,ty=y,tz=z;
+      if(deformation.section){
+        // The steep but expanding cut gate needs a bracketed scalar solve.
+        // Every inverse lies on this step's displacement line, with weight
+        // in [0,1]; unrestricted 3-D Newton could jump across the thin gate.
+        let low=0,high=1,weight=.5;
+        for(let iteration=0;iteration<48;iteration++){
+          const px=tx-sx*weight,py=ty-sy*weight,pz=tz-sz*weight,ox=px-lx,oy=py-ly,oz=pz-lz,length=Math.hypot(ox,oy,oz);
+          const r=Math.max(0,Math.min(1,(length-core)/falloff)),t=1-r,w=t**4*(4*r+1),derivative=length>core&&r<1?-20*r*t**3/(falloff*length):0;
+          const mask=tractionSectionInto(px,py,pz,deformation.section,sectionScratch),value=w*mask.weight;
+          const gx=ox*derivative*mask.weight+w*mask.gradient[0],gy=oy*derivative*mask.weight+w*mask.gradient[1],gz=oz*derivative*mask.weight+w*mask.gradient[2];
+          const error=weight-value;
+          if(Math.abs(error)*Math.hypot(sx,sy,sz)<1e-11)break;
+          if(error>0)high=weight;else low=weight;
+          const next=weight-error/(1+gx*sx+gy*sy+gz*sz);weight=next>low&&next<high?next:(low+high)*.5;
+        }
+        x=tx-sx*weight;y=ty-sy*weight;z=tz-sz*weight;continue;
+      }
       for(let iteration=0;iteration<16;iteration++){
         const ox=x-lx,oy=y-ly,oz=z-lz,length=Math.hypot(ox,oy,oz);
-        const r=Math.max(0,Math.min(1,(length-core)/falloff)),t=1-r,w=t**4*(4*r+1);
+        const r=Math.max(0,Math.min(1,(length-core)/falloff)),t=1-r;let w=t**4*(4*r+1);
         const derivative=length>core&&r<1?-20*r*t**3/(falloff*length):0;
-        const gx=ox*derivative,gy=oy*derivative,gz=oz*derivative,ex=x+sx*w-tx,ey=y+sy*w-ty,ez=z+sz*w-tz;
+        let gx=ox*derivative,gy=oy*derivative,gz=oz*derivative;
+        if(deformation.section){const mask=tractionSectionInto(x,y,z,deformation.section,sectionScratch);gx=gx*mask.weight+w*mask.gradient[0];gy=gy*mask.weight+w*mask.gradient[1];gz=gz*mask.weight+w*mask.gradient[2];w*=mask.weight;}
+        const ex=x+sx*w-tx,ey=y+sy*w-ty,ez=z+sz*w-tz;
         if(Math.hypot(ex,ey,ez)<1e-11)break;
         const denominator=1+(gx*sx+gy*sy+gz*sz);
         const projection=(gx*ex+gy*ey+gz*ez)/denominator;
@@ -215,6 +247,7 @@ export function deformationMinimumScale(deformation){
   const length=Math.hypot(...deformation.displacement);
   if(deformation.model==='local-flow'){
     const k=2.109375*length/(deformation.radius-deformation.coreRadius),full=deformation.steps-1;
+    if(deformation.section){const bounds=deformation.sectionBounds??tractionSectionBounds(deformation.section,deformation.local,deformation.displacement,deformation.radius),negative=k+bounds.contraction,total=k+length*bounds.gradient,step=f=>Math.max(1e-15,(1-negative*f)/(1+total*f));return Math.max(1e-12,step(deformation.stepFraction)**full*step(1-full*deformation.stepFraction));}
     return Math.max(1e-12,(1-k*deformation.stepFraction)**full*(1-k*(1-full*deformation.stepFraction)));
   }
   return Math.max(1e-12,1-2.109375*length/deformation.radius);
@@ -344,6 +377,22 @@ export function cutBounds(cut,padding=0){
   return {low,high};
 }
 
+// A held clamp keeps the material map fixed through thousands of shear
+// samples. Cache exact Float64 weights by material voxel, in lazy 4K tiles.
+// Field changes do not affect this map; a different grasp invalidates it.
+export function voxelDeformationMapper(state,deformation){
+  const signature=JSON.stringify(deformation);
+  if(state._voxelMapping?.signature!==signature)state._voxelMapping={signature,tiles:new Map(),hits:0,misses:0};
+  const cache=state._voxelMapping,delta=deformation.displacement;
+  return(index,point)=>{
+    const key=index>>>12,offset=index&4095;let tile=cache.tiles.get(key);
+    if(!tile){tile=new Float64Array(4096);tile.fill(NaN);cache.tiles.set(key,tile);}
+    let weight=tile[offset];
+    if(Number.isNaN(weight)){weight=deformationWeight(point,deformation).weight;tile[offset]=weight;cache.misses++;}else cache.hits++;
+    return point.map((v,i)=>v+delta[i]*weight);
+  };
+}
+
 export function allChunkKeys(state) {
   const keys = [];
   const count = state.meta.dims.map(n => Math.ceil((n - 1) / state.chunkSize));
@@ -354,6 +403,7 @@ export function allChunkKeys(state) {
 export function applyCapsuleCut(state, input) {
   const cut = validateCut(input);
   const { meta, field } = state;
+  const mapVoxel=cut.deformation?voxelDeformationMapper(state,cut.deformation):null;
   const margin = 2.5 * Math.max(...meta.spacing);
   // Since x_display = x_material + displacement*w and 0<=w<=1, these bounds
   // also enclose curved inverse images of long straight display-space strokes.
@@ -371,16 +421,19 @@ export function applyCapsuleCut(state, input) {
   for (let z = lower[2]; z <= upper[2]; z++) for (let y = lower[1]; y <= upper[1]; y++) for (let x = lower[0]; x <= upper[0]; x++) {
     point[0] = meta.origin[0] + x * meta.spacing[0]; point[1] = meta.origin[1] + y * meta.spacing[1]; point[2] = meta.origin[2] + z * meta.spacing[2];
     const index = nodeIndex(meta, x, y, z);
+    // The cutter SDF never exceeds its radius, so this voxel is provably
+    // unchanged even before evaluating the deformed blade distance.
+    if(field[index]>=cut.radius)continue;
     // Difference: organ \ cutter = max(organSignedDistance, -cutterSignedDistance).
     let displayPoint,distance=Infinity;
     if(boundedSegments){
       for(const entry of boundedSegments){
         if(x<entry.low[0]||x>entry.high[0]||y<entry.low[1]||y>entry.high[1]||z<entry.low[2]||z>entry.high[2])continue;
-        displayPoint??=cut.deformation?deformPoint(point,cut.deformation):point;
+        displayPoint??=mapVoxel?mapVoxel(index,point):point;
         distance=Math.min(distance,distanceToSegment(displayPoint,entry.segment.a,entry.segment.b));
       }
       if(distance===Infinity)continue;
-    }else{displayPoint=cut.deformation?deformPoint(point,cut.deformation):point;distance=distanceToCut(displayPoint,cut);}
+    }else{displayPoint=mapVoxel?mapVoxel(index,point):point;distance=distanceToCut(displayPoint,cut);}
     const value = Math.fround(Math.max(field[index], cut.radius-distance));
     if (value <= field[index]) continue;
     const wasInside = field[index] < 0;

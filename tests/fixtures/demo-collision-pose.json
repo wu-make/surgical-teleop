@@ -1,0 +1,185 @@
+{
+  "state": {
+    "version": 1,
+    "state": {
+      "selected": "right",
+      "activeTool": "right",
+      "paused": false,
+      "cutting": false,
+      "elapsed": 9.700000000000003,
+      "tools": {
+        "left": {
+          "port": [
+            -0.08,
+            1.18,
+            0.1
+          ],
+          "position": [
+            0.019,
+            1.1308566146850585,
+            -0.0039999999999999845
+          ],
+          "wrist": [
+            0,
+            0,
+            0
+          ],
+          "jaw": 0,
+          "shaftLength": 0.4355,
+          "instrument": "needle-driver",
+          "alignment": [
+            0.5063543548688021,
+            0.7656659195872279,
+            0.04887984380973634,
+            0.39366448627883055
+          ],
+          "shaftDirection": [
+            0.6523320053477626,
+            -0.3238161928492276,
+            -0.6852780662239122
+          ]
+        },
+        "right": {
+          "port": [
+            0.08,
+            1.18,
+            0.1
+          ],
+          "position": [
+            0.0009682955051305433,
+            1.1307175683918829,
+            -0.010328610343870646
+          ],
+          "wrist": [
+            0.65,
+            0,
+            0
+          ],
+          "jaw": 0.1423828125,
+          "shaftLength": 0.4408,
+          "instrument": "scissors",
+          "alignment": [
+            0.8428722440418698,
+            -0.41428135044750636,
+            -0.1813674121648042,
+            0.29162168077812506
+          ],
+          "shaftDirection": [
+            -0.6006473847332361,
+            -0.26398250733561857,
+            -0.7546760596666198
+          ]
+        }
+      },
+      "scope": {
+        "port": [
+          0,
+          1.18,
+          0.14
+        ],
+        "position": [
+          0.00589750085239198,
+          1.1509306015101803,
+          0.05307203812461929
+        ],
+        "target": [
+          0.009984147752565271,
+          1.1307870915384708,
+          -0.007164305171935315
+        ],
+        "lookAt": [
+          0.009984147752565271,
+          1.1307870915384708,
+          -0.007164305171935309
+        ],
+        "depth": 0.09184922972279917,
+        "yaw": 0.06773973987507832,
+        "pitch": 0.32202739662686114,
+        "roll": 0,
+        "fov": 55,
+        "follow": true,
+        "followMode": "grasp",
+        "startupOverview": false,
+        "startupFovUserSet": false,
+        "graspTarget": null,
+        "operating": false,
+        "direction": [
+          0.06420849548973495,
+          -0.3164903894953828,
+          -0.9464201511295105
+        ],
+        "up": [
+          0.06368502660125265,
+          0.9477435091257354,
+          -0.31261231309216714
+        ],
+        "cameraUp": [
+          0.06368502660125265,
+          0.9477435091257354,
+          -0.31261231309216714
+        ],
+        "viewMode": "field",
+        "depthBias": 0,
+        "surfaceTarget": null,
+        "fieldAnchor": null,
+        "organBounds": null,
+        "heldSpecimen": null,
+        "framingSource": "cooperative-target",
+        "framingLimited": false,
+        "targetWorkingDistance": 0.065,
+        "autoDepthTarget": 0.09049574361482185,
+        "intentTarget": [
+          0.009984147752565271,
+          1.1307870915384708,
+          -0.007164305171935315
+        ],
+        "actualWorkingDistance": 0.0636465138920227
+      },
+      "collision": {
+        "clearance": 9.628582653409268e-15,
+        "pair": {
+          "left": {
+            "part": "wrist",
+            "id": "wrist-roll_link-3",
+            "section": "distal"
+          },
+          "right": {
+            "part": "wrist",
+            "id": "wrist-wrist_pitch_link-2",
+            "section": "distal"
+          }
+        },
+        "closestPoints": {
+          "left": [
+            0.006212340074967345,
+            1.1400230979104458,
+            0.00576661231104738
+          ],
+          "right": [
+            0.006212340074965046,
+            1.140023097910453,
+            0.005766612311041702
+          ]
+        },
+        "active": false,
+        "blocked": false,
+        "contact": true,
+        "selected": null,
+        "reason": null
+      }
+    }
+  },
+  "steering": {
+    "target": [
+      0.003643547461842561,
+      1.13091785927943,
+      -0.006271708142121669
+    ],
+    "anchor": [
+      0.003802780077502621,
+      1.130801161896755,
+      -0.007367374222568834
+    ],
+    "resumeCutting": true
+  }
+}

@@ -79,8 +79,12 @@ function instrumentTrajectory(start,end){
     const alignment=polar?quaternionProduct([...axis.map(v=>v*Math.sin(angle*t/2)),Math.cos(angle*t/2)],initialAlignment):slerpInstrumentAlignment(initialAlignment,finalAlignment,progress);
     return {...start,position,alignment,wrist:mix(start.wrist,end.wrist,t),jaw:start.jaw+(end.jaw-start.jaw)*t};
   };
-  const bound=(from,to)=>{
+  let boundFrom,boundTo,boundTerms;
+  const bound=(from,to,lever=.65)=>{
     const span=to-from;if(span<=0)return 0;
+    // Per-link clearance asks for the same interval with different lever arms.
+    // Keep the original arithmetic order while sharing its frame/radius work.
+    if(boundTerms&&boundFrom===from&&boundTo===to)return boundTerms.radial+lever*boundTerms.angle+boundTerms.joints+1e-12;
     const one=pose(from),two=pose(to);
     const baseAngle=polar?angle*span:quaternionAngle(one.alignment,two.alignment);
     const radiusOne=distance(one.position,start.port),radiusTwo=distance(two.position,start.port);
@@ -98,7 +102,8 @@ function instrumentTrajectory(start,end){
       // RCM singular region instead of introducing a forbidden workspace cone.
       compensation=Math.min(Math.PI,4*(transverseTravel+Math.sqrt(2*radiusMax*radialTravel+2*transverseMax*transverseTravel))/Math.max(1e-5,radiusMin));
     }
-    return (polar?Math.abs(radialB-radialA)*span:travel*span)+.65*(baseAngle+compensation)+.035*(wristTravel+jawTravel)*span+1e-12;
+    boundFrom=from;boundTo=to;boundTerms={radial:polar?Math.abs(radialB-radialA)*span:travel*span,angle:baseAngle+compensation,joints:.035*(wristTravel+jawTravel)*span};
+    return boundTerms.radial+lever*boundTerms.angle+boundTerms.joints+1e-12;
   };
   return {pose,bound};
 }
@@ -107,6 +112,18 @@ function instrumentTrajectory(start,end){
  * Contact departures use at most 50 µm of swept travel, strictly below the
  * envelopes' 150 µm CAD padding, so tangent/zero-gap escape stays possible while
  * the original metal triangles remain separated throughout the micro-step. */
+export function instrumentMotionBound(start,desired,{bodyOnly=false}={}){return instrumentTrajectory(bodyOnly?{...start,jaw:0}:start,bodyOnly?{...desired,jaw:0}:desired).bound(0,1);}
+
+/** Bounds per unchanged source capsule, measured about the command TCP.
+ * The common 65 cm shaft bound is needlessly large for a 2 cm distal wrist.
+ * Local joint travel also bounds the change in each endpoint's lever length.
+ */
+export function instrumentBodyMotionBounds(start,desired){
+  const a={...start,jaw:0},b={...desired,jaw:0},trajectory=instrumentTrajectory(a,b),first=instrumentCapsules(a),last=instrumentCapsules(b);
+  const jointTravel=start.wrist.reduce((sum,v,i)=>sum+Math.abs(desired.wrist[i]-v),0),growth=.035*jointTravel;
+  return first.map((c,i)=>c.part==='jaw'?Infinity:trajectory.bound(0,1,Math.max(distance(c.a,start.position),distance(c.b,start.position),distance(last[i].a,desired.position),distance(last[i].b,desired.position))+growth+2*c.radius));
+}
+
 export function sweepInstrument(start,desired,other){
   const trajectory=instrumentTrajectory(start,desired),fixed=instrumentCapsules(other),first=instrumentCapsules(start),tolerance=1e-7;
   const fullBound=trajectory.bound(0,1);if(fullBound<2e-12)return {tool:trajectory.pose(1),limited:false};
