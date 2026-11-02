@@ -238,3 +238,20 @@ test('sampled rigid blade endpoints stay on their rotation radius with submillim
  }finally{f.tissue.dispose();}
  });
 
+
+test('manual scissors cannot run ahead of an uncommitted real cut, even if its worker stalls for seconds',async()=>{
+  const f=bench({plate:true,holdFirst:true});try{
+    f.sim.allowToolAdvance=side=>side!=='right'||!f.interaction.cuttingBusy;
+    f.sim.select('right');const original=structuredClone(f.sim.state.tools.right),first=f.interaction.update(1/60);
+    assert(f.interaction.cuttingBusy);
+    for(let i=0;i<180;i++){f.sim.update(1/60,new Set(['KeyC','KeyD','KeyX']));await f.interaction.update(1/60);}
+    assert.deepEqual(f.sim.state.tools.right.position,original.position,'right TCP may not leave a cut that has not reached the displayed solid');
+    assert.deepEqual(f.sim.state.tools.right.wrist,original.wrist,'rotating the closed blade also waits for its accepted material operation');
+    assert.equal(f.operations.length,1);assert.equal(f.interaction.contact.pendingCutFrames,0,'held input must not turn into seconds of future cuts');
+    assert.equal(f.sim.moveToolTo([.01,-.012,0],'right').changed,false,'direct position/edge assistance cannot bypass synchronization');
+    f.sim.setJaw('right',.8);assert.equal(f.sim.state.tools.right.jaw,.8,'opening is always available');
+    f.sim.select('left');const left=[...f.sim.state.tools.left.position];f.sim.update(1/60,new Set(['KeyE']));assert.notDeepEqual(f.sim.state.tools.left.position,left,'other tools remain responsive');
+    f.releaseFirst();await first;assert(f.tissue.removedVolumeMm3>0);assert(!f.interaction.cuttingBusy);
+    f.sim.select('right');f.sim.update(1/60,new Set(['KeyD']));assert.notDeepEqual(f.sim.state.tools.right.position,original.position,'movement resumes against the committed cut, without replaying old input');
+  }finally{f.tissue.dispose();}
+});

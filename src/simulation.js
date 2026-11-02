@@ -199,7 +199,7 @@ function normalizeKeys(input) {
 const axisInput = (keys, positive, negative) => Number(keys.has(positive)) - Number(keys.has(negative));
 
 export class Simulation {
-  constructor({ onEvent, getExtraData, shouldCheckpoint, ownsExtraData=false } = {}) {
+  constructor({ onEvent, getExtraData, shouldCheckpoint, allowToolAdvance, ownsExtraData=false } = {}) {
     this.state = initialState();
     this.undoStack = [];
     this.redoStack = [];
@@ -211,6 +211,7 @@ export class Simulation {
     this._limitCooldown = 0;
     this._controlAges = new Map();
     this.ownsExtraData=ownsExtraData;
+    this.allowToolAdvance=typeof allowToolAdvance==='function'?allowToolAdvance:undefined;
     this.getExtraData = typeof getExtraData === 'function' ? getExtraData : undefined;
     this.shouldCheckpoint = typeof shouldCheckpoint === 'function' ? shouldCheckpoint : undefined;
     // Viewport shape is display context, never part of surgical undo history.
@@ -486,6 +487,10 @@ export class Simulation {
 
   _applyTool(desired, id) {
     const tool = this._tool(id);
+    // A cut is a material transaction, not a delayed trail behind a free tool.
+    // Keep its blade pose until the corresponding solid is committed. This
+    // also covers direct nudges and boundary assistance; opening stays usable.
+    if(this.allowToolAdvance?.(id)===false)desired={...desired,position:tool.position,wrist:tool.wrist,jaw:Math.max(tool.jaw,desired.jaw)};
     if(desired.position.every((v,i)=>v===tool.position[i])&&desired.wrist.every((v,i)=>v===tool.wrist[i])&&desired.jaw===tool.jaw)return {changed:false,limited:false};
     const other = this._tool(id === 'left' ? 'right' : 'left');
     const {tool: next, limited,reason} = sweepInstrument(tool, desired, other);
