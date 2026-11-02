@@ -492,12 +492,13 @@ function chunkDeformation(state,key){
   return [0,1,2].every(i=>meta.origin[i]+Math.min(first[i]+chunkSize,meta.dims[i]-1)*meta.spacing[i]>=Math.min(deformation.local[i],deformation.local[i]+deformation.displacement[i])-deformation.radius&&meta.origin[i]+first[i]*meta.spacing[i]<=Math.max(deformation.local[i],deformation.local[i]+deformation.displacement[i])+deformation.radius)?deformation:null;
 }
 
-export function polygonizeChunk(state, key,{splitTrace=null}={}) {
+export function polygonizeChunk(state, key,{splitTrace=null,metrics=null}={}) {
   const [cx, cy, cz] = key.split(',').map(Number);
   const { meta, field, base, chunkSize } = state;
   const first = [cx, cy, cz].map(v => v * chunkSize), last = first.map((v, axis) => Math.min(v + chunkSize, meta.dims[axis] - 1));
   const positions = [], normals = [], colors = [], cutMasks = [], indices = [], vertexIndices = new Map();
-  const corners = new Array(8), samples = new Array(8), originals = new Array(8), gradientCache = new Map();
+  const corners = Array.from({length:8},()=>[0,0,0]), nodes=new Uint32Array(8), samples = new Array(8), originals = new Array(8), gradientCache = new Map(), edgeVertices=new Map();
+  let intersectionBuilds=0,intersectionReuses=0;
   const gradient = (x, y, z) => { const index = nodeIndex(meta, x, y, z); let result = gradientCache.get(index); if (!result) { result = nodeGradient(state, x, y, z); gradientCache.set(index, result); } return result; };
   function emitTriangle(a, b, c, outwardHint) {
     const ux = b.p[0] - a.p[0], uy = b.p[1] - a.p[1], uz = b.p[2] - a.p[2];
@@ -518,8 +519,8 @@ export function polygonizeChunk(state, key,{splitTrace=null}={}) {
   for (let z = first[2]; z < last[2]; z++) for (let y = first[1]; y < last[1]; y++) for (let x = first[0]; x < last[0]; x++) {
     let negative = 0;
     for (let i = 0; i < 8; i++) {
-      const grid = [x + CORNERS[i][0], y + CORNERS[i][1], z + CORNERS[i][2]];
-      const index = nodeIndex(meta, ...grid);
+      const grid=corners[i];grid[0]=x+CORNERS[i][0];grid[1]=y+CORNERS[i][1];grid[2]=z+CORNERS[i][2];
+      const index = nodes[i] = nodeIndex(meta, grid[0],grid[1],grid[2]);
       samples[i] = field[index]; originals[i] = base[index]; corners[i] = grid;
       if (samples[i] < 0) negative++;
     }
@@ -529,13 +530,21 @@ export function polygonizeChunk(state, key,{splitTrace=null}={}) {
       for (const [ta, tb] of EDGES) {
         const ia = tetra[ta], ib = tetra[tb];
         if ((samples[ia] < 0) === (samples[ib] < 0)) continue;
-        const t = samples[ia] / (samples[ia] - samples[ib]);
-        const ga = gradient(...corners[ia]), gb = gradient(...corners[ib]);
-        const p = corners[ia].map((v, axis) => meta.origin[axis] + (v + (corners[ib][axis] - v) * t) * meta.spacing[axis]);
-        const normal = ga.map((v, axis) => v + (gb[axis] - v) * t), length = Math.hypot(...normal) || 1;
-        const original = originals[ia] + (originals[ib] - originals[ia]) * t;
-        const nodeA = nodeIndex(meta, ...corners[ia]), nodeB = nodeIndex(meta, ...corners[ib]);
-        intersections.push({ key: nodeA < nodeB ? `${nodeA}:${nodeB}` : `${nodeB}:${nodeA}`, edge:[ia,ib], p, n: normal.map(v => v / length), c: surfaceColor(p, original, state.bandWidth), cutMask: cutSurfaceMask(original,state.bandWidth) });
+        const nodeA=nodes[ia],nodeB=nodes[ib],edgeKey=nodeA*27+(corners[ib][0]-corners[ia][0]+1)*9+(corners[ib][1]-corners[ia][1]+1)*3+corners[ib][2]-corners[ia][2]+1;
+        // Preserve directed interpolation and first-emitted vertex order exactly.
+        // Neighbouring tetrahedra share the same scalar/gradient input; only
+        // their local corner labels differ. Do not recompute surface attributes.
+        let vertex=edgeVertices.get(edgeKey);
+        if(!vertex){
+          const t = samples[ia] / (samples[ia] - samples[ib]);
+          const ga = gradient(...corners[ia]), gb = gradient(...corners[ib]);
+          const p = corners[ia].map((v, axis) => meta.origin[axis] + (v + (corners[ib][axis] - v) * t) * meta.spacing[axis]);
+          const normal = ga.map((v, axis) => v + (gb[axis] - v) * t), length = Math.hypot(...normal) || 1;
+          const original = originals[ia] + (originals[ib] - originals[ia]) * t;
+          vertex={ key: nodeA < nodeB ? `${nodeA}:${nodeB}` : `${nodeB}:${nodeA}`, p, n: normal.map(v => v / length), c: surfaceColor(p, original, state.bandWidth), cutMask: cutSurfaceMask(original,state.bandWidth) };
+          edgeVertices.set(edgeKey,vertex);intersectionBuilds++;
+        }else intersectionReuses++;
+        intersections.push({key:vertex.key,p:vertex.p,n:vertex.n,c:vertex.c,cutMask:vertex.cutMask,edge:[ia,ib]});
       }
       const crossing=intersections[0]?.edge;
       const inside=crossing?.find(i=>samples[i]<0),outside=crossing?.find(i=>samples[i]>=0);
@@ -553,6 +562,7 @@ export function polygonizeChunk(state, key,{splitTrace=null}={}) {
       }
     }
   }
+  if(metrics){metrics.intersectionBuilds=(metrics.intersectionBuilds??0)+intersectionBuilds;metrics.intersectionReuses=(metrics.intersectionReuses??0)+intersectionReuses;}
   const mesh={ key, positions: new Float32Array(positions), normals: new Float32Array(normals), colors: new Float32Array(colors), cutMasks: new Float32Array(cutMasks), indices: new Uint32Array(indices) };
   const deformation=chunkDeformation(state,key),sampler=deformation?materialSampler(state,deformation):null;
   return refineIncisionSurface(mesh,{spacing:meta.spacing,mapPoint:sampler?p=>sampler(p).position:null,splitTrace});
@@ -793,20 +803,22 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
         chunks = buildChunks(state, allChunkKeys(state),{force:true});
       } else if (!state) throw new Error('The tissue volume is not initialized');
       else if (data.type === 'cut') {
-        const dirty = new Set();
+        const dirty = new Set();work.applyMs=0;work.topologyMs=0;
         const separatedIndices=[],separatedValues=[];
         for (const primitive of data.cuts) {
-          const result = applyCapsuleCut(state, primitive); result.dirty.forEach(key => dirty.add(key)); changedSamples += result.changedSamples; removedMm3 += result.removedMm3;
+          let operationAt=performance.now();const result = applyCapsuleCut(state, primitive);work.applyMs+=performance.now()-operationAt; result.dirty.forEach(key => dirty.add(key)); changedSamples += result.changedSamples; removedMm3 += result.removedMm3;
           // Preserve the same topology boundary as one-at-a-time input: after
           // a true split, later samples cut only the mother, not the specimen.
           // Geometry generation remains amortized across the bounded pass.
-          const separated=separateDisconnectedComponents(state);
+          operationAt=performance.now();const separated=separateDisconnectedComponents(state);work.topologyMs+=performance.now()-operationAt;
           fragments.push(...separated.fragments);separated.dirty.forEach(key=>dirty.add(key));
           for(const value of separated.exclusions.nodeIndices)separatedIndices.push(value);
           for(const value of separated.exclusions.positiveValues)separatedValues.push(value);
         }
         exclusions={nodeIndices:new Uint32Array(separatedIndices),positiveValues:new Float32Array(separatedValues)};
-        chunks = buildChunks(state, dirty);
+        // Air/repeated passes do not modify any surface. Traction is already
+        // displayed live; defer the atomic refinement update until a real cut.
+        const meshAt=performance.now();chunks = dirty.size ? buildChunks(state, dirty) : [];work.meshingMs=performance.now()-meshAt;
       } else if (data.type === 'restore') {
         const restored = restoreVolumeWithSeparations(state, data.cuts ?? [], data.separations ?? []);
         fragments = restored.fragments; exclusions = restored.exclusions;

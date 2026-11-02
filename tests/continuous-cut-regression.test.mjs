@@ -229,3 +229,12 @@ test('sampled rigid blade endpoints stay on their rotation radius with submillim
   }
 });
 
+
+ test('manual backlog drains complete fine CAD poses together without widening the kerf',async()=>{
+ const f=bench({plate:true,holdFirst:true});try{
+   const first=f.interaction.update(1/60);f.at(.012);await f.interaction.update(1/60);f.releaseFirst();await first;
+   const cuts=f.operations.flatMap(op=>op.cuts);assert(cuts.length>=25);assert(f.operations.length<=3,'manual held C must catch up without remeshing each five poses');assert(cuts.every(c=>c.radius===.00165));
+   for(let y=-.012;y<=.012;y+=.001)assert(f.field([0,y,0])>0);assert(f.field([.006,0,0])<0,'fine kerf remains unchanged');
+ }finally{f.tissue.dispose();}
+ });
+

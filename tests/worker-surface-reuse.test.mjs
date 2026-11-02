@@ -10,6 +10,8 @@ test('real tissue worker reuses only unchanged exposed surfaces and transfers fr
   try{
     const init=await send({type:'init',metadata:{dims,spacing,origin},buffer:field.buffer,chunkSize:8});assert(init.woundSelection);assert.equal(init.reuseWoundSelection,false);
     for(const c of init.chunks.filter(c=>c.positions.length)){assert.equal(c.filmSpatialIndex.positions,c.positions,'transferred film bins index the exact authoritative material buffer');assert.equal(c.filmSpatialIndex.vertices.length,c.positions.length/3);assert.equal(new Set(c.filmSpatialIndex.vertices).size,c.positions.length/3,'every original vertex is retained exactly once');}
+    const air=await send({type:'cut',cuts:[{a:[1,1,1],b:[1.01,1,1],radius:.00165,deformation:{model:'local-flow',local:[0,0,.012],displacement:[0,0,.02]}}]});
+    assert.equal(air.changedSamples,0);assert.equal(air.chunks.length,0,'an air pass must not block subsequent input with a traction-only rebuild');assert(air.reuseWoundSelection);
     const cut={a:[0,0,-.018],b:[0,0,.014],radius:.003},first=await send({type:'cut',cuts:[cut]});assert(first.changedSamples>0);assert(first.woundSelection.nodes.length>0);const saved=structuredClone(first.woundSelection);
     const repeated=await send({type:'cut',cuts:[cut]});assert.equal(repeated.changedSamples,0);assert.equal(repeated.chunks.length,0);assert.equal(repeated.reuseWoundSelection,true);assert.equal(repeated.woundSelection,null);assert.deepEqual(first.woundSelection,saved);assert(repeated.work.totalMs>=0);
     const next=await send({type:'cut',cuts:[{...cut,radius:.004}]});assert(next.changedSamples>0);assert.equal(next.reuseWoundSelection,false);assert(next.woundSelection.nodes.length>0);assert(next.chunks.length>0);

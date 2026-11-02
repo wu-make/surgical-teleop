@@ -465,10 +465,10 @@ test('worker coalescing is bounded by total source blade segments rather than st
   const tissue=new TissueVolume();tissue.ready=true;const posted=[];
   tissue.worker={postMessage:message=>posted.push(structuredClone(message)),terminate(){}};
   const segments=Array.from({length:12},(_,i)=>({a:[i*.0001,0,0],b:[i*.0001,.003,0]}));
-  const requests=Array.from({length:6},()=>tissue.cutSegments(segments,.0024));
+  const requests=Array.from({length:22},()=>tissue.cutSegments(segments,.0024));
   await Promise.resolve();
-  assert.equal(posted.length,1);assert.equal(posted[0].cuts.length,5);
-  assert.equal(posted[0].cuts.reduce((n,cut)=>n+cut.segments.length,0),60);
+  assert.equal(posted.length,1);assert.equal(posted[0].cuts.length,21);
+  assert.equal(posted[0].cuts.reduce((n,cut)=>n+cut.segments.length,0),252);
   tissue._receive({id:posted[0].id,epoch:posted[0].epoch,type:'cut',chunks:[],changedSamples:1,removedMm3:1,statistics:{removedVolumeMm3:1}});
   assert.equal(posted.length,2);assert.equal(posted[1].cuts.length,1);
   tissue._receive({id:posted[1].id,epoch:posted[1].epoch,type:'cut',chunks:[],changedSamples:1,removedMm3:1,statistics:{removedVolumeMm3:2}});
@@ -485,8 +485,8 @@ test('wide and fine source cuts retain separate bounded worker passes',async()=>
   const segments=Array.from({length:12},(_,i)=>({a:[i*.0001,0,0],b:[i*.0001,.003,0]}));
   const requests=[tissue.cutSegments(segments,.005),...Array.from({length:10},()=>tissue.cutSegments(segments,.0024))];await Promise.resolve();
   assert.equal(posted[0].cuts.length,1,'the initial wide pass must not absorb later fine strokes');let handled=0;
-  while(handled<posted.length){const message=posted[handled++],radius=message.cuts[0].radius;assert(message.cuts.every(c=>c.radius===radius));assert(message.cuts.reduce((n,c)=>n+(c.segments?.length??1),0)<=(radius>=.004?256:64));tissue._receive({id:message.id,epoch:message.epoch,type:'cut',chunks:[],changedSamples:1,removedMm3:1,statistics:{removedVolumeMm3:handled}});}
-  await Promise.all(requests);assert.equal(posted.length,3);
+  while(handled<posted.length){const message=posted[handled++],radius=message.cuts[0].radius;assert(message.cuts.every(c=>c.radius===radius));assert(message.cuts.reduce((n,c)=>n+(c.segments?.length??1),0)<=256);tissue._receive({id:message.id,epoch:message.epoch,type:'cut',chunks:[],changedSamples:1,removedMm3:1,statistics:{removedVolumeMm3:handled}});}
+  await Promise.all(requests);assert.equal(posted.length,2);
  }finally{tissue.dispose();}
 });
 

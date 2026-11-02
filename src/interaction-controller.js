@@ -56,7 +56,7 @@ export class InteractionController {
     if(!Array.isArray(segments)||!segments.length||segments.length>CUT_SWEEP.wideBatchSegments)throw new RangeError('A region requires 1–256 segments.');
     if(segments.some(s=>!finitePoint(s.a)||!finitePoint(s.b)))throw new TypeError('Region endpoints must be finite.');
     const right=this.sim.state.tools.right,point=localPoint(this.tissue,right.position);
-    for(let i=0;i<segments.length;i+=CUT_SWEEP.maxBatchSegments){const band={source:'guided-region',segments:segments.slice(i,i+CUT_SWEEP.maxBatchSegments).map(s=>({a:asVector(s.a),b:asVector(s.b)}))};this._breakCutTrajectory();this._appendBladePose(captureBladePose(band,point,this._toolQuaternionLocal('right'),right.jaw,right.wrist,this.tissue._deformation??null),{contact:true});}
+    for(let i=0;i<segments.length;i+=CUT_SWEEP.maxPoseSegments){const band={source:'guided-region',segments:segments.slice(i,i+CUT_SWEEP.maxPoseSegments).map(s=>({a:asVector(s.a),b:asVector(s.b)}))};this._breakCutTrajectory();this._appendBladePose(captureBladePose(band,point,this._toolQuaternionLocal('right'),right.jaw,right.wrist,this.tissue._deformation??null),{contact:true});}
     this._breakCutTrajectory();
     return true;
   }
@@ -141,7 +141,7 @@ export class InteractionController {
       if(!contact)return;
     }else if(!previous&&!contact)return;
     const span=bladeSpan(previous,pose);
-    if(pose.segments.length>CUT_SWEEP.maxBatchSegments||!Number.isSafeInteger(span.steps)||this._cutSpans.length>=CUT_SWEEP.maxPendingFrames||this._pendingCutSamples+span.steps>CUT_SWEEP.maxPendingSamples){
+    if(pose.segments.length>CUT_SWEEP.maxPoseSegments||!Number.isSafeInteger(span.steps)||this._cutSpans.length>=CUT_SWEEP.maxPendingFrames||this._pendingCutSamples+span.steps>CUT_SWEEP.maxPendingSamples){
       this._cutOverflow=true;this._cutTail=null;
       this._setCutStatus('blocked','切割轨迹缓冲已满，已停止记录新路径；等待追赶后请重新张合剪口或切换 B');
       this.onMessage(this.contact.cutReason);return;

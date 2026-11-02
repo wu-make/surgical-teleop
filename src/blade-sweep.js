@@ -2,8 +2,9 @@ import * as THREE from 'three';
 import {normalizeDeformation} from './tissue-worker.js';
 
 // Samples are physical copies of the complete source blade, never TCP lines.
-// Keep an individual worker pass small even when input outruns meshing.
-export const CUT_SWEEP=Object.freeze({fineRadius:.00165,wideRadius:.004,spacing:.001,maxBatchSegments:64,wideBatchSegments:256,maxPendingFrames:2048,maxPendingSamples:8192});
+// Drain already-recorded poses together; never delay a fresh sample to fill a
+// batch. Bound both each physical pose and the complete worker packet.
+export const CUT_SWEEP=Object.freeze({fineRadius:.00165,wideRadius:.004,spacing:.001,maxPoseSegments:64,maxBatchSegments:256,wideBatchSegments:256,maxPendingFrames:2048,maxPendingSamples:8192});
 
 export function captureBladePose(blade,point,quaternion,jaw,wrist,deformation){
   const inverse=quaternion.clone().invert(),segments=blade.segments.map(({a,b})=>({a:a.clone(),b:b.clone()}));

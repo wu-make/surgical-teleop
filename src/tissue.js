@@ -81,7 +81,9 @@ export class TissueVolume {
       this._receive(data,{messageAt,decodeMs:decodedAt-messageAt});
     };
     this.worker.onerror = event => this._fail(new Error(event.message || 'Tissue geometry worker failed'));
-    await this._enqueue({ type: 'init', metadata, buffer, transfer: [buffer] });
+    // Smaller update tiles retain the same voxel/triangle resolution while
+    // avoiding remeshing a large unchanged capsule around each fine shear.
+    await this._enqueue({ type: 'init', metadata, buffer, chunkSize:8, transfer: [buffer] });
     this.ready = true;
     this.onChange?.();
     return this;
@@ -94,7 +96,7 @@ export class TissueVolume {
   cutSegments(segments,radius){return this.cutSamples([{segments,deformation:this._deformation}],radius);}
 
   /** Ordered, complete CAD blade samples, each with its own frozen material
-   * map. Fine passes contain at most 64 source segments; broad passes 256. */
+   * map. Each pose retains up to 64 segments; a pass drains up to 256 segments. */
   cutSamples(samples,radius){
     if (!this.ready || this._disposed) return Promise.resolve({ changed: false, removedMm3: 0, reason: 'not-ready' });
     if(!samples?.length)return Promise.resolve({changed:false,removedMm3:0,reason:'no-blade'});
