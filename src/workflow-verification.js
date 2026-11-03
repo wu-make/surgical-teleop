@@ -59,7 +59,17 @@ export async function verifyCompleteWorkflow(view,sim,interaction,pause,options)
     const sample=report.frames.slice(before),span=sample.length>1?sample.at(-1).now-sample[0].now:Infinity;
     report.mode=!new URLSearchParams(location.search).has('workflow-step')&&!document.hidden&&sample.length>=8&&span<800?'ordinary-raf':'shared-single-step-no-fps-claim';report.nativeProbe={frames:sample.length,wallMs:performance.now()-first,spanMs:span,hidden:document.hidden};
     frameResolve=null;options.setFrameCallback(report.mode==='ordinary-raf'?frame:null);options.setExclusive(report.mode!=='ordinary-raf');sim.state.paused=true;
-    assert(await demo.startExampleAsync({yieldFrame:yieldPreparationTask}),'actual peripheral resection plan failed');
+    if(new URLSearchParams(location.search).has('verify-demo-restart')){
+      sim.select('right');sim.state.paused=false;demo.approach();assert(demo.active,'manual cut approach failed');
+      for(let i=0;demo.active&&i<500;i++){if(report.mode==='ordinary-raf')await nativeFrame();else await sharedStep([],true);}
+      await steps(90,['KeyC']);await settle();
+      assert(tissue._cuts.length>0&&tissue.removedVolumeMm3>0,'restart test must begin with genuinely cut tissue');
+      report.beforeRestart=state();const at=performance.now();
+      assert(await options.startExample(),'fresh demonstration did not start');
+      report.restart={wallMs:performance.now()-at,after:state(),planning:demo.planningTimings};
+      assert(!tissue._cuts.length&&!tissue.fragmentMetrics.count&&!interaction.grasp&&!tissue.blood.metrics.activeSources,'demo planning must start from complete, ungrasped tissue');
+      scoreCheck('restored-before-demonstration');
+    }else assert(await demo.startExampleAsync({yieldFrame:yieldPreparationTask}),'actual peripheral resection plan failed');
     sim.state.paused=true;await phase('grasp-traction-and-cut-start');
     report.wristRoutes=demo.wristRouteTimings??[];
     let previous=demo.phase;

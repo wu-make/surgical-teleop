@@ -4,6 +4,7 @@ import {SurgicalScene} from './scene.js';
 import {TissueVolume} from './tissue.js';
 import {InteractionController} from './interaction-controller.js';
 import {GuidedDemo} from './guided-demo.js';
+import {startFreshExample} from './example-start.js';
 import {WristPlanner} from './guided-wrist-planner.js';
 import {makeScopeContext} from './scope-context.js';
 import {collisionFeedback} from './collision-feedback.js';
@@ -26,7 +27,7 @@ const startupScreen=getStartupScreen(),controlTaps=new ControlTaps();
 const $=id=>document.getElementById(id),base=import.meta.env.BASE_URL;
 const held=new Set(),pointerHeld=new Set(),allMotion=new Set(['KeyW','KeyA','KeyS','KeyD','KeyQ','KeyE','KeyZ','KeyX','KeyC','KeyV','KeyH','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','BracketLeft','BracketRight','Space','ShiftLeft','ShiftRight']);
 let verificationExclusive=false,verificationFrame;
-let activeCase=surgicalCase(new URLSearchParams(location.search).get('model')),assistEnabled=true,assistStatus={engaged:false};
+let activeCase=surgicalCase(new URLSearchParams(location.search).get('model')),assistEnabled=true,assistStatus={engaged:false},exampleResetting=false;
 let runtimeProbe,view,tissue,sim,interactionController,demo,scopeNavigation,ready=false,contextLost=false,precision='normal',lastFrame=performance.now(),nextRender=0,lastRenderAt=0,fpsFrames=0,fpsSince=lastFrame,lastUI=0,fps=0,historyBusy=false,frameHandle,frameDurations=[],runtimeErrors=[];
 const startupStages=[],previousFrame={},previousRenderedFrame={};let startupDiagnostics=null;
 function preserveStartup(){startupDiagnostics??={browser:browserStalls.report({detach:true}),stages:startupStages.slice(),resources:performance.getEntriesByType('resource').filter(r=>r.name.startsWith(location.origin)&&/\.(?:glb(?:\.gz)?|bin|json|js|css)(?:\?|$)/.test(r.name)).map(r=>({path:new URL(r.name).pathname,start:r.startTime,end:r.responseEnd,durationMs:r.duration,transferBytes:r.transferSize,encodedBytes:r.encodedBodySize,decodedBytes:r.decodedBodySize,initiator:r.initiatorType,requestStart:r.requestStart,responseStart:r.responseStart}))};}
@@ -107,13 +108,14 @@ async function changeCase(id){
 }
 function beginPressure(){if(historyBusy||!ready)return;const start=performance.now();demo?.stop('');sim.checkpoint('局部压迫止血',()=>interactionController.snapshot({forHistory:true}),{takeOwnership:true});sim.setCutting(false);interactionController.breakCutTrajectory();toast('剪切已关闭：闭合器械，稳定接触渗血切面并按住 H；松开后检查是否再渗血');inputTimings.push({type:'pressure-start',at:start,ms:performance.now()-start});if(inputTimings.length>32)inputTimings.shift();}
 async function startExample(){
-  if(historyBusy||(!demo?.active&&geometryBusy()))return;
+  if(historyBusy||!ready)return false;
   const at=performance.now();clearInput();if(!demo.active){preserveStartup();frameStats.clear();browserStalls.clear();}
   try{
-    const pending=demo.startExampleAsync();switchView('endo');updateUI();
+    const pending=startFreshExample(demo,()=>reset({forExample:true}));switchView('endo');updateUI();
     const handlerMs=performance.now()-at,started=await pending;
     inputTimings.push({type:'example-start',at,handlerMs,wallMs:performance.now()-at,started,...(started?{planning:{...demo.planningTimings}}:{})});if(inputTimings.length>32)inputTimings.shift();
-  }catch(error){reportError(error);}
+    return started;
+  }catch(error){reportError(error);return false;}
 }
 async function singleStep(){
   if(!ready||historyBusy||geometryBusy()||!sim.state.paused)return;
@@ -131,9 +133,9 @@ function toggleFollow(){if(historyBusy)return;clearInput();sim.setScopeFollow(!s
 function toggleCut(){if(historyBusy)return;if(sim.state.selected==='scope'){toast('请选择左钳或右剪后操作');return;}const enable=!sim.state.cutting;demo?.stop('');if(enable)sim.checkpoint('启用剪切',()=>interactionController.snapshot({forHistory:true}),{takeOwnership:true});interactionController.breakCutTrajectory();sim.setCutting(enable);interactionController.lastCut=null;updateUI();}
 function switchView(mode){scopeNavigation?.cancel();view.setMode(mode|| (view.mode==='endo'?'overview':'endo'));$('view-endo').classList.toggle('active',view.mode==='endo');$('view-overview').classList.toggle('active',view.mode==='overview');$('endo-overlay').hidden=view.mode!=='endo';$('mini-title').textContent=view.mode==='endo'?'系统总览':'内窥镜 LIVE';$('mini-caption').textContent=view.mode==='endo'?'UNITREE G1 + 胸部持镜概念集成':'同一三维场景 · 实时内窥镜';$('stage').focus({preventScroll:true});}
 async function undo(redo=false){if(historyBusy||!ready)return;if(geometryBusy()){toast('正在完成已记录的剪切，请完成后撤销或重做');return;}demo?.stop('');historyBusy=true;clearInput();updateUI();try{const current=interactionController.snapshot();const action=redo?sim.redo(current):sim.undo(current);if(!action){toast(redo?'没有可重做的操作':'没有可撤销的操作');return;}view.releaseKinematicGuard();if(action.hasExtraData)await interactionController.restore(action.extraData);sim.setCutting(false);toast((redo?'已重做：':'已撤销：')+action.label);log(redo?'redo':'undo');}catch(e){reportError(e);}finally{historyBusy=false;updateUI();}}
-async function reset(){
-  if(historyBusy||!ready)return;
-  demo?.stop('');historyBusy=true;clearInput();updateUI();
+async function reset({forExample=false}={}){
+  if(historyBusy||!ready)return false;
+  demo?.stop('');historyBusy=true;exampleResetting=forExample;clearInput();updateUI();
   try{
     // Invalidate an in-flight cut before restoring geometry. Its late response
     // must not reattach a specimen or overwrite the new interaction state.
@@ -145,8 +147,9 @@ async function reset(){
     sim.prepareInitialScopeView(view.scopeAspect);
     view.resetPresentation(sim.state);
     view.render();
-    log('reset');toast('完整器官、双臂、器械与镜头已复原；双尖端同时入镜');
-  }catch(e){reportError(e);}finally{historyBusy=false;updateUI();}
+    log('reset');toast(forExample?'完整组织与器械已复原，正在准备切离示范':'完整器官、双臂、器械与镜头已复原；双尖端同时入镜');
+    return true;
+  }catch(e){reportError(e);return false;}finally{historyBusy=false;exampleResetting=false;updateUI();}
 }
 function reportError(error){runtimeErrors.push(String(error.message||error));console.error(error);$('system-status').textContent='需要检查';toast('操作未完成：'+(error.message||error));}
 let lastDiagnostics=-Infinity;
@@ -163,7 +166,7 @@ function updateUI(){
   setText($('scope-summary'),s.scope.follow?'RCM 持镜 · '+({active:'尖端跟随',midpoint:'双器械居中',grasp:'协作区域跟随'}[s.scope.followMode]):'RCM 持镜 · 手动控制');for(const side of['left','right']){setText($(side+'-summary'),(s.selected===side?'已选择 · ':'待命 · ')+(s.tools[side].jaw<.16?(side==='left'&&interactionController?.grasp?(interactionController.grasp.fragmentId?'已夹持 · 独立组织块':'已抓持 · 牵拉中'):'钳口闭合'):'钳口 '+Math.round(s.tools[side].jaw*100)+'%'));}
   setText($('view-status'),view.mode==='endo'?'内窥镜 · '+(s.scope.follow?(s.scope.framingLimited?'视野不足 · 滚轮缩小':({active:'当前尖端跟随',midpoint:'双尖端取景',grasp:'牵拉协作跟随'}[s.scope.followMode])):'手动镜头'):'系统总览 · 鼠标拖动观察');setHTML($('removed'),(tissue?.removedVolumeMm3||0).toFixed(1)+' <small>mm³</small>');$('removed-bar').style.width=Math.min(100,(tissue?.removedVolumeMm3||0)/(tissue?.totalVolumeMm3||1)*100)+'%';setText($('tissue-status'),fragments?.count?'已分离 '+fragments.count+' 块':(tissue?.removedVolumeMm3||0)>0?'已切除组织':'完整');$('undo').disabled=!sim.canUndo||historyBusy||geometryBusy();$('redo').disabled=!sim.canRedo||historyBusy||geometryBusy();$('reset').disabled=historyBusy;$('export').disabled=historyBusy||geometryBusy()||exportPending;$('help-export').disabled=$('export').disabled;$('view-home').disabled=historyBusy||(view.mode==='endo'&&s.paused);$('pause-overlay').hidden=!s.paused;setHTML($('pause'),(s.paused?'▶ 继续仿真':'Ⅱ 暂停仿真')+' <kbd>P</kbd>');setText($('run-status'),s.paused?'Ⅱ 已暂停':'● 运行中');const sec=Math.floor(s.elapsed);setText($('session-time'),String(Math.floor(sec/60)).padStart(2,'0')+':'+String(sec%60).padStart(2,'0'));$('clutch-indicator').classList.toggle('active',held.has('Space')||pointerHeld.has('Space'));setText($('system-status'),runtimeErrors.length?'需要检查':historyBusy?'恢复场景中':geometryBusy()?(s.paused?'剪切待处理 · 请继续':'更新组织'):demo?.mode==='planning'&&demo.active?'准备切离路径中':'系统就绪');
   document.querySelectorAll('[data-hold="KeyC"],[data-hold="KeyV"]').forEach(b=>b.disabled=s.selected==='scope');
-  const contact=interactionController?.contact;const deformation=tissue?.graspMetrics;setText($('left-contact'),interactionController?.relaxing&&!interactionController?.grasp?'未切断 · 从钳口滑脱并回落，仍连接母体':!interactionController?.grasp&&interactionController?.requiresReopen?'空钳闭合 · V 张开后贴近表面，再 C 夹取':interactionController?.grasp?(interactionController.grasp.fragmentId?'已夹持独立组织块 · 可抬起移开 / V 释放':'已抓持 · 牵拉 '+(deformation?.displacementMm||0).toFixed(1)+' mm'):contact?.leftFragmentId?'标本接触 · C 夹持':contact?.left?'包膜接触 · C 抓持':'未接触 · 可表面就位');setText($('right-contact'),contact?.cutReason||(s.cutting?'等待剪刃接触组织并闭合 C':'右剪待命 · C 闭合剪切'));setAttribute($('right-contact'),'data-cut-status',contact?.cutStatus||'disabled');setText($('roll-value'),s.selected==='scope'?(s.scope.roll*180/Math.PI).toFixed(1)+'°':(tool.wrist[2]*180/Math.PI).toFixed(1)+'°');$('follow-mode').value=s.scope.followMode;$('scope-content').value=s.scope.viewMode;setText($('demo'),demo?.active?(demo.mode==='planning'?'■ 取消路径准备':'■ 停止自动操作'):'▶ 宽幅区域切离示范');$('demo').disabled=historyBusy||(!demo?.active&&geometryBusy());$('approach').disabled=historyBusy||geometryBusy()||s.selected==='scope'||s.paused;updateCollisionUI();setText($('connection-status'),view.conceptDecoupled?'概念主从联接':'双臂器械联接');
+  const contact=interactionController?.contact;const deformation=tissue?.graspMetrics;setText($('left-contact'),interactionController?.relaxing&&!interactionController?.grasp?'未切断 · 从钳口滑脱并回落，仍连接母体':!interactionController?.grasp&&interactionController?.requiresReopen?'空钳闭合 · V 张开后贴近表面，再 C 夹取':interactionController?.grasp?(interactionController.grasp.fragmentId?'已夹持独立组织块 · 可抬起移开 / V 释放':'已抓持 · 牵拉 '+(deformation?.displacementMm||0).toFixed(1)+' mm'):contact?.leftFragmentId?'标本接触 · C 夹持':contact?.left?'包膜接触 · C 抓持':'未接触 · 可表面就位');setText($('right-contact'),contact?.cutReason||(s.cutting?'等待剪刃接触组织并闭合 C':'右剪待命 · C 闭合剪切'));setAttribute($('right-contact'),'data-cut-status',contact?.cutStatus||'disabled');setText($('roll-value'),s.selected==='scope'?(s.scope.roll*180/Math.PI).toFixed(1)+'°':(tool.wrist[2]*180/Math.PI).toFixed(1)+'°');$('follow-mode').value=s.scope.followMode;$('scope-content').value=s.scope.viewMode;setText($('demo'),exampleResetting?'恢复完整组织…':demo?.active?(demo.mode==='planning'?'■ 取消路径准备':'■ 停止自动操作'):'▶ 宽幅区域切离示范');$('demo').disabled=historyBusy||!ready;$('approach').disabled=historyBusy||geometryBusy()||s.selected==='scope'||s.paused;updateCollisionUI();setText($('connection-status'),view.conceptDecoupled?'概念主从联接':'双臂器械联接');
   setText($('specimen-count'),(fragments?.count||0)+' 块');setText($('specimen-volume'),((fragments?.volumeMm3||0)/1000).toFixed(2)+' cm³');setText($('specimen-state'),fragments?.pieces.some(piece=>piece.held)?'左钳夹持 · 独立搬运':fragments?.count?'已切离 · C 可再次夹持':'组织桥完全切断后才会分离');$('approach-specimen').disabled=historyBusy||geometryBusy()||!fragments?.count||fragments.pieces.some(piece=>piece.held)||s.paused;
   const blood=tissue?.blood?.metrics;
   $('single-step').disabled=historyBusy||geometryBusy()||!s.paused;
@@ -268,7 +271,7 @@ async function init(){try{
   if(import.meta.env.DEV&&new URLSearchParams(location.search).has('verify-cut')){const {attachCutVerification}=await import('./cut-verification.js');attachCutVerification(view,sim,interactionController,pause);}
   if(import.meta.env.DEV&&(new URLSearchParams(location.search).has('verify-cut-flicker')||new URLSearchParams(location.search).has('verify-closed-motion')||new URLSearchParams(location.search).has('verify-complete-workflow'))){
     const {attachCutFlickerVerification}=await import('./cut-flicker-verification.js');
-    const options={demo,reset,undo,redo:()=>undo(true),beginPressure,setExclusive:value=>{verificationExclusive=value;if(!value){lastFrame=performance.now();nextRender=lastFrame;lastRenderAt=0;lastUI=0;fpsSince=lastFrame;fpsFrames=0;}},setFrameCallback:fn=>verificationFrame=fn,holdKeys:keys=>{held.clear();if(keys.includes('KeyH'))beginPressure();for(const key of keys){armManualCut(sim,interactionController,key);held.add(key);}},advanceLive:(keys,now,duration,withDemo)=>{if(!ready||contextLost)return false;held.clear();for(const key of keys){armManualCut(sim,interactionController,key);held.add(key);}sim.setPaused(false);lastFrame=now-duration*1000;animate(now,true,withDemo);setText($('fps'),'流程验证');return true;},diagnostics:()=>({session:frameStats.report({includeIntervals:true}),browser:browserStalls.report({detach:true}),errors:[...runtimeErrors],resizeTimings:view.resizeTimings}),advance:(keys,now,withDemo=false,duration=1/60)=>advanceSimulationStep({sim,tissue,interaction:interactionController,demo:withDemo?demo:null,keys:new Set(keys),duration,beforeControl:()=>sim.setScopeContext({...makeScopeContext(sim,tissue,interactionController,now),viewAspect:view.scopeAspect}),afterControl:dt=>{enforceScopeClearance();view.update(sim.state,dt);},afterInteraction:()=>{view.render();updateUI();}})};
+    const options={demo,reset,startExample,undo,redo:()=>undo(true),beginPressure,setExclusive:value=>{verificationExclusive=value;if(!value){lastFrame=performance.now();nextRender=lastFrame;lastRenderAt=0;lastUI=0;fpsSince=lastFrame;fpsFrames=0;}},setFrameCallback:fn=>verificationFrame=fn,holdKeys:keys=>{held.clear();if(keys.includes('KeyH'))beginPressure();for(const key of keys){armManualCut(sim,interactionController,key);held.add(key);}},advanceLive:(keys,now,duration,withDemo)=>{if(!ready||contextLost)return false;held.clear();for(const key of keys){armManualCut(sim,interactionController,key);held.add(key);}sim.setPaused(false);lastFrame=now-duration*1000;animate(now,true,withDemo);setText($('fps'),'流程验证');return true;},diagnostics:()=>({session:frameStats.report({includeIntervals:true}),browser:browserStalls.report({detach:true}),errors:[...runtimeErrors],resizeTimings:view.resizeTimings}),advance:(keys,now,withDemo=false,duration=1/60)=>advanceSimulationStep({sim,tissue,interaction:interactionController,demo:withDemo?demo:null,keys:new Set(keys),duration,beforeControl:()=>sim.setScopeContext({...makeScopeContext(sim,tissue,interactionController,now),viewAspect:view.scopeAspect}),afterControl:dt=>{enforceScopeClearance();view.update(sim.state,dt);},afterInteraction:()=>{view.render();updateUI();}})};
     if(new URLSearchParams(location.search).has('verify-closed-motion')){const {verifyClosedMotion}=await import('./closed-motion-verification.js');void verifyClosedMotion(view,sim,interactionController,pause,options);}
     else if(new URLSearchParams(location.search).has('verify-complete-workflow')){const {verifyCompleteWorkflow}=await import('./workflow-verification.js');void verifyCompleteWorkflow(view,sim,interactionController,pause,options);}
     else attachCutFlickerVerification(view,sim,interactionController,pause,options);
