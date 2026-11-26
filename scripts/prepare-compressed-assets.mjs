@@ -2,12 +2,19 @@ import fs from 'node:fs';
 import {gzipSync,gunzipSync} from 'node:zlib';
 import {createHash} from 'node:crypto';
 import {packVolume,unpackVolume} from '../src/volume-transport.js';
+import {packCad,unpackCad} from '../src/cad-transport.js';
 const root=new URL('../public/assets/',import.meta.url),manifestPath=new URL('asset-manifest.json',root),manifest=JSON.parse(fs.readFileSync(manifestPath,'utf8'));
 let originalBytes=0,compressedBytes=0;
 for(const name of ['g1','z1','needle-driver','scissors','endoscope','patient-skin','hepatobiliary-context']){
   const original=fs.readFileSync(new URL(name+'.glb',root)),compressed=gzipSync(original,{level:9});
   if(!gunzipSync(compressed).equals(original))throw new Error('Lossless asset validation failed: '+name);
   fs.writeFileSync(new URL(name+'.glb.gz',root),compressed);manifest.files[name+'.glb.gz']={bytes:compressed.length,sha256:createHash('sha256').update(compressed).digest('hex')};originalBytes+=original.length;compressedBytes+=compressed.length;
+  const transport=gzipSync(new Uint8Array(packCad(original.buffer.slice(original.byteOffset,original.byteOffset+original.byteLength))),{level:9});
+  const decoded=gunzipSync(transport);
+  if(!Buffer.from(unpackCad(decoded.buffer.slice(decoded.byteOffset,decoded.byteOffset+decoded.byteLength))).equals(original))throw new Error('CAD round-trip failed: '+name);
+  const file=name+'.glb.cad1.gz';
+  fs.writeFileSync(new URL(file,root),transport);
+  manifest.files[file]={bytes:transport.length,sha256:createHash('sha256').update(transport).digest('hex')};
 }
 const pelvic=fs.readFileSync(new URL('pelvic-volume.bin',root)),packed=gzipSync(pelvic,{level:9});
 if(!gunzipSync(packed).equals(pelvic))throw new Error('Lossless pelvic volume validation failed');

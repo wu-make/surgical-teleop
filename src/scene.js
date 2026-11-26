@@ -116,8 +116,8 @@ export class SurgicalScene{
     this.resizeObserver=new ResizeObserver(()=>this.requestResize());this.resizeObserver.observe(this.stage);this.lastMini=0;
     checkpoint('tools-and-markers');
   }
-  async loadRobot(){
-    const loader=new GLTFLoader(),gltf=await loadModel(loader,BASE+'assets/g1.glb'),meta=g1Kinematics;this.robot.add(gltf.scene);this.robot.updateMatrixWorld(true);
+  async loadRobot(onLoaded){
+    const loader=new GLTFLoader(),gltf=await loadModel(loader,BASE+'assets/g1.glb',onLoaded),meta=g1Kinematics;this.robot.add(gltf.scene);this.robot.updateMatrixWorld(true);
     gltf.scene.traverse(m=>{if(m.isMesh){m.castShadow=true;m.receiveShadow=true;if(!m.geometry.attributes.normal)m.geometry.computeVertexNormals();if(m.material){m.material.roughness=.38;m.material.metalness=.11;if(m.material.name==='dark'){m.material.color.set('#141a1e');m.material.roughness=.47;m.material.metalness=.08;}else if(m.material.name==='white')m.material.color.set('#d9dfde');}}});
     this.robotModel=gltf.scene;this.robotMetadata=meta;
     for(const j of meta.joints){const node=gltf.scene.getObjectByName(j.name);if(!node||j.type==='fixed')continue;node.userData.rest=node.quaternion.clone();node.userData.angle=0;node.userData.axis=new THREE.Vector3(...j.axis);node.userData.limit=j.limit||j.limits||{lower:-Math.PI,upper:Math.PI};this.joints.push(node);}
@@ -126,9 +126,9 @@ export class SurgicalScene{
     this.handMarkers={};this.handQuaternions={left:new THREE.Quaternion(),right:new THREE.Quaternion()};for(const side of['left','right']){const hand=gltf.scene.getObjectByName(side+'_rubber_hand');if(hand){const marker=new THREE.Object3D();marker.name=side+'_Measured_Palm_Grip_Frame';marker.position.fromArray(G1_GRIP[side]);hand.add(marker);this.handMarkers[side]=marker;}}
     this.robotLoaded=true;return meta;
   }
-  async loadAnatomy(){
+  async loadAnatomy(onLoaded){
     const loader=new GLTFLoader();
-    const [assemblies,anatomy,context]=await Promise.all([loadAssemblies(this.scene),loadModel(loader,BASE+'assets/patient-skin.glb'),loadModel(loader,BASE+'assets/hepatobiliary-context.glb')]);
+    const [assemblies,anatomy,context]=await Promise.all([loadAssemblies(this.scene,onLoaded),loadModel(loader,BASE+'assets/patient-skin.glb',onLoaded),loadModel(loader,BASE+'assets/hepatobiliary-context.glb',onLoaded)]);
     this.assemblies=assemblies;
     this.assemblies.scopeMount.position.set(this.robot.position.x,this.robot.position.y+.2377271,this.robot.position.z-.17);
     // Clock the vertical plate through 180 degrees so the source Z1 folds down

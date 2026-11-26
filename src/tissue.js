@@ -64,30 +64,39 @@ export class TissueVolume {
     this._contactRevision=0;
   }
 
-  async load(urlbase = './assets/liver-volume') {
+  async load(urlbase = './assets/liver-volume',onLoaded) {
     if (this._disposed) throw new Error('TissueVolume has been disposed');
     if (this.worker) throw new Error('This tissue volume has already been loaded');
-    let base = String(urlbase).replace(/\.(?:json|bin)$/, '');
-    if (base.endsWith('/')) base += 'liver-volume';
-    const [metadataResponse,buffer]=await Promise.all([fetch(`${base}.json`),fetchVolumeBytes(`${base}.bin`)]);
-    if(this._disposed)throw new Error('TissueVolume has been disposed');
-    if(!metadataResponse.ok)throw new Error('Could not load the anatomical volume metadata');
-    const metadata=await metadataResponse.json();
-    if(this.caseDefinition?.lesion)metadata.pathology=this.caseDefinition.lesion;
-    this.metadata = normalizeMetadata(metadata);
-    this._baseField = new Float32Array(buffer.slice(0));
+    this.error=null;
+    // Start downloading the worker alongside the field. A cold connection can
+    // otherwise add another round trip after the multi-megabyte organ arrives.
     this.worker = new Worker(new URL('./tissue-worker.js', import.meta.url), { type: 'module' });
     this.worker.onmessage = event => {
       const messageAt=performance.now(),data=event.data,decodedAt=performance.now();
       this._receive(data,{messageAt,decodeMs:decodedAt-messageAt});
     };
     this.worker.onerror = event => this._fail(new Error(event.message || 'Tissue geometry worker failed'));
-    // Smaller update tiles retain the same voxel/triangle resolution while
-    // avoiding remeshing a large unchanged capsule around each fine shear.
-    await this._enqueue({ type: 'init', metadata, buffer, chunkSize:8, transfer: [buffer] });
-    this.ready = true;
-    this.onChange?.();
-    return this;
+    try{
+      let base = String(urlbase).replace(/\.(?:json|bin)$/, '');
+      if (base.endsWith('/')) base += 'liver-volume';
+      const [metadataResponse,buffer]=await Promise.all([fetch(`${base}.json`),fetchVolumeBytes(`${base}.bin`)]);
+      if(this._disposed)throw new Error('TissueVolume has been disposed');
+      if(!metadataResponse.ok)throw new Error('Could not load the anatomical volume metadata');
+      const metadata=await metadataResponse.json();
+      if(this.caseDefinition?.lesion)metadata.pathology=this.caseDefinition.lesion;
+      this.metadata = normalizeMetadata(metadata);
+      this._baseField = new Float32Array(buffer.slice(0));
+      if(this.error||this._disposed)throw this.error??new Error('TissueVolume has been disposed');
+      onLoaded?.();
+      // Smaller update tiles retain the same voxel/triangle resolution while
+      // avoiding remeshing a large unchanged capsule around each fine shear.
+      await this._enqueue({ type: 'init', metadata, buffer, chunkSize:8, transfer: [buffer] });
+      this.ready = true;
+      this.onChange?.();
+      return this;
+    }catch(error){
+      this.worker?.terminate();this.worker=null;throw error;
+    }
   }
 
   cut(point, radius) { return this.cutSegment(point, point, radius); }

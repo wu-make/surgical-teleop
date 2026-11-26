@@ -8,7 +8,7 @@
     const volumeName = new URLSearchParams(location.search).get('model') === 'uterus-adnexa' ? 'pelvic-volume' : 'liver-volume';
     const gzip = typeof DecompressionStream === 'function';
     const cad = ['g1','z1','needle-driver','scissors','endoscope','patient-skin','hepatobiliary-context'];
-    for (const file of [volumeName + (gzip ? '.bin.sfv1.gz' : '.bin'), volumeName + '.json', ...cad.map(name => name + (gzip ? '.glb.gz' : '.glb'))]) {
+    for (const file of [volumeName + (gzip ? '.bin.sfv1.gz' : '.bin'), volumeName + '.json', ...cad.map(name => name + (gzip ? '.glb.cad1.gz' : '.glb'))]) {
       const link = document.createElement('link');
       link.rel = 'preload';
       link.as = 'fetch';

@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import {instrumentPose} from './instrument-pose.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import {fetchModelBytes} from './binary-asset.js';
+import {loadModel} from './binary-asset.js';
 import grasper from '../public/assets/needle-driver-kinematics.json' with {type:'json'};
 import scissors from '../public/assets/scissors-kinematics.json' with {type:'json'};
 import endoscope from '../public/assets/endoscope-kinematics.json' with {type:'json'};
@@ -155,10 +155,9 @@ function makePalmSaddle(parent, side, color) {
   return group;
 }
 
-async function asset(loader, name) {
-  const buffer = await fetchModelBytes(`${BASE}assets/${name}.glb`);
+async function asset(loader, name, onLoaded) {
   const metadata = {'needle-driver':grasper, scissors, endoscope, z1}[name];
-  const gltf = await loader.parseAsync(buffer, `${BASE}assets/`);
+  const gltf = await loadModel(loader,`${BASE}assets/${name}.glb`,onLoaded);
   const group = new THREE.Group();
   group.name = `Authentic_${name}`;
   group.add(gltf.scene);
@@ -483,11 +482,11 @@ class ScopeArm {
 }
 
 /** Load local, licensed source CAD. The caller owns camera and UI integration. */
-export async function loadAssemblies(scene) {
+export async function loadAssemblies(scene,onLoaded) {
   const loader = new GLTFLoader();
   const [leftAsset, rightAsset, scopeAsset, armAsset] = await Promise.all([
-    asset(loader, 'needle-driver'), asset(loader, 'scissors'),
-    asset(loader, 'endoscope'), asset(loader, 'z1'),
+    asset(loader, 'needle-driver',onLoaded), asset(loader, 'scissors',onLoaded),
+    asset(loader, 'endoscope',onLoaded), asset(loader, 'z1',onLoaded),
   ]);
   const tools = { left: new Instrument(leftAsset), right: new Instrument(rightAsset) };
   const scope = new Scope(scopeAsset);

@@ -30,7 +30,7 @@ let verificationExclusive=false,verificationFrame;
 let activeCase=surgicalCase(new URLSearchParams(location.search).get('model')),assistEnabled=true,assistStatus={engaged:false},exampleResetting=false;
 let runtimeProbe,view,tissue,sim,interactionController,demo,scopeNavigation,ready=false,contextLost=false,precision='normal',lastFrame=performance.now(),nextRender=0,lastRenderAt=0,fpsFrames=0,fpsSince=lastFrame,lastUI=0,fps=0,historyBusy=false,frameHandle,frameDurations=[],runtimeErrors=[];
 const startupStages=[],previousFrame={},previousRenderedFrame={};let startupDiagnostics=null;
-function preserveStartup(){startupDiagnostics??={browser:browserStalls.report({detach:true}),stages:startupStages.slice(),firstPaints:performance.getEntriesByType('paint').map(({name,startTime})=>({name,startTime})),resources:performance.getEntriesByType('resource').filter(r=>r.name.startsWith(location.origin)&&/\.(?:glb(?:\.gz)?|bin(?:\.sfv1\.gz)?|json|js|css)(?:\?|$)/.test(r.name)).map(r=>({path:new URL(r.name).pathname,start:r.startTime,end:r.responseEnd,durationMs:r.duration,transferBytes:r.transferSize,encodedBytes:r.encodedBodySize,decodedBytes:r.decodedBodySize,initiator:r.initiatorType,requestStart:r.requestStart,responseStart:r.responseStart}))};}
+function preserveStartup(){startupDiagnostics??={browser:browserStalls.report({detach:true}),stages:startupStages.slice(),firstPaints:performance.getEntriesByType('paint').map(({name,startTime})=>({name,startTime})),resources:performance.getEntriesByType('resource').filter(r=>r.name.startsWith(location.origin)&&/\.(?:glb(?:\.(?:cad1\.)?gz)?|bin(?:\.sfv1\.gz)?|json|js|css)(?:\?|$)/.test(r.name)).map(r=>({path:new URL(r.name).pathname,start:r.startTime,end:r.responseEnd,durationMs:r.duration,transferBytes:r.transferSize,encodedBytes:r.encodedBodySize,decodedBytes:r.decodedBodySize,initiator:r.initiatorType,requestStart:r.requestStart,responseStart:r.responseStart}))};}
 const inputTimings=[];let exportPending=false;const sessionExporter=new SessionExporter(new Worker(new URL('./session-export-worker.js',import.meta.url),{type:'module'}));
 sessionExporter.options.onArchiveError=error=>reportError(new Error('异常记录归档失败：'+error));
 browserStalls.setArchive(message=>sessionExporter.worker.postMessage(message));
@@ -254,6 +254,12 @@ function animate(now,verificationTick=false,advanceDemo=true){
 async function init(){try{
   let stageStart=performance.now();
   startupScreen.progress('正在载入'+activeCase.label+'、机器人和器械…');
+  let received=0;
+  const modelLoaded=()=>{
+    if(startupScreen.state!=='loading')return;
+    received++;
+    startupScreen.progress(received===8?'模型文件已到齐，正在组装场景与可剪切表面…':`已读取 ${received} / 8 个模型文件，正在载入${activeCase.label}与器械…`);
+  };
   tissue=new TissueVolume({gpuBlood:true,bloodSpread:false,caseDefinition:activeCase});
   tissue.onDiagnostic=(name,start,end)=>browserStalls.span(name,start,end);
   async function timedAsset(name,load){
@@ -261,11 +267,11 @@ async function init(){try{
     try{return await load();}finally{startupStages.push({name,start,end:performance.now()});}
   }
   await Promise.all([
-    timedAsset('asset-volume',()=>tissue.load(base+'assets/'+activeCase.asset)),
+    timedAsset('asset-volume',()=>tissue.load(base+'assets/'+activeCase.asset,modelLoaded)),
     (async()=>{
       view=await timedAsset('scene-initialization-wall',()=>SurgicalScene.create($('scene'),$('stage'),$('mini-view')));
       startupStages.push(...view.startupTimings);
-      await Promise.all([timedAsset('asset-robot',()=>view.loadRobot()),timedAsset('asset-assembly-anatomy',()=>view.loadAnatomy())]);
+      await Promise.all([timedAsset('asset-robot',()=>view.loadRobot(modelLoaded)),timedAsset('asset-assembly-anatomy',()=>view.loadAnatomy(modelLoaded))]);
     })()
   ]);
   runtimeProbe=new RuntimeAttribution({gl:view.renderer.getContext(),workerUrl:new URLSearchParams(location.search).has('gpu-profile')?new URL('./runtime-heartbeat-worker.js',import.meta.url):null,measureGpu:new URLSearchParams(location.search).has('gpu-profile'),gpuIntervalMs:new URLSearchParams(location.search).get('gpu-profile')==='all'?0:200,onSample:row=>browserStalls.runtimeSample(row)});browserStalls.runtime=runtimeProbe;sim=new Simulation({ownsExtraData:true,allowToolAdvance:side=>side!=='right'||demo?.active||!interactionController?.cuttingBusy,shouldCheckpoint:()=>!geometryBusy(),getExtraData:()=>interactionController?.snapshot({forHistory:true})??tissue.snapshot(),onEvent:e=>{if(e.type!=='history')log(e.type);}});sim.select('right');sim.setCutting(true);interactionController=new InteractionController(sim,tissue,{onMessage:toast,onEvent:log,toolDirection:side=>view.assemblies?.toolDirections?.[side],toolQuaternion:side=>view.assemblies?.tools[side]?.tipQuaternion,toolBlade:side=>view.assemblies?.toolBlade(side)});demo=new GuidedDemo(sim,tissue,interactionController,{contextGuard:()=>activeCase.context==='hepatic'?view.anatomicGuard:null,wristPlanner:new WristPlanner(()=>new Worker(new URL('./guided-wrist-worker.js',import.meta.url),{type:'module'})),onMessage:toast,onChange:()=>{if(ready)updateUI();}});

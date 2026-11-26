@@ -147,6 +147,34 @@
     "pelvic-volume.bin.sfv1.gz": {
       "bytes": 5604600,
       "sha256": "9eeb881d69b05a0f4d2d76c8acf22ec539b5b224a6d72f021957ac8c883b3b68"
+    },
+    "g1.glb.cad1.gz": {
+      "bytes": 2262891,
+      "sha256": "16115d5fa39ede34ef619df94f87dc0540aee83105c14e1e419c63fbfb2518a7"
+    },
+    "z1.glb.cad1.gz": {
+      "bytes": 2250803,
+      "sha256": "b328e0553e9f31f623591cdf6373abd53dfba7b080eeffed10eb5d910269a664"
+    },
+    "needle-driver.glb.cad1.gz": {
+      "bytes": 667861,
+      "sha256": "b9dbf8ca4025e0850f6ab5f63dabbbd401c1e74c286f312def6847732f6f5e85"
+    },
+    "scissors.glb.cad1.gz": {
+      "bytes": 410566,
+      "sha256": "04b34ecb5ed8131a18ab9c13a128b6f76d5fe13b3c5585e6969e49efaa9fcbab"
+    },
+    "endoscope.glb.cad1.gz": {
+      "bytes": 4170,
+      "sha256": "dde348edfa73ff701e65fc146f694128c862599f4f13dab45768ea9aca07314e"
+    },
+    "patient-skin.glb.cad1.gz": {
+      "bytes": 414159,
+      "sha256": "4e2adeaf7c304c485c5d5cf627b9bf9406500f2a065aa0c27f38f7856986ddb1"
+    },
+    "hepatobiliary-context.glb.cad1.gz": {
+      "bytes": 257708,
+      "sha256": "426e25f4588a84dbac5d4cdc0cec1d6450524346cd400a75958d01acee79e6f2"
     }
   }
 }
