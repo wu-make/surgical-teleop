@@ -581,8 +581,14 @@ export function polygonizeChunk(state, key,{splitTrace=null,metrics=null}={}) {
   }
   if(metrics){metrics.intersectionBuilds=(metrics.intersectionBuilds??0)+intersectionBuilds;metrics.intersectionReuses=(metrics.intersectionReuses??0)+intersectionReuses;}
   const mesh={ key, positions: new Float32Array(positions), normals: new Float32Array(normals), colors: new Float32Array(colors), cutMasks: new Float32Array(cutMasks), indices: new Uint32Array(indices) };
-  const deformation=chunkDeformation(state,key),sampler=deformation?materialSampler(state,deformation):null;
-  return refineIncisionSurface(mesh,{spacing:meta.spacing,mapPoint:sampler?p=>sampler(p).position:null,splitTrace});
+  const deformation=normalizeDeformation(chunkDeformation(state,key)),scratch={weight:0,gradient:[0,0,0]};
+  // Refinement already caches mapped vertices and edges. It only consumes
+  // positions, so avoid retaining a second coordinate map of gradient records.
+  const mapPoint=deformation?point=>{
+    const w=deformationWeightInto(point,deformation,scratch).weight,d=deformation.displacement;
+    return [point[0]+d[0]*w,point[1]+d[1]*w,point[2]+d[2]*w];
+  }:null;
+  return refineIncisionSurface(mesh,{spacing:meta.spacing,mapPoint,splitTrace});
 }
 
 function scanComponents(state, values, labels = null) {

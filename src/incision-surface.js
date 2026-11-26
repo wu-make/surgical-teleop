@@ -13,7 +13,8 @@ export function refineIncisionSurface(mesh,{spacing,mapPoint=null,passes=4,split
   for(let pass=0;pass<passes;pass++){
     const output=[];
     function midpoint(a,b){
-      const high=Math.max(a,b),low=Math.min(a,b),key=high*(high+1)/2+low;if(midpoints.has(key))return midpoints.get(key);
+      const high=Math.max(a,b),low=Math.min(a,b),key=high*(high+1)/2+low;
+      const cached=midpoints.get(key);if(cached!==undefined)return cached;
       if(!mapPoint&&Math.max(masks[a],masks[b])<=.02){midpoints.set(key,-1);return -1;}
       const pa=point(a),pb=point(b);
       const p=[(pa[0]+pb[0])*.5,(pa[1]+pb[1])*.5,(pa[2]+pb[2])*.5];
@@ -42,6 +43,12 @@ export function refineIncisionSurface(mesh,{spacing,mapPoint=null,passes=4,split
       else if(bits===5)output.push(a,ab,ca,ab,b,c,ab,c,ca);
       else if(bits===6)output.push(b,bc,a,bc,ca,a,bc,c,ca);
       else output.push(a,ab,ca,ab,b,bc,ca,bc,c,ab,bc,ca);
+    }
+    // Each split adds triangles. With no splits the next pass would visit
+    // exactly the same edges, all of whose decisions are already cached.
+    if(output.length===indices.length){
+      if(pass===0)return mesh;
+      break;
     }
     indices=output;
   }
