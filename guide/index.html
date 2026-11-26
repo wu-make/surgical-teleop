@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101a19">
+  <title>用宇树 G1 的双手剪下一块组织 · MIRA 操作入门</title>
+  <meta name="description" content="看一段病灶肝切离实录，跟着试一次左钳牵拉、右剪切离和标本搬运。了解宇树 G1 双臂、Z1 持镜臂和内窥镜在 MIRA 里的分工。Includes an English quick start.">
+  <link rel="canonical" href="https://wu-make.github.io/surgical-teleop/guide/">
+  <meta property="og:title" content="用宇树 G1 的双手剪下一块组织 · MIRA">
+  <meta property="og:description" content="20 秒看完从夹住病灶到移开标本，然后用自己的键盘试一次。">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://wu-make.github.io/surgical-teleop/guide/">
+  <meta property="og:image" content="https://wu-make.github.io/surgical-teleop/media/mira-g1.jpg">
+  <meta name="twitter:card" content="summary_large_image">
+  <style>
+    :root{color-scheme:dark;font-family:system-ui,"Microsoft YaHei",sans-serif;background:#101a19;color:#edf3ed;line-height:1.7}
+    *{box-sizing:border-box}body{margin:0}main,header,footer{max-width:56rem;margin:auto;padding-inline:clamp(1rem,4vw,2.5rem)}
+    header,footer{display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;padding-block:1.2rem}
+    header{border-bottom:1px solid #334541}header strong{letter-spacing:.14em}nav,.actions{display:flex;align-items:center;gap:1.25rem;flex-wrap:wrap}
+    a{color:#aae4ca;text-underline-offset:.25em}a:hover{color:white}a:focus-visible,video:focus-visible{outline:2px solid #a8ecc8;outline-offset:4px}
+    h1,h2,h3{line-height:1.35;text-wrap:balance}h1{font-size:clamp(1.85rem,5vw,3rem);margin:2rem 0 .8rem}
+    h2{font-size:1.45rem;margin-top:2.25rem}h3{font-size:1.05rem;margin:1.2rem 0 .25rem}p{margin:.4rem 0 1rem;color:#cfdbd4}
+    .primary{display:inline-block;background:#b3e3cb;color:#10241c;border-radius:.4rem;text-decoration:none;font-weight:650;padding:.5rem .95rem}.primary:hover{background:#dcf9e8;color:#10241c}
+    figure{margin:1.5rem 0}video{width:100%;max-height:65vh;background:#0b1212;border:1px solid #3b5049;border-radius:.6rem;display:block}figcaption,footer{font-size:.85rem;color:#afc2b8}
+    ol{padding-left:1.6rem}li{padding:.35rem 0 .35rem .3rem}kbd{font:inherit;font-size:.92em;border:1px solid #496158;padding:0 .32em;border-radius:.25em}
+    section,figure{scroll-margin-top:1rem}footer{margin-top:2.5rem;border-top:1px solid #334541}
+  </style>
+</head>
+<body>
+<header><strong>MIRA</strong><nav aria-label="页面导航"><a href="#english" lang="en">English</a><a href="https://github.com/wu-make/surgical-teleop">GitHub ↗</a></nav></header>
+<main>
+  <h1>用宇树 G1 的双手剪下一块组织</h1>
+  <p>第一次玩，建议先选病灶肝。认准金线里面那块浅褐色的组织，看左钳把它夹起来。等右剪退出，再看一次原来的位置，你会同时看到切面和左钳上的标本。</p>
+  <div class="actions"><a class="primary" href="../?model=lesion-liver">打开病灶肝，自己试试 →</a><a href="#start">先看按键</a></div>
+  <figure id="film">
+    <video controls playsinline preload="none" width="1100" height="760" style="height:auto" poster="../media/mira-g1.jpg" aria-label="20 秒病灶肝切离实录，含中英文画面字幕">
+      <source src="../media/mira-g1-demo.mp4" type="video/mp4">
+      <a href="../media/mira-g1-demo.mp4">打开 MP4 实录</a>
+    </video>
+    <figcaption>病灶肝示范的实际运行画面，20 秒，无声。右上角的小窗是同一时刻的另一个视角。解剖模型改编自 BodyParts3D，© The Database Center for Life Science（<a href="https://creativecommons.org/licenses/by-sa/2.1/jp/">CC BY-SA 2.1 JP</a>）。</figcaption>
+  </figure>
+  <section id="start">
+    <h2>先看一遍，再接过键盘</h2>
+    <ol>
+      <li><strong>看两只手怎么配合。</strong>在电脑上打开模拟器，点画面下方的「宽幅区域切离示范」。按 <kbd>Tab</kbd> 可以在内窥镜和手术台总览之间切换。</li>
+      <li><strong>自己夹起一小块。</strong>按 <kbd>R</kbd> 重来，按 <kbd>1</kbd> 选左钳，点「当前器械表面就位」。按住 <kbd>C</kbd> 夹紧，轻按 <kbd>E</kbd> 抬起。镜头会跟着当前器械的尖端走。</li>
+      <li><strong>剪开连接，再试着搬走。</strong>按 <kbd>2</kbd> 换右剪，用 <kbd>WASD</kbd> 和 <kbd>Q</kbd> / <kbd>E</kbd> 把剪口对到连接处，按住 <kbd>C</kbd> 沿切缘移动。等面板显示有独立组织块，切回左钳，移开，按 <kbd>V</kbd> 放下。剪偏了可以按 <kbd>Ctrl Z</kbd> 撤销。</li>
+    </ol>
+  </section>
+  <section>
+    <h2>动手时可以留意这三件事</h2>
+    <h3>宇树 G1 和 Z1 在这里各做什么？</h3>
+    <p>G1 的左手持钳、右手持剪。我们把 Z1 装在胸前，让它单独持镜，所以两只手可以始终留在操作区。机器人几何来自宇树公开的 G1 和 Z1 模型，末端钳剪和内窥镜几何来自 dVRK，胸前安装和三臂组合是我们为这个模拟器做的设计。</p>
+    <h3>怎么判断这一块真的剪下来了？</h3>
+    <p>先轻抬左钳。有组织连着时，旁边的一小片会被牵起；全部切断后，标本可以单独转动、放下、再夹起，原处的缺损会保留。右侧面板把「剪切耗损体积」和「独立组织块」分开显示，剪出一道口子也能看出区别。</p>
+    <h3>还可以换什么模型？</h3>
+    <p>想先熟悉手感就选<a href="../?model=liver">正常肝脏</a>。想试沿着目标切，可以选<a href="../?model=lesion-liver">病灶肝</a>或<a href="../?model=uterus-adnexa">子宫附件</a>。后两个场景会显示病灶切除完成率。你可以关掉「沿缘辅助」，用同一条切缘再试一次。</p>
+  </section>
+  <section id="english" lang="en">
+    <h2>Try the Unitree G1 surgical robot simulator</h2>
+    <p>MIRA pairs the G1 humanoid’s two arms with a chest-mounted Unitree Z1 endoscope arm. The setup runs in a desktop browser using Three.js and WebGL. Open the liver lesion case and click the green demo button below the endoscopic view. Watch the grasper carry the specimen away, then look at the opening it leaves behind.</p>
+    <p>Press <kbd>1</kbd> for the grasper or <kbd>2</kbd> for the scissors. Move with <kbd>WASD</kbd>, raise or lower with <kbd>E</kbd> or <kbd>Q</kbd>, and hold <kbd>C</kbd> to close the jaws. Press <kbd>V</kbd> to release or <kbd>R</kbd> to start over. <a href="../?model=lesion-liver" lang="en">Open the simulator →</a></p>
+  </section>
+</main>
+<footer><span>想留着下次再玩？<a href="https://github.com/wu-make/surgical-teleop">去 GitHub 点个 Star ↗</a></span><a href="../assets/ATTRIBUTION.md">模型来源与许可</a></footer>
+</body>
+</html>
+
