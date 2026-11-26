@@ -69,7 +69,8 @@ export class TissueVolume {
     if (this.worker) throw new Error('This tissue volume has already been loaded');
     let base = String(urlbase).replace(/\.(?:json|bin)$/, '');
     if (base.endsWith('/')) base += 'liver-volume';
-    const [metadataResponse,buffer]=await Promise.all([fetch(`${base}.json`),this.caseDefinition?.asset==='pelvic-volume'?fetchVolumeBytes(`${base}.bin`):fetch(`${base}.bin`).then(r=>{if(!r.ok)throw new Error('Could not load the tissue volume');return r.arrayBuffer();})]);
+    const [metadataResponse,buffer]=await Promise.all([fetch(`${base}.json`),fetchVolumeBytes(`${base}.bin`)]);
+    if(this._disposed)throw new Error('TissueVolume has been disposed');
     if(!metadataResponse.ok)throw new Error('Could not load the anatomical volume metadata');
     const metadata=await metadataResponse.json();
     if(this.caseDefinition?.lesion)metadata.pathology=this.caseDefinition.lesion;

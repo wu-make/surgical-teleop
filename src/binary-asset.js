@@ -1,5 +1,6 @@
 // Static hosting cannot configure Content-Encoding. Prefer lossless gzip CAD
 // files, then use the unchanged original file if decoding is unavailable.
+import {unpackVolume} from './volume-transport.js';
 const validGLB=buffer=>buffer.byteLength>=12&&new DataView(buffer).getUint32(0,true)===0x46546c67&&new DataView(buffer).getUint32(8,true)===buffer.byteLength;
 export async function fetchModelBytes(url,{fetchImpl=globalThis.fetch,Decompressor=globalThis.DecompressionStream}={}){
   if(Decompressor){
@@ -23,9 +24,13 @@ export async function loadModel(loader,url){return loader.parseAsync(await fetch
  * raw field; the tissue loader subsequently checks every sample and dimension. */
 export async function fetchVolumeBytes(url,{fetchImpl=globalThis.fetch,Decompressor=globalThis.DecompressionStream}={}){
   if(Decompressor)try{
-    const response=await fetchImpl(url+'.gz');
-    if(response.ok){const bytes=new Uint8Array(await response.arrayBuffer());
-      if(bytes[0]===31&&bytes[1]===139)return await new Response(new Blob([bytes]).stream().pipeThrough(new Decompressor('gzip'))).arrayBuffer();}
+    const response=await fetchImpl(url+'.sfv1.gz');
+    if(response.ok){
+      let buffer=await response.arrayBuffer();
+      const bytes=new Uint8Array(buffer);
+      if(bytes[0]===31&&bytes[1]===139)buffer=await new Response(new Blob([bytes]).stream().pipeThrough(new Decompressor('gzip'))).arrayBuffer();
+      return unpackVolume(buffer);
+    }
   }catch{/* Retry the exact original field. */}
   const response=await fetchImpl(url);if(!response.ok)throw new Error('无法载入组织体积：'+url);return response.arrayBuffer();
 }

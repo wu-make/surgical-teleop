@@ -139,6 +139,14 @@
     "pelvic-volume.bin.gz": {
       "bytes": 10560445,
       "sha256": "b84756634abdae510224f6c634820311af13d5e0224e2c6e92ffc92df5b806e6"
+    },
+    "liver-volume.bin.sfv1.gz": {
+      "bytes": 3796377,
+      "sha256": "522a26ce41d8840063d830d1c285e319028a46f39d89e0628432e968128ecdff"
+    },
+    "pelvic-volume.bin.sfv1.gz": {
+      "bytes": 5604600,
+      "sha256": "9eeb881d69b05a0f4d2d76c8acf22ec539b5b224a6d72f021957ac8c883b3b68"
     }
   }
 }

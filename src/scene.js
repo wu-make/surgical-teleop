@@ -12,6 +12,7 @@ import {ExactRenderBatches} from './exact-render-batches.js';
 import {fixedRenderFrame,frameLayout,styleFixedPreview} from './render-frame.js';
 import {yieldPreparationTask} from './preparation-task.js';
 import {loadModel} from './binary-asset.js';
+import g1Kinematics from '../public/assets/g1-kinematics.json' with {type:'json'};
 import {FramePresentation} from './frame-presentation.js';
 import {createDemoContextGuard} from './demo-context-guard.js';
 
@@ -116,7 +117,7 @@ export class SurgicalScene{
     checkpoint('tools-and-markers');
   }
   async loadRobot(){
-    const loader=new GLTFLoader();const [gltf,res]=await Promise.all([loadModel(loader,BASE+'assets/g1.glb'),fetch(BASE+'assets/g1-kinematics.json')]);const meta=await res.json();this.robot.add(gltf.scene);this.robot.updateMatrixWorld(true);
+    const loader=new GLTFLoader(),gltf=await loadModel(loader,BASE+'assets/g1.glb'),meta=g1Kinematics;this.robot.add(gltf.scene);this.robot.updateMatrixWorld(true);
     gltf.scene.traverse(m=>{if(m.isMesh){m.castShadow=true;m.receiveShadow=true;if(!m.geometry.attributes.normal)m.geometry.computeVertexNormals();if(m.material){m.material.roughness=.38;m.material.metalness=.11;if(m.material.name==='dark'){m.material.color.set('#141a1e');m.material.roughness=.47;m.material.metalness=.08;}else if(m.material.name==='white')m.material.color.set('#d9dfde');}}});
     this.robotModel=gltf.scene;this.robotMetadata=meta;
     for(const j of meta.joints){const node=gltf.scene.getObjectByName(j.name);if(!node||j.type==='fixed')continue;node.userData.rest=node.quaternion.clone();node.userData.angle=0;node.userData.axis=new THREE.Vector3(...j.axis);node.userData.limit=j.limit||j.limits||{lower:-Math.PI,upper:Math.PI};this.joints.push(node);}

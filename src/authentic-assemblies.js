@@ -3,6 +3,10 @@ import {instrumentPose} from './instrument-pose.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import {fetchModelBytes} from './binary-asset.js';
+import grasper from '../public/assets/needle-driver-kinematics.json' with {type:'json'};
+import scissors from '../public/assets/scissors-kinematics.json' with {type:'json'};
+import endoscope from '../public/assets/endoscope-kinematics.json' with {type:'json'};
+import z1 from '../public/assets/z1-kinematics.json' with {type:'json'};
 
 const BASE = import.meta.env?.BASE_URL ?? '/';
 const Z = new THREE.Vector3(0, 0, 1);
@@ -152,12 +156,8 @@ function makePalmSaddle(parent, side, color) {
 }
 
 async function asset(loader, name) {
-  const [buffer, metadataResponse] = await Promise.all([
-    fetchModelBytes(`${BASE}assets/${name}.glb`),
-    fetch(`${BASE}assets/${name}-kinematics.json`),
-  ]);
-  if (!metadataResponse.ok) throw new Error(`无法载入真实模型：${name}`);
-  const metadata = await metadataResponse.json();
+  const buffer = await fetchModelBytes(`${BASE}assets/${name}.glb`);
+  const metadata = {'needle-driver':grasper, scissors, endoscope, z1}[name];
   const gltf = await loader.parseAsync(buffer, `${BASE}assets/`);
   const group = new THREE.Group();
   group.name = `Authentic_${name}`;

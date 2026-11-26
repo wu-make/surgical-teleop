@@ -13,15 +13,32 @@ export async function prepareSceneMaterials(view,{width,height,yieldFrame=yieldP
   // variant before the first C, even when initial tissue is statically batched.
   const original=view.tissue?._meshes?.values().next().value,originalMask=original?.layers.mask;
   if(original)original.layers.mask|=3;
+  // Submit both lighting/target variants before waiting for the driver. Keep
+  // their actual GL program handles: a shared material's "current program"
+  // changes when the second camera compiles.
+  const gl=r.getContext?.(),parallel=gl?.getExtension('KHR_parallel_shader_compile');
+  const compile=camera=>r.compile&&r.info?.programs?r.compile(scene,camera):r.compileAsync(scene,camera);
   try{
     await yieldFrame();
     inner.visible=true;scene.environmentIntensity=.34;r.toneMappingExposure=1.10;
     r.setRenderTarget(view.scopeFeed.target);
-    await r.compileAsync(scene,view.endoCamera);
+    await compile(view.endoCamera);
     await yieldFrame();
     inner.visible=false;scene.environmentIntensity=.80;r.toneMappingExposure=1.0;
     r.setRenderTarget(null);
-    await r.compileAsync(scene,view.overviewCamera);
+    await compile(view.overviewCamera);
+    if(parallel&&r.compile&&r.info?.programs){
+      const pending=new Set(r.info.programs.map(program=>program.program));
+      gl.flush();
+      while(pending.size){
+        if(gl.isContextLost())throw new Error('显卡连接在材质准备时中断');
+        for(const program of pending)if(gl.getProgramParameter(program,parallel.COMPLETION_STATUS_KHR))pending.delete(program);
+        if(pending.size){
+          if(globalThis.scheduler?.postTask)await globalThis.scheduler.postTask(()=>{},{priority:'background',delay:8});
+          else await new Promise(resolve=>setTimeout(resolve,8));
+        }
+      }
+    }
   }finally{
     if(original)original.layers.mask=originalMask;
     r.setRenderTarget(saved.target);scene.background=saved.background;
@@ -49,12 +66,22 @@ export async function warmSceneDisplay(view,options={}){
     for(const endoscopy of [true,false]){
       const camera=endoscopy?view.endoCamera:view.overviewCamera;
       inner.visible=endoscopy;scene.environmentIntensity=endoscopy?.34:.80;r.toneMappingExposure=endoscopy?1.10:1.0;
-      for(const record of objects){
-        const {object,mask}=record,drawMask=record.warmMask??mask;if(record.warmWorld)object.visible=true;if(!(drawMask&camera.layers.mask)||!object.visible)continue;
-        object.layers.mask=drawMask;object.frustumCulled=false;
+      const visible=objects.filter(record=>{
+        if(record.warmWorld)record.object.visible=true;
+        return record.object.visible && ((record.warmMask??record.mask)&camera.layers.mask);
+      });
+      // Share scene traversal, shadow setup and the HDR resolve across a
+      // bounded group. Every original draw still executes in both views.
+      for(let i=0;i<visible.length;i+=8){
+        const group=visible.slice(i,i+8);
+        for(const record of group){
+          record.object.layers.mask=record.warmMask??record.mask;
+          record.object.frustumCulled=false;
+        }
         if(endoscopy)view.scopeFeed.capture(r,scene,camera,width,height);
         else{r.setRenderTarget(null);r.render(scene,camera);}
-        object.layers.mask=0;object.frustumCulled=record.culled;yield;
+        for(const record of group){record.object.layers.mask=0;record.object.frustumCulled=record.culled;}
+        yield;
       }
     }
     if(originalRecord&&original.visible){

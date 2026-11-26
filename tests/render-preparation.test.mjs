@@ -60,6 +60,20 @@ test('material preparation restores target and lighting after compile rejection 
   const f=fixture(true);await assert.rejects(prepareSceneMaterials(f.view,{width:1920,height:1080,yieldFrame:f.yieldFrame}),/compile failed/);
   assert.equal(f.view.renderer.target,f.previous);assert.equal(f.inner.visible,true);assert.equal(f.view.scene.environmentIntensity,2);assert.equal(f.view.renderer.toneMappingExposure,1.7);
 });
+
+test('both real camera programs are submitted before awaiting GPU completion',async()=>{
+  const f=fixture(),r=f.view.renderer,checked=[],submitted=[];
+  const gl={
+    getExtension:()=>({COMPLETION_STATUS_KHR:123}),
+    flush:()=>assert.deepEqual(submitted,[f.view.endoCamera,f.view.overviewCamera]),
+    isContextLost:()=>false,
+    getProgramParameter(program,status){assert.equal(status,123);checked.push(program);return true;}
+  };
+  r.getContext=()=>gl;r.info={programs:[]};
+  r.compile=(_scene,camera)=>{submitted.push(camera);r.info.programs.push({program:camera.name});};
+  await prepareSceneMaterials(f.view,{width:949,height:612,yieldFrame:f.yieldFrame});
+  assert.deepEqual(checked,['endo','overview']);assert.equal(r.target,f.previous);
+});
 test('all exact initial buffers complete cooperatively before compiling either real view',async()=>{
   const f=fixture();f.view.prepareRenderGeometryAsync=async()=>{f.calls.push({kind:'buffer-start'});await f.yieldFrame();f.calls.push({kind:'buffer-complete'});};
   await prepareSceneMaterials(f.view,{width:1920,height:1080,yieldFrame:f.yieldFrame});
@@ -72,7 +86,11 @@ test('first-use warming uploads complete real geometry in bounded units and rest
   const draws=[];f.view.renderer.render=(s,c)=>draws.push({camera:c,objects:objects.filter(o=>o.layers.mask&c.layers.mask).map(o=>o.geometry)});
   f.view.scopeFeed.capture=(r,s,c,w,h)=>{assert.equal(w,325);assert.equal(h,458);r.setRenderTarget(f.view.scopeFeed.target);r.render(s,c);};f.view.scopeFeed.blit=()=>draws.push({blit:true});
   const before=objects.map(o=>o.geometry.vertices.slice());const result=await warmSceneDisplay(f.view,{yieldFrame:f.yieldFrame});
-  assert.equal(result.cancelled,false);assert.equal(draws.length,5);assert(draws.filter(d=>!d.blit).every(d=>d.objects.length===1));
+  assert.equal(result.cancelled,false);assert.deepEqual(draws,[
+    {camera:f.view.endoCamera,objects:[objects[1].geometry,objects[2].geometry]},
+    {camera:f.view.overviewCamera,objects:[objects[0].geometry,objects[2].geometry]},
+    {blit:true}
+  ]);
   objects.forEach((o,i)=>{assert.equal(o.layers.mask,i+1);assert.equal(o.frustumCulled,true);assert.deepEqual(o.geometry.vertices,before[i]);});assert.equal(f.view.renderer.target,f.previous);assert.equal(f.view.renderer.shadowMap.needsUpdate,true);
 });
 test('first-use warming restores scene masks even when a driver draw throws',async()=>{

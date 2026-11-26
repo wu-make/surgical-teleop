@@ -10,6 +10,19 @@ import {normalizeTractionSection,tractionSectionInto,tractionSectionBounds,secti
 export const TETRAHEDRA = [[0, 5, 1, 6], [0, 1, 2, 6], [0, 2, 3, 6], [0, 3, 7, 6], [0, 7, 4, 6], [0, 4, 5, 6]];
 const CORNERS = [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]];
 const EDGES = [[0, 1], [0, 2], [0, 3], [1, 2], [1, 3], [2, 3]];
+// All cells with the same eight corner signs share the same directed edge
+// visits, outward hint and diagonal. Interpolation still uses the live field.
+const CELL_SECTIONS=Array.from({length:256},(_,mask)=>TETRAHEDRA.flatMap(tetra=>{
+  const edges=EDGES.map(([a,b])=>[tetra[a],tetra[b]]).filter(([a,b])=>((mask>>a)^(mask>>b))&1);
+  if(!edges.length)return [];
+  const [a,b]=edges[0],inside=mask&(1<<a)?a:b,outside=inside===a?b:a;
+  if(edges.length===4){
+    const opposite=edges.findIndex(([i,j])=>i!==a&&i!==b&&j!==a&&j!==b);
+    const adjacent=edges.slice(1).filter(edge=>edge!==edges[opposite]);
+    edges.splice(1,3,adjacent[0],edges[opposite],adjacent[1]);
+  }
+  return [{edges,outward:CORNERS[outside].map((v,i)=>v-CORNERS[inside][i])}];
+}));
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const LOCAL_OFFSETS = [];
 for (let z = -1; z <= 1; z++) for (let y = -1; y <= 1; y++) for (let x = -1; x <= 1; x++) LOCAL_OFFSETS.push([x, y, z]);
@@ -400,6 +413,25 @@ export function allChunkKeys(state) {
   return keys;
 }
 
+// Marching tetrahedra emits a surface only in cells with both signs. Inspect
+// the closed sample box (including the shared high face) on initial load.
+// Later edits may expose any interior cell; their ordinary dirty keys still
+// build that geometry, and restore still sends deletions for old surfaces.
+export function initialSurfaceKeys(state) {
+  const {dims:[nx,ny,nz]}=state.meta, {field,chunkSize}=state;
+  const plane=nx*ny;
+  return allChunkKeys(state).filter(key=>{
+    const [x0,y0,z0]=key.split(',').map(n=>Number(n)*chunkSize);
+    const lastX=Math.min(x0+chunkSize,nx-1),lastY=Math.min(y0+chunkSize,ny-1),lastZ=Math.min(z0+chunkSize,nz-1);
+    const negative=field[z0*plane+y0*nx+x0]<0;
+    for(let z=z0;z<=lastZ;z++)for(let y=y0;y<=lastY;y++){
+      const row=z*plane+y*nx;
+      for(let x=x0;x<=lastX;x++)if((field[row+x]<0)!==negative)return true;
+    }
+    return false;
+  });
+}
+
 export function applyCapsuleCut(state, input) {
   const cut = validateCut(input);
   const { meta, field } = state;
@@ -505,8 +537,7 @@ export function polygonizeChunk(state, key,{splitTrace=null,metrics=null}={}) {
     const vx = c.p[0] - a.p[0], vy = c.p[1] - a.p[1], vz = c.p[2] - a.p[2];
     const face = [uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx];
     if (Math.hypot(...face) < 1e-15) return;
-    const outward = outwardHint??a.n.map((v, axis) => v + b.n[axis] + c.n[axis]);
-    if (face.reduce((sum, v, axis) => sum + v * outward[axis], 0) < 0) [b, c] = [c, b];
+    if (face[0]*(outwardHint[0]*meta.spacing[0])+face[1]*(outwardHint[1]*meta.spacing[1])+face[2]*(outwardHint[2]*meta.spacing[2]) < 0) [b, c] = [c, b];
     for (const vertex of [a, b, c]) {
       let index = vertexIndices.get(vertex.key);
       if (index === undefined) {
@@ -516,20 +547,18 @@ export function polygonizeChunk(state, key,{splitTrace=null,metrics=null}={}) {
       indices.push(index);
     }
   }
+  const vertices=new Array(4);
   for (let z = first[2]; z < last[2]; z++) for (let y = first[1]; y < last[1]; y++) for (let x = first[0]; x < last[0]; x++) {
-    let negative = 0;
+    let mask = 0;
     for (let i = 0; i < 8; i++) {
       const grid=corners[i];grid[0]=x+CORNERS[i][0];grid[1]=y+CORNERS[i][1];grid[2]=z+CORNERS[i][2];
       const index = nodes[i] = nodeIndex(meta, grid[0],grid[1],grid[2]);
       samples[i] = field[index]; originals[i] = base[index]; corners[i] = grid;
-      if (samples[i] < 0) negative++;
+      if (samples[i] < 0) mask |= 1 << i;
     }
-    if (!negative || negative === 8) continue;
-    for (const tetra of TETRAHEDRA) {
-      const intersections = [];
-      for (const [ta, tb] of EDGES) {
-        const ia = tetra[ta], ib = tetra[tb];
-        if ((samples[ia] < 0) === (samples[ib] < 0)) continue;
+    for (const section of CELL_SECTIONS[mask]) {
+      let count=0;
+      for (const [ia,ib] of section.edges) {
         const nodeA=nodes[ia],nodeB=nodes[ib],edgeKey=nodeA*27+(corners[ib][0]-corners[ia][0]+1)*9+(corners[ib][1]-corners[ia][1]+1)*3+corners[ib][2]-corners[ia][2]+1;
         // Preserve directed interpolation and first-emitted vertex order exactly.
         // Neighbouring tetrahedra share the same scalar/gradient input; only
@@ -544,22 +573,10 @@ export function polygonizeChunk(state, key,{splitTrace=null,metrics=null}={}) {
           vertex={ key: nodeA < nodeB ? `${nodeA}:${nodeB}` : `${nodeB}:${nodeA}`, p, n: normal.map(v => v / length), c: surfaceColor(p, original, state.bandWidth), cutMask: cutSurfaceMask(original,state.bandWidth) };
           edgeVertices.set(edgeKey,vertex);intersectionBuilds++;
         }else intersectionReuses++;
-        intersections.push({key:vertex.key,p:vertex.p,n:vertex.n,c:vertex.c,cutMask:vertex.cutMask,edge:[ia,ib]});
+        vertices[count++]=vertex;
       }
-      const crossing=intersections[0]?.edge;
-      const inside=crossing?.find(i=>samples[i]<0),outside=crossing?.find(i=>samples[i]>=0);
-      const outward=crossing?corners[outside].map((v,i)=>(v-corners[inside][i])*meta.spacing[i]):null;
-      if (intersections.length === 3) emitTriangle(...intersections,outward);
-      else if (intersections.length === 4) {
-        // With two negative and two positive corners the section is a quad.
-        // Adjacent crossings share a tetrahedron edge endpoint. Interpolated
-        // shading normals can cancel or turn at a cut/capsule crease; using
-        // them to sort vertices can instead make a crossed bow-tie.
-        const first=intersections[0],opposite=intersections.find(v=>v!==first&&!v.edge.some(i=>first.edge.includes(i)));
-        const adjacent=intersections.filter(v=>v!==first&&v!==opposite);
-        intersections.splice(0,4,first,adjacent[0],opposite,adjacent[1]);
-        emitTriangle(intersections[0], intersections[1], intersections[2],outward); emitTriangle(intersections[0], intersections[2], intersections[3],outward);
-      }
+      emitTriangle(vertices[0],vertices[1],vertices[2],section.outward);
+      if(count===4)emitTriangle(vertices[0],vertices[2],vertices[3],section.outward);
     }
   }
   if(metrics){metrics.intersectionBuilds=(metrics.intersectionBuilds??0)+intersectionBuilds;metrics.intersectionReuses=(metrics.intersectionReuses??0)+intersectionReuses;}
@@ -800,7 +817,7 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
         state = createVolumeState(data.metadata, new Float32Array(data.buffer), data.chunkSize ?? 16);
         state.lesionNodes=lesionNodes(state.meta,state.base);
         initializeConnectivity(state);
-        chunks = buildChunks(state, allChunkKeys(state),{force:true});
+        chunks = buildChunks(state, initialSurfaceKeys(state),{force:true});
       } else if (!state) throw new Error('The tissue volume is not initialized');
       else if (data.type === 'cut') {
         const dirty = new Set();work.applyMs=0;work.topologyMs=0;
