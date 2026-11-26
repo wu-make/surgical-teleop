@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-  <link rel="modulepreload" crossorigin="" href="./assets/main-zfngcsz7.js">
+  <link rel="modulepreload" crossorigin="" href="./assets/main-DF7wmN92.js">
 
   <meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <meta name="theme-color" content="#101819"/>
@@ -10,7 +10,7 @@
     const volumeName = new URLSearchParams(location.search).get('model') === 'uterus-adnexa' ? 'pelvic-volume' : 'liver-volume';
     const gzip = typeof DecompressionStream === 'function';
     const cad = ['g1','z1','needle-driver','scissors','endoscope','patient-skin','hepatobiliary-context'];
-    for (const file of [volumeName + (gzip ? '.bin.sfv1.gz' : '.bin'), volumeName + '.json', ...cad.map(name => name + (gzip ? '.glb.gz' : '.glb'))]) {
+    for (const file of [volumeName + (gzip ? '.bin.sfv1.gz' : '.bin'), volumeName + '.json', ...cad.map(name => name + (gzip ? '.glb.cad1.gz' : '.glb'))]) {
       const link = document.createElement('link');
       link.rel = 'preload';
       link.as = 'fetch';
@@ -21,7 +21,7 @@
   </script>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23101819'/%3E%3Cpath d='M14 43V21l18 16 18-16v22' fill='none' stroke='%238ce2c2' stroke-width='5'/%3E%3C/svg%3E"/>
   <title>MIRA · 微创遥操作实验室</title>
-  <script type="module" crossorigin src="./assets/index-C6DU9H3I.js"></script>
+  <script type="module" crossorigin src="./assets/index-Dqr11Uhb.js"></script>
   <link rel="modulepreload" crossorigin href="./assets/preparation-task-Dfm5tygb.js">
   <link rel="stylesheet" crossorigin href="./assets/index-BNlJpGYS.css">
 </head>
