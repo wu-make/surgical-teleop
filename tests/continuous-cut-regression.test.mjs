@@ -239,15 +239,17 @@ test('sampled rigid blade endpoints stay on their rotation radius with submillim
  });
 
 
-test('manual scissors cannot run ahead of an uncommitted real cut, even if its worker stalls for seconds',async()=>{
+test('manual scissors overlap a pending cut but bound their lead even when the worker stalls for seconds',async()=>{
   const f=bench({plate:true,holdFirst:true});try{
-    f.sim.allowToolAdvance=side=>side!=='right'||!f.interaction.cuttingBusy;
+    f.sim.allowToolAdvance=(side,desired)=>side!=='right'||f.interaction.canAdvanceDuringCut(desired);
     f.sim.select('right');const original=structuredClone(f.sim.state.tools.right),first=f.interaction.update(1/60);
     assert(f.interaction.cuttingBusy);
-    for(let i=0;i<180;i++){f.sim.update(1/60,new Set(['KeyC','KeyD','KeyX']));await f.interaction.update(1/60);}
-    assert.deepEqual(f.sim.state.tools.right.position,original.position,'right TCP may not leave a cut that has not reached the displayed solid');
-    assert.deepEqual(f.sim.state.tools.right.wrist,original.wrist,'rotating the closed blade also waits for its accepted material operation');
-    assert.equal(f.operations.length,1);assert.equal(f.interaction.contact.pendingCutFrames,0,'held input must not turn into seconds of future cuts');
+    for(let i=0;i<180;i++){f.sim.update(1/60,new Set(['KeyC','KeyD','KeyX']));f.point.fromArray(f.sim.state.tools.right.position);await f.interaction.update(1/60);}
+    const lead=f.point.distanceTo(new THREE.Vector3(...original.position));
+    assert(lead>0&&lead<=f.interaction.cutRadius,'allow movement inside the pending kerf only');
+    const turns=f.sim.state.tools.right.wrist.reduce((sum,v,i)=>sum+Math.abs(v-original.wrist[i]),0);
+    assert(turns<=.07,'pending rotation cannot run away from the submitted blade');
+    assert.equal(f.operations.length,1);assert(f.interaction.contact.pendingCutFrames<=2);
     assert.equal(f.sim.moveToolTo([.01,-.012,0],'right').changed,false,'direct position/edge assistance cannot bypass synchronization');
     f.sim.setJaw('right',.8);assert.equal(f.sim.state.tools.right.jaw,.8,'opening is always available');
     f.sim.select('left');const left=[...f.sim.state.tools.left.position];f.sim.update(1/60,new Set(['KeyE']));assert.notDeepEqual(f.sim.state.tools.left.position,left,'other tools remain responsive');

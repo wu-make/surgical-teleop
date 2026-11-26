@@ -51,7 +51,7 @@ function exactSources(view){
   const a=view.assemblies,sources=[];
   // Keep complete original CAD on the CPU for contact/RCM. Compatible opaque
   // parts share draw transport, including both operative instruments.
-  for(const root of [view.room,view.robotModel,a?.scope?.group,a?.scopeArm?.mount])root?.traverse(m=>{if(m.isMesh)sources.push(m);});
+  for(const root of [view.room,view.robotModel,a?.scope?.group,a?.scopeArm?.mount,a?.connections,a?.scopeCollar])root?.traverse(m=>{if(m.isMesh)sources.push(m);});
   for(const tool of Object.values(a?.tools??{}))tool.group.traverse(m=>{if(m.isMesh)sources.push(m);});
   for(const mesh of view.tissue?._meshes.values()??[])sources.push(mesh);
   for(const piece of view.tissue?.fragments.items.values()??[])sources.push(piece.mesh);
@@ -62,7 +62,16 @@ function prepareExactGeometry(view){
     const filmEnd=performance.now();
     if(view.tissue?.ready&&view.assemblies&&view.robotLoaded&&view.renderer.extensions.has('WEBGL_multi_draw')){
       view.exactBatches??=new ExactRenderBatches(view.scene);
-      view.exactBatches.sync(exactSources(view));
+      // CAD membership is fixed after loading. Moving a wrist or deforming a
+      // tile still updates transforms, bounds and GPU attributes every frame.
+      // Only a remesh, a model switch or a new assembly changes batch membership.
+      const previous=view.batchMembership;
+      if(previous?.tissue===view.tissue&&previous.revision===view.tissue.meshRevision&&previous.assemblies===view.assemblies&&previous.robot===view.robotModel){
+        view.exactBatches.syncTransforms();
+      }else{
+        view.exactBatches.sync(exactSources(view));
+        view.batchMembership={tissue:view.tissue,revision:view.tissue.meshRevision,assemblies:view.assemblies,robot:view.robotModel};
+      }
     }else view.scene.updateMatrixWorld(true);
     const batchEnd=performance.now();
     return {filmEnd,batchEnd};
@@ -347,7 +356,16 @@ export class SurgicalScene{
     // Capture the intracorporeal scene once. The LCD and viewport reuse this frame.
     this.cavity.children[0].visible=true;this.scene.background=new THREE.Color('#6b4a42');
     this.scene.environmentIntensity=.34;r.toneMappingExposure=1.10;
-    const captureStart=performance.now();this.scopeFeed.capture(r,this.scene,this.endoCamera,this.mode==='endo'?w:mw,this.mode==='endo'?h:mh);
+    // Three caches the light configuration per Scene. Feeding both cameras
+    // through one cache invalidates the theatre's shader selection every frame.
+    // Share the live children and world matrices, with a separate light cache.
+    const scopeScene=this.scopeScene??=new THREE.Scene();
+    scopeScene.matrixWorldAutoUpdate=false;
+    scopeScene.children=this.scene.children;
+    scopeScene.environment=this.scene.environment;
+    scopeScene.environmentIntensity=this.scene.environmentIntensity;
+    scopeScene.background=this.scene.background;
+    const captureStart=performance.now();this.scopeFeed.capture(r,scopeScene,this.endoCamera,this.mode==='endo'?w:mw,this.mode==='endo'?h:mh);
     const scopeEnd=performance.now(),scopeCalls=r.info.render?.calls??0;
     r.setRenderTarget(null);r.setScissorTest(false);r.setViewport(0,0,w,h);r.clear();
     this.cavity.children[0].visible=false;this.scene.background=new THREE.Color('#c2d0d0');

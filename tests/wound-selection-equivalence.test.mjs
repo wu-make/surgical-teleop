@@ -12,7 +12,9 @@ test('prefiltered capsule selection preserves every node, source area and edge, 
   for(const cutCount of [0,1,20,100,400]){
     const chunks=Array.from({length:16},()=>surface(1200,cutCount)),fragments=[{id:'specimen-1',surface:surface(50,60)}];
     assert.deepEqual(selectWoundSurface(chunks),reference(chunks));
-    assert.deepEqual(selectWoundSurface(chunks,fragments),reference(chunks,fragments));
+    const expected=reference(chunks,fragments);
+    assert.deepEqual(selectWoundSurface(chunks,fragments),expected);
+    assert.deepEqual(selectWoundSurface(chunks,fragments,false),{nodes:expected.nodes.filter(n=>n.cut),edges:new Uint16Array()});
     assert.deepEqual(selectWoundSurface(chunks.values(),fragments.values()),reference(chunks,fragments));
   }
 });

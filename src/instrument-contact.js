@@ -128,7 +128,11 @@ export function sweepInstrument(start,desired,other){
   const trajectory=instrumentTrajectory(start,desired),fixed=instrumentCapsules(other),first=instrumentCapsules(start),tolerance=1e-7;
   const fullBound=trajectory.bound(0,1);if(fullBound<2e-12)return {tool:trajectory.pose(1),limited:false};
   let allowances=null;
-  if(capsuleClearance(first,fixed)<0){
+  const initialGap=capsuleClearance(first,fixed);
+  // This bound covers the full swept motion of every capsule. In open space
+  // the first clearance already proves the move without evaluating FK again.
+  if(initialGap>=fullBound+1e-12)return {tool:trajectory.pose(1),limited:false};
+  if(initialGap<0){
     allowances=[];
     for(const a of first)for(const b of fixed){const gap=sourceSegmentDistance(a.a,a.b,b.a,b.b)-a.radius-b.radius;
       allowances.push(gap<=-a.radius-b.radius+tolerance?-Infinity:Math.min(0,gap));}

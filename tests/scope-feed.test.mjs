@@ -144,10 +144,11 @@ test('each complete surgical frame captures endoscopy once, draws overview once 
       stage: { clientWidth: 1000, clientHeight: 620, getBoundingClientRect: () => ({ left: 20, top: 40 }) },
       mini: { getBoundingClientRect: () => ({ left: 720, top: 170, width: 280, height: 180 }) } };
     Object.setPrototypeOf(view,SurgicalScene.prototype);SurgicalScene.prototype.render.call(view, 1000);
+    assert.equal(view.scopeScene.children,scene.children);assert.notEqual(view.scopeScene,scene);
     assert.equal(sceneWalks,1,'both views share one current complete scene hierarchy even without multi-draw');
     assert.equal(renderer.infoResetCount, 1, `${mode}: statistics reset exactly once for all passes`);
     assert.equal(renderer.draws.length, 3);
-    const capture = renderer.draws.filter(draw => draw.camera === endoCamera), overview = renderer.draws.filter(draw => draw.camera === overviewCamera), blit = renderer.draws.filter(draw => draw.object !== scene);
+    const capture = renderer.draws.filter(draw => draw.camera === endoCamera), overview = renderer.draws.filter(draw => draw.camera === overviewCamera), blit = renderer.draws.filter(draw => draw.object !== scene && draw.object !== view.scopeScene);
     assert.equal(capture.length, 1); assert.equal(overview.length, 1); assert.equal(blit.length, 1);
     assert.equal(renderer.draws[0], capture[0], 'LCD samples the new frame, not a previous or recursive one');
     assert.equal(capture[0].target, feed.target); assert.equal(overview[0].target, null); assert.equal(blit[0].target, null);

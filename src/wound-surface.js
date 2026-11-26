@@ -1,12 +1,12 @@
 // Prepare the same material-space samples as the renderer's original scan,
 // outside the render thread. Float64 preserves centroid/key boundary decisions.
 // Each record is [x,y,z,nx,ny,nz,largestTriangleArea,sourceArea].
-export function prepareWoundSurface({positions:p,normals:n,cutMasks:m,indices},fragment=false){
+export function prepareWoundSurface({positions:p,normals:n,cutMasks:m,indices},fragment=false,includeCapsule=true){
   const cuts=new Map(),capsule=[];
   if(!m)return {cuts:new Float64Array(),capsule:new Float64Array()};
   for(let i=0;i<indices.length;i+=3){
     const a=indices[i],b=indices[i+1],c=indices[i+2],cut=(m[a]+m[b]+m[c])/3>.55;
-    if(!cut&&(fragment||i%27!==0))continue;
+    if(!cut&&(!includeCapsule||fragment||i%27!==0))continue;
     const ax=p[a*3],ay=p[a*3+1],az=p[a*3+2],ux=p[b*3]-ax,uy=p[b*3+1]-ay,uz=p[b*3+2]-az,vx=p[c*3]-ax,vy=p[c*3+1]-ay,vz=p[c*3+2]-az;
     const area=Math.hypot(uy*vz-uz*vy,uz*vx-ux*vz,ux*vy-uy*vx)*.5e6;if(area<.015)continue;
     const x=(ax+p[b*3]+p[c*3])/3,y=(ay+p[b*3+1]+p[c*3+1])/3,z=(az+p[b*3+2]+p[c*3+2])/3;
@@ -35,10 +35,10 @@ export function connectWoundNodes(nodes){
 
 /** Same deterministic source/capsule selection as the original main-thread
  * scan, now prepared beside the geometry worker's persistent chunk cache. */
-export function selectWoundSurface(chunks,fragments=[]){
+export function selectWoundSurface(chunks,fragments=[],spread=true){
   const candidates=new Map(),capsules=[];
   const collect=(surface,fragmentId=null)=>{
-    capsules.push({data:surface.capsule,fragmentId});
+    if(spread)capsules.push({data:surface.capsule,fragmentId});
     const data=surface.cuts;
     for(let i=0;i<data.length;i+=8){
       const reference=[data[i],data[i+1],data[i+2]],key=reference.map(v=>Math.round(v/.0025)).join(':'),entry={key,reference,restNormal:[data[i+3],data[i+4],data[i+5]],area:data[i+6],cut:true,fragmentId,seed:seedOf(key)};
@@ -47,7 +47,9 @@ export function selectWoundSurface(chunks,fragments=[]){
     }
   };
   for(const surface of chunks)collect(surface);for(const {id,surface}of fragments)collect(surface,id);
-  const cuts=[...candidates.values()].sort((a,b)=>a.seed-b.seed).slice(0,240),low=[Infinity,Infinity,Infinity],high=[-Infinity,-Infinity,-Infinity];
+  const cuts=[...candidates.values()].sort((a,b)=>a.seed-b.seed).slice(0,240);
+  if(!spread)return {nodes:cuts,edges:new Uint16Array()};
+  const low=[Infinity,Infinity,Infinity],high=[-Infinity,-Infinity,-Infinity];
   for(const c of cuts)for(let i=0;i<3;i++){low[i]=Math.min(low[i],c.reference[i]-.012);high[i]=Math.max(high[i],c.reference[i]+.012);}
   const adjacent=[];
   // Retain the exact original traversal, keys and neighbours, but reject the

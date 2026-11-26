@@ -148,6 +148,17 @@ export class InteractionController {
     }
     this._cutSpans.push(span);this._pendingCutSamples+=span.steps;this._pendingCutFeedback();
   }
+  canAdvanceDuringCut(desired){
+    if(!this.cuttingBusy)return true;
+    const anchor=this._cutTask?.toolPose;
+    if(!anchor||this._pendingCutSamples>=2)return false;
+    // Pipeline at most one blade radius beyond the submitted pose. An overdue
+    // worker cannot accumulate a delayed trail, including under direct nudges.
+    return Math.hypot(...desired.position.map((v,i)=>v-anchor.position[i]))<=this.cutRadius
+      && desired.wrist.reduce((sum,v,i)=>sum+Math.abs(v-anchor.wrist[i]),0)<=.07
+      && anchor.jaw-desired.jaw<=.15;
+  }
+
   _takeCutBatch(){
     const batch=[];let segments=0;const radius=this._cutSpans[0]?.to.cutRadius??CUT_RADIUS,limit=radius>=CUT_SWEEP.wideRadius?CUT_SWEEP.wideBatchSegments:CUT_SWEEP.maxBatchSegments;
     while(this._cutSpans.length){
@@ -168,10 +179,12 @@ export class InteractionController {
     const task={generation:this._generation,batch:null};this._cutTask=task;this._pendingCutFeedback();
     try{
       while(this._pendingCutSamples&&!this.sim.state.paused){
-        const batch=this._takeCutBatch();task.batch=batch;this._pendingCutFeedback();
+        const batch=this._takeCutBatch();task.batch=batch;
+        const tool=this.sim.state.tools.right;
+        task.toolPose={position:[...tool.position],wrist:[...tool.wrist],jaw:tool.jaw};this._pendingCutFeedback();
         this.contact.cutting=true;this._setCutStatus('busy','正在完成已执行的剪切，请稍候');
         const before=this.tissue.removedVolumeMm3;let result;
-        if(this.tissue.cutSamples)result=await this.tissue.cutSamples(batch.map(pose=>({segments:pose.segments,deformation:pose.material})),batch[0]?.cutRadius??CUT_RADIUS);
+        if(this.tissue.cutSamples)result=await this.tissue.cutSamples(batch.map(pose=>({segments:pose.segments,deformation:pose.material})),batch[0]?.cutRadius??CUT_RADIUS,{dispatchNow:true});
         else{
           // Lightweight test adapters and old integrations can accept one pose
           // at a time. Production uses cutSamples to freeze each material map.

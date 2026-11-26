@@ -83,7 +83,7 @@ export function makeScopeContext(sim,tissue,interaction,now=globalThis.performan
     if(bounds)bounds.local.clampPoint(query,query);
     // Only the parent-only API is permitted here. A far specimen cannot win a
     // generic nearest-object query and drag the normal operative view away.
-    const surface=tissue.findParentSurfacePoint(query,.18);
+    const surface=tissue.findParentSurfacePoint(query,.18,{displayed:true});
     const coordinates=surface?.isVector3?surface.toArray():surface;
     if(validVector(coordinates))cache.surface=point(coordinates);
   }

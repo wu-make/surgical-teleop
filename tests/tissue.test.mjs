@@ -499,3 +499,17 @@ test('immutable history uses isolated ordinary arrays for exact hot contact quer
   assert.notEqual(t._cutGroups[0].deformation,cut.deformation);assert.equal(Object.isFrozen(t._cutGroups[0].deformation.displacement),false);
   entry.cut.a[0]=123;assert.equal(cut.a[0],-.01,'hot query storage cannot corrupt undo history');t.dispose();
 });
+
+test('scope framing after cutting queries the displayed parent without evaluating historical cutters',()=>{
+  const state=sphereVolume(),tissue=new TissueVolume();
+  try{
+    tissue.metadata=state.meta;tissue._baseField=state.base;
+    const cut={a:[0,0,.006],b:[0,0,.020],radius:.003};
+    applyCapsuleCut(state,cut);
+    for(const key of allChunkKeys(state))tissue._replaceChunk(polygonizeChunk(state,key));
+    tissue.sampleDistance=()=>assert.fail('display framing must not replay cutter history');
+    const hit=tissue.findParentSurfacePoint([0,0,.008],.18,{displayed:true});
+    assert(hit&&hit.normal&&Math.hypot(hit.x,hit.y)>.001,'camera should find the newly exposed wall');
+    assert.equal(tissue.findParentSurfacePoint([.4,.4,.4],.005,{displayed:true}),null);
+  }finally{tissue.dispose();}
+});

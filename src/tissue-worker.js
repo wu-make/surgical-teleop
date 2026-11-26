@@ -500,14 +500,12 @@ export function resetVolume(state, cuts = []) {
 }
 
 function nodeGradient(state, x, y, z) {
-  const { meta, field } = state;
-  const gradient = [0, 0, 0];
-  for (let axis = 0; axis < 3; axis++) {
-    const low = [x, y, z], high = [x, y, z];
-    low[axis] = Math.max(0, low[axis] - 1); high[axis] = Math.min(meta.dims[axis] - 1, high[axis] + 1);
-    gradient[axis] = (field[nodeIndex(meta, ...high)] - field[nodeIndex(meta, ...low)]) / ((high[axis] - low[axis]) * meta.spacing[axis]);
-  }
-  return gradient;
+  const {meta,field}=state,[nx,ny,nz]=meta.dims,[sx,sy,sz]=meta.spacing;
+  const row=nx,plane=nx*ny,i=nodeIndex(meta,x,y,z);
+  const left=Number(x>0),right=Number(x<nx-1),down=Number(y>0),up=Number(y<ny-1),back=Number(z>0),front=Number(z<nz-1);
+  return [(field[i+right]-field[i-left])/((left+right)*sx),
+    (field[i+up*row]-field[i-down*row])/((down+up)*sy),
+    (field[i+front*plane]-field[i-back*plane])/((back+front)*sz)];
 }
 
 function cutSurfaceMask(originalDistance,width){return clamp((-originalDistance-width*.08)/(width*.2),0,1);}
@@ -535,9 +533,9 @@ export function polygonizeChunk(state, key,{splitTrace=null,metrics=null}={}) {
   function emitTriangle(a, b, c, outwardHint) {
     const ux = b.p[0] - a.p[0], uy = b.p[1] - a.p[1], uz = b.p[2] - a.p[2];
     const vx = c.p[0] - a.p[0], vy = c.p[1] - a.p[1], vz = c.p[2] - a.p[2];
-    const face = [uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx];
-    if (Math.hypot(...face) < 1e-15) return;
-    if (face[0]*(outwardHint[0]*meta.spacing[0])+face[1]*(outwardHint[1]*meta.spacing[1])+face[2]*(outwardHint[2]*meta.spacing[2]) < 0) [b, c] = [c, b];
+    const fx=uy*vz-uz*vy,fy=uz*vx-ux*vz,fz=ux*vy-uy*vx;
+    if (Math.hypot(fx,fy,fz) < 1e-15) return;
+    if (fx*(outwardHint[0]*meta.spacing[0])+fy*(outwardHint[1]*meta.spacing[1])+fz*(outwardHint[2]*meta.spacing[2]) < 0) [b, c] = [c, b];
     for (const vertex of [a, b, c]) {
       let index = vertexIndices.get(vertex.key);
       if (index === undefined) {
@@ -570,7 +568,10 @@ export function polygonizeChunk(state, key,{splitTrace=null,metrics=null}={}) {
           const p = corners[ia].map((v, axis) => meta.origin[axis] + (v + (corners[ib][axis] - v) * t) * meta.spacing[axis]);
           const normal = ga.map((v, axis) => v + (gb[axis] - v) * t), length = Math.hypot(...normal) || 1;
           const original = originals[ia] + (originals[ib] - originals[ia]) * t;
-          vertex={ key: nodeA < nodeB ? `${nodeA}:${nodeB}` : `${nodeB}:${nodeA}`, p, n: normal.map(v => v / length), c: surfaceColor(p, original, state.bandWidth), cutMask: cutSurfaceMask(original,state.bandWidth) };
+          // Adjacent grid nodes have only 27 relative offsets. Reversing
+          // the directed edge complements its base-3 offset within [0,26].
+          const key=nodeA<nodeB?edgeKey:nodeB*27+26-(edgeKey-nodeA*27);
+          vertex={ key, p, n: normal.map(v => v / length), c: surfaceColor(p, original, state.bandWidth), cutMask: cutSurfaceMask(original,state.bandWidth) };
           edgeVertices.set(edgeKey,vertex);intersectionBuilds++;
         }else intersectionReuses++;
         vertices[count++]=vertex;
@@ -779,7 +780,11 @@ export function buildChunks(state, keys,{force=false}={}) {
   // change subdivision on an otherwise untouched shared edge. Commit the
   // complete old/new refinement domain in one worker packet, so the rendered
   // surface never mixes coarse neighbours with newly refined pulled tissue.
-  for(const [key,previous] of cache)if(previous.hasSurface&&previous.signature!==JSON.stringify(chunkDeformation(state,key)))requested.add(key);
+  const poseSignature=JSON.stringify(state.meshingDeformation??state.cuts?.at(-1)?.deformation??null);
+  if(state._meshPoseSignature!==poseSignature){
+    for(const [key,previous] of cache)if(previous.hasSurface&&previous.signature!==JSON.stringify(chunkDeformation(state,key)))requested.add(key);
+    state._meshPoseSignature=poseSignature;
+  }
   for(const key of requested){
     const signature=JSON.stringify(chunkDeformation(state,key));
     const first=key.split(',').map(v=>Number(v)*state.chunkSize),low=first.map(v=>Math.max(0,v-1)),high=first.map((v,i)=>Math.min(dims[i]-1,v+state.chunkSize+1));
@@ -797,7 +802,7 @@ export function buildChunks(state, keys,{force=false}={}) {
     const sameMesh=sameInput&&previous.splitTrace.length===splitTrace.length&&splitTrace.every((v,i)=>v===previous.splitTrace[i]);
     cache.set(key,{signature,values,splitTrace:new Uint32Array(splitTrace),hasSurface:chunk.indices.length>0});
     if(sameMesh)continue;
-    chunk.woundSurface=prepareWoundSurface(chunk);chunks.push(chunk);
+    chunk.woundSurface=prepareWoundSurface(chunk,false,state.bloodSpread!==false);chunks.push(chunk);
   }
   return chunks;
 }
@@ -821,6 +826,7 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
       let chunks, changedSamples = 0, removedMm3 = 0, fragments = [], exclusions = { nodeIndices: new Uint32Array(), positiveValues: new Float32Array() };
       if (data.type === 'init') {
         state = createVolumeState(data.metadata, new Float32Array(data.buffer), data.chunkSize ?? 16);
+        state.bloodSpread=data.bloodSpread!==false;
         state.lesionNodes=lesionNodes(state.meta,state.base);
         initializeConnectivity(state);
         chunks = buildChunks(state, initialSurfaceKeys(state),{force:true});
@@ -855,7 +861,7 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
       // exposed surface. Reuse it on the receiver; do not rebuild/retransfer
       // the same 320-cell selection while the instrument continues moving.
       const reuseWoundSelection=data.type==='cut'&&!chunks.length&&!fragments.length&&!exclusions.nodeIndices.length;
-      const woundSelection=reuseWoundSelection?null:selectWoundSurface(woundChunks.values(),woundFragments.values());
+      const woundSelection=reuseWoundSelection?null:selectWoundSurface(woundChunks.values(),woundFragments.values(),state.bloodSpread);
       phase('woundSelectionMs');
       for(const fragment of fragments)fragment.display=prepareFragmentDisplay(fragment);
       phase('fragmentDisplayMs');

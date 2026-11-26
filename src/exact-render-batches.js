@@ -90,6 +90,11 @@ export class ExactRenderBatches {
         yield;
       }
     }
+    this.triangleCount=0;
+    for(const {sourceGeometry:g} of this.records.values())this.triangleCount+=(g.index?.count??g.attributes.position.count)/3;
+    this.syncTransforms();
+  }
+  syncTransforms(){
     this.root.updateMatrixWorld(true);this.inverse.copy(this.root.matrixWorld).invert();
     for(const [source,record]of this.records){
       const g=source.geometry,value=record.geometry;
@@ -99,6 +104,6 @@ export class ExactRenderBatches {
       if(record.visible!==visible){record.group.mesh.setVisibleAt(record.instance,visible);record.visible=visible;}
     }
   }
-  get metrics(){return {operationCounts:this.operationCounts,operations:this.operations,worstOperations:this.worstOperations,sources:this.records.size,batches:this.groups.size,triangles:[...this.records.values()].reduce((n,r)=>n+(r.sourceGeometry.index?.count??r.sourceGeometry.attributes.position.count)/3,0)};}
-  dispose(){for(const [source,record]of this.records)source.layers.mask=record.mask;this.records.clear();for(const group of this.groups.values()){group.mesh.removeFromParent();group.mesh.dispose();}this.groups.clear();}
+  get metrics(){return {operationCounts:this.operationCounts,operations:this.operations,worstOperations:this.worstOperations,sources:this.records.size,batches:this.groups.size,triangles:this.triangleCount??0};}
+  dispose(){for(const [source,record]of this.records)source.layers.mask=record.mask;this.records.clear();this.triangleCount=0;for(const group of this.groups.values()){group.mesh.removeFromParent();group.mesh.dispose();}this.groups.clear();}
 }

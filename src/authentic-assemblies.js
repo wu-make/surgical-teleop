@@ -520,7 +520,7 @@ export async function loadAssemblies(scene,onLoaded) {
   const result = {
     loaded: true,
     toolNames: Object.freeze({ left: '持针钳', right: '单极弯剪' }),
-    tools, scope, scopeArm,
+    tools, scope, scopeArm, connections, scopeCollar,
     scopeMount: scopeArm.mount,
     scopeArmError: 0,
     scopeHandlePosition: scope.handlePosition,

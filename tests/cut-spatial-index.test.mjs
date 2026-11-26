@@ -20,3 +20,20 @@ test('spatial cutter queries equal complete linear CSG at every incremental bloc
   const stats={skippedCutters:0,evaluatedCutters:0};index.evaluate([.5,.5,.5],0,stats);
   assert.equal(stats.skippedCutters,513);assert.equal(stats.evaluatedCutters,0);
 });
+
+test('overlapping curved blade sweeps retain exact continuous distances after thousands of poses',()=>{
+  const index=new CutSpatialIndex(),cuts=[];
+  for(let i=0;i<3072;i++){
+    const offset=(i%256)*.00009,points=Array.from({length:13},(_,j)=>[offset+j*.0003,.01*Math.sin(j*.13),Math.floor(i/256)*.0007]);
+    const segments=points.slice(1).map((b,j)=>({a:points[j],b}));
+    const cut={...segments[0],segments,radius:i%13===0?.0024:.00165};
+    cuts.push(cut);index.add({cut});
+  }
+  for(const p of [[.004,.007,.003],[.018,.006,.002],[.0004,.009,-.002],[.027,.009,.008]]){
+    const expected=cuts.reduce((d,c)=>Math.max(d,c.radius-distanceToCut(p,c)),-1);
+    const stats={skippedCutters:0,evaluatedCutters:0};
+    assert.equal(index.evaluate(p,-1,stats),expected);
+    assert(stats.evaluatedCutters<cuts.length/4);
+    assert.equal(stats.evaluatedCutters+stats.skippedCutters,cuts.length);
+  }
+});

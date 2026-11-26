@@ -33,6 +33,7 @@ export class TissueVolume {
     this.voxelMm = 1.5;
     this.error = null;
     this._meshes = new Map();
+    this.meshRevision=0;
     this._bloodBroadPhase=new MeshBroadPhase();this._bloodQueryMeshes=[];
     this.updateTimings={};
     this.operationMetrics={};
@@ -90,7 +91,7 @@ export class TissueVolume {
       onLoaded?.();
       // Smaller update tiles retain the same voxel/triangle resolution while
       // avoiding remeshing a large unchanged capsule around each fine shear.
-      await this._enqueue({ type: 'init', metadata, buffer, chunkSize:8, transfer: [buffer] });
+      await this._enqueue({ type: 'init', metadata, buffer, chunkSize:8, bloodSpread:this.blood.spread, transfer: [buffer] });
       this.ready = true;
       this.onChange?.();
       return this;
@@ -107,7 +108,7 @@ export class TissueVolume {
 
   /** Ordered, complete CAD blade samples, each with its own frozen material
    * map. Each pose retains up to 64 segments; a pass drains up to 256 segments. */
-  cutSamples(samples,radius){
+  cutSamples(samples,radius,{dispatchNow=false}={}){
     if (!this.ready || this._disposed) return Promise.resolve({ changed: false, removedMm3: 0, reason: 'not-ready' });
     if(!samples?.length)return Promise.resolve({changed:false,removedMm3:0,reason:'no-blade'});
     let primitives;
@@ -125,7 +126,7 @@ export class TissueVolume {
     if(this._lastCompletedCut?.key===key&&this._lastCompletedCut.changed)return Promise.resolve({changed:false,removedMm3:0,reason:'already-cut',removedVolumeMm3:this.removedVolumeMm3});
     if(this._cuts.length+primitives.length>50000)return Promise.resolve({changed:false,removedMm3:0,reason:'history-limit'});
     const epoch=this._epoch,before=this.removedVolumeMm3;this._cuts.push(...primitives);
-    return this._enqueue({type:'cut',cuts:primitives}).then(result=>{
+    return this._enqueue({type:'cut',cuts:primitives},dispatchNow).then(result=>{
       const removed=result.removedMm3>1e-8||this.removedVolumeMm3>before+1e-8||(!Number.isFinite(before)&&result.changed);
       if(epoch===this._epoch)this._lastCompletedCut={key,changed:!!removed};return result;
     },error=>{
@@ -386,9 +387,17 @@ export class TissueVolume {
   }
 
   /** Mother-organ surface only: a carried specimen must not redirect the scope. */
-  findParentSurfacePoint(point, margin = 0.008) {
+  findParentSurfacePoint(point, margin = 0.008, {displayed=false}={}) {
     if (!this._baseField || !point || !Number.isFinite(margin) || margin <= 0) return null;
     const coordinates=vectorArray(point);if(coordinates.length!==3||!coordinates.every(Number.isFinite))return null;
+    if(displayed&&this._meshes.size){
+      // Camera framing needs a point on the currently visible parent. Use its
+      // exact post-cut triangles, without projecting through cutter history.
+      // A hit within the small radius is also the global closest point.
+      const p=new THREE.Vector3(...coordinates),near=Math.min(.008,margin);
+      return closestParentSurface(this._meshes.values(),p,near) ??
+        (near<margin?closestParentSurface(this._meshes.values(),p,margin):null);
+    }
     const result=this._parentContact(coordinates,margin);if(!result)return null;
     const surface=result.surface.clone();surface.normal=result.surface.normal.clone();return surface;
   }
@@ -556,12 +565,15 @@ export class TissueVolume {
     return activeCount;
   }
 
-  _enqueue(operation) {
+  _enqueue(operation,dispatchNow=false) {
     if (!this.worker) return Promise.reject(new Error('Tissue worker is not available'));
     this.busy = true;
     return new Promise((resolve, reject) => {
       this._commands.push({ ...operation, epoch: this._epoch,queuedAt:performance.now(), resolve, reject });
-      queueMicrotask(() => this._flush());
+      // Interactive input already contains a complete batch. Let geometry work
+      // overlap this frame's render instead of starting at the next microtask.
+      if(dispatchNow)this._flush();
+      else queueMicrotask(() => this._flush());
     });
   }
 
@@ -601,6 +613,7 @@ export class TissueVolume {
       else if (data.exclusions) for (let i = 0; i < data.exclusions.nodeIndices.length; i++) {
         this._excludedValues.set(data.exclusions.nodeIndices[i], data.exclusions.positiveValues[i]);
       }
+      if(data.fragments?.length||data.type==='restore')this.meshRevision++;
       if (data.type === 'init' || data.type === 'restore') {this.fragments.clear();this.transitionTimings.length=0;}
       const fragmentsStart=performance.now();
       for (const fragment of data.fragments ?? []) this.fragments.add(fragment, this._restoringFragmentPoses?.get(fragment.id));
@@ -613,7 +626,7 @@ export class TissueVolume {
       if(data.woundSelection)this._lastWoundSelection=data.woundSelection;
       const woundSelection=data.reuseWoundSelection?this._lastWoundSelection:data.woundSelection;
       if(data.type==='restore'){this.blood.restore(this._restoringBlood);this._restoringBlood=null;if(!this.blood.nodes.length)this.blood.syncSurface({selection:data.woundSelection});}
-      else if(data.type==='cut')this.blood.syncSurface({injury:data.removedMm3>1e-8,selection:woundSelection,deferRender:this.blood.surfaceFilm.gpu});
+      else if(data.type==='cut'&&(!data.reuseWoundSelection||data.removedMm3>1e-8))this.blood.syncSurface({injury:data.removedMm3>1e-8,selection:woundSelection,deferRender:this.blood.surfaceFilm.gpu});
       else if(data.type==='init')this.blood.reset();
       const roundTripMs=Number.isFinite(active.command.sentAt)?receiveStart-active.command.sentAt:null,queueMs=Number.isFinite(active.command.queuedAt)?active.command.sentAt-active.command.queuedAt:null;
       this.updateTimings={receivedAt:receiveStart,messageAt:delivery.messageAt??receiveStart,decodeMs:delivery.decodeMs??0,receiveMs:performance.now()-receiveStart,exclusionsMs:fragmentsStart-exclusionsStart,fragmentsMs:fragmentsEnd-fragmentsStart,chunksMs:woundStart-fragmentsEnd,woundMs:performance.now()-woundStart,chunks:data.chunks.length,fragments:data.fragments?.length??0,roundTripMs,queueMs,worker:data.work??null,reusedWoundSelection:!!data.reuseWoundSelection};
@@ -629,6 +642,7 @@ export class TissueVolume {
   }
 
   _replaceChunk(chunk,{dynamic=chunk.cutMasks.some(value=>value>0)}={}) {
+    this.meshRevision++;
     this._contactRevision++;
     this._contactQueryCache.clear();
     const previous = this._meshes.get(chunk.key);

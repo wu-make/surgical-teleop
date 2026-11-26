@@ -27,7 +27,13 @@ test('real articulated CAD retains every source attribute/index, layer and world
         assert(source.matrixWorld.determinant()>0,'source CAD must not require a different front-face winding');
         assert.equal(source.layers.mask,0);assert.equal(batch.layers.mask,record.mask);
         for(const [name,a]of Object.entries(source.geometry.attributes))assert.deepEqual(batch.geometry.attributes[name].array.slice(range.vertexStart*a.itemSize,(range.vertexStart+range.vertexCount)*a.itemSize),a.array);
-        const indices=source.geometry.index;for(let i=0;i<indices.count;i++)assert.equal(batch.geometry.index.array[range.indexStart+i]-range.vertexStart,indices.array[i]);
+        const indices=source.geometry.index;
+        if(indices){
+          for(let i=0;i<indices.count;i++)assert.equal(batch.geometry.index.array[range.indexStart+i]-range.vertexStart,indices.array[i]);
+        }else{
+          assert.equal(batch.geometry.index,null);
+          assert.equal(range.vertexCount,source.geometry.attributes.position.count);
+        }
         // Complete attributes plus one affine matrix determine every vertex.
         // Check all matrix coefficients and distributed vertices in world space.
         for(let i=0;i<16;i++)assert(Math.abs(matrix.elements[i]-source.matrixWorld.elements[i])<1e-6);

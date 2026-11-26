@@ -487,10 +487,9 @@ export class Simulation {
 
   _applyTool(desired, id) {
     const tool = this._tool(id);
-    // A cut is a material transaction, not a delayed trail behind a free tool.
-    // Keep its blade pose until the corresponding solid is committed. This
-    // also covers direct nudges and boundary assistance; opening stays usable.
-    if(this.allowToolAdvance?.(id)===false)desired={...desired,position:tool.position,wrist:tool.wrist,jaw:Math.max(tool.jaw,desired.jaw)};
+    // Use the same pending-cut limit for keyboard, direct nudges and assistance.
+    // Opening the blades is always possible.
+    if(this.allowToolAdvance?.(id,desired)===false)desired={...desired,position:tool.position,wrist:tool.wrist,jaw:Math.max(tool.jaw,desired.jaw)};
     if(desired.position.every((v,i)=>v===tool.position[i])&&desired.wrist.every((v,i)=>v===tool.wrist[i])&&desired.jaw===tool.jaw)return {changed:false,limited:false};
     const other = this._tool(id === 'left' ? 'right' : 'left');
     const {tool: next, limited,reason} = sweepInstrument(tool, desired, other);

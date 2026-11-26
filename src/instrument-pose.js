@@ -7,7 +7,10 @@ const dot=(a,b)=>a.reduce((n,v,i)=>n+v*b[i],0);
 const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
 const normalized=(a,fallback=Z)=>{const length=Math.hypot(...a);return length>1e-12?a.map(v=>v/length):[...fallback];};
 export function quaternionProduct(a,b){return [a[3]*b[0]+a[0]*b[3]+a[1]*b[2]-a[2]*b[1],a[3]*b[1]-a[0]*b[2]+a[1]*b[3]+a[2]*b[0],a[3]*b[2]+a[0]*b[1]-a[1]*b[0]+a[2]*b[3],a[3]*b[3]-a[0]*b[0]-a[1]*b[1]-a[2]*b[2]];}
-export function rotateVector(point,q){const t=cross(q,point).map(v=>v*2),u=cross(q,t);return point.map((v,i)=>v+q[3]*t[i]+u[i]);}
+export function rotateVector([x,y,z],[qx,qy,qz,qw]){
+  const tx=2*(qy*z-qz*y),ty=2*(qz*x-qx*z),tz=2*(qx*y-qy*x);
+  return [x+qw*tx+(qy*tz-qz*ty),y+qw*ty+(qz*tx-qx*tz),z+qw*tz+(qx*ty-qy*tx)];
+}
 function axisQuaternion(axis,angle){const sine=Math.sin(angle*.5);return [...axis.map(v=>v*sine),Math.cos(angle*.5)];}
 function unitQuaternion(from,to){let r=dot(from,to)+1;let q;if(r<1e-12){q=Math.abs(from[0])>Math.abs(from[2])?[-from[1],from[0],0,0]:[0,-from[2],from[1],0];}else q=[...cross(from,to),r];return normalized(q,identity);}
 export function slerpInstrumentAlignment(a,b,t){if(t<=0)return [...a];if(t>=1)return [...b];let cosine=dot(a,b);if(cosine<0){b=b.map(v=>-v);cosine=-cosine;}if(cosine>1-1e-10)return normalized(a.map((v,i)=>v+(b[i]-v)*t),identity);const angle=Math.acos(Math.min(1,cosine)),sine=Math.sin(angle);return a.map((v,i)=>(v*Math.sin((1-t)*angle)+b[i]*Math.sin(t*angle))/sine);}
