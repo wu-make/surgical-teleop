@@ -1,12 +1,16 @@
-# MIRA · 微创遥操作实验室
+# MIRA · 宇树 G1 双臂手术机器人模拟器
 
-MIRA 是一个可以直接在浏览器里操作的双臂遥操作演示。你可以控制左边的夹钳和右边的剪刀，试着夹起一小块组织、剪断连接，再把它移开。
+我们想试一件事：让宇树 G1 的左手一直牵着组织，右手剪断最后一点连接，再从内窥镜里看清楚，那一块到底有没有被拿走。这个网页就是这样做出来的。用电脑键盘就能操作，模型和切割都在浏览器里运行。
 
-第一次使用，先看一遍页面里的示范，再照着下面的步骤自己操作就好。
+[**打开模拟器**](https://wu-make.github.io/surgical-teleop/) · [**先看 20 秒实录**](https://wu-make.github.io/surgical-teleop/guide/#film) · [**第一次怎么玩**](https://wu-make.github.io/surgical-teleop/guide/#start)
 
-[**打开网页，开始操作 →**](https://wu-make.github.io/surgical-teleop/)
+[![宇树 G1 在手术台前，左钳把带病灶的标本从切面上移开。点击观看操作实录。](public/media/mira-g1.jpg)](https://wu-make.github.io/surgical-teleop/guide/#film)
 
-[![MIRA 的操作界面，左侧是内窥镜画面，右侧是操作面板](docs/images/workspace.jpg)](https://wu-make.github.io/surgical-teleop/)
+试的时候可以按一下 **Tab**。总览里能看到 G1 的两只手和胸前的 Z1 持镜臂，切回内窥镜就能看清钳尖。左钳只抬起夹住的那一小块，右剪剪开后会露出切面。连接全部切断，标本才可以带走、松开、再夹起来。
+
+**挑一个场景**　[正常肝脏](https://wu-make.github.io/surgical-teleop/?model=liver) · [病灶肝](https://wu-make.github.io/surgical-teleop/?model=lesion-liver) · [子宫附件](https://wu-make.github.io/surgical-teleop/?model=uterus-adnexa)
+
+**In English** — MIRA is a browser-based surgical robot simulator built around the Unitree G1 humanoid. Use the keyboard to grasp tissue with one arm and cut with the other. A chest-mounted Z1 arm holds the endoscope. Try the liver lesion case and watch the specimen move away from the cut surface. [Watch the demo and read the English quick start](https://wu-make.github.io/surgical-teleop/guide/#english).
 
 ## 先认识一下界面
 
@@ -26,11 +30,11 @@ MIRA 是一个可以直接在浏览器里操作的双臂遥操作演示。你可
 
 ## 第一次打开，先看一遍示范
 
-用电脑浏览器[打开网页](https://wu-make.github.io/surgical-teleop/)，等模型加载完成，然后点击画面下方的 **「切离与移开示范」**。
+用电脑浏览器[打开网页](https://wu-make.github.io/surgical-teleop/)，等模型加载完成，然后点击画面下方的 **「宽幅区域切离示范」**。
 
 示范会依次完成夹住组织、牵拉、切断连接和移开。留意左钳和右剪各自的动作，以及右侧面板上的变化。想自己接着操作，直接使用键盘即可；想从头试一次，按 **R** 重置。
 
-## 跟着做一次：夹住、剪下、移开
+## 自己动手夹住、剪下、移开
 
 ### 1. 用左钳夹住组织
 
@@ -116,6 +120,8 @@ npm run preview  # 预览构建结果
 更多实现说明见 [开发文档](docs/DEVELOPMENT-NOTES.md)。
 
 </details>
+
+如果你想下次带同学一起试，可以点仓库右上角的 **Star** 收好。遇到夹不住或剪不断的位置，欢迎在 [Issues](https://github.com/wu-make/surgical-teleop/issues) 里告诉我们你选的模型和当时按的键。
 
 ## 许可与致谢
 

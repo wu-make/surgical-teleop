@@ -98,3 +98,5 @@ h1>.case-title{font:inherit;color:inherit;background:none;border:0;padding:0;mar
 /* Keep the left adnexal target clear of the overview in the normal window. */
 .stage:not([data-render-size])[data-model="uterus-adnexa"] .mini-view{left:18px;right:auto}
 @media(max-width:700px){.stage:not([data-render-size])[data-model="uterus-adnexa"] .mini-view{left:11px;right:auto}}
+
+.bottom-bar .guide-link{color:inherit;text-underline-offset:2px;margin-inline:4px}
